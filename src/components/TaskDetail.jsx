@@ -9,7 +9,18 @@ const LOG_COLORS = { info: 'text-blue-400', success: 'text-green-400', error: 't
 export default function TaskDetail({ task, agent, onClose, onRun, onUpdate, onDelete }) {
   const [logs, setLogs] = useState([])
   const [tab, setTab] = useState('details')
+  const [downloading, setDownloading] = useState(false)
   const logsEndRef = useRef(null)
+
+  const handleDownload = async () => {
+    setDownloading(true)
+    try {
+      await api.downloadBot(task.id)
+    } catch (err) {
+      alert(err.message)
+    }
+    setDownloading(false)
+  }
 
   useEffect(() => {
     if (!task) return
@@ -154,6 +165,15 @@ export default function TaskDetail({ task, agent, onClose, onRun, onUpdate, onDe
             Delete Task
           </button>
           <div className="flex gap-2">
+            {task.status === 'done' && task.agent_id === 'forge' && task.output && (
+              <button
+                onClick={handleDownload}
+                disabled={downloading}
+                className="px-4 py-2 bg-forge text-white rounded-lg font-medium text-sm hover:bg-blue-600 transition-colors disabled:opacity-50"
+              >
+                {downloading ? 'Preparing...' : '📦 Download ZIP'}
+              </button>
+            )}
             {(task.status === 'todo' || task.status === 'backlog' || task.status === 'failed') && task.agent_id && (
               <button
                 onClick={() => onRun(task.id)}

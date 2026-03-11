@@ -8,6 +8,7 @@ import ChatPanel from './components/ChatPanel'
 import MobileNav from './components/MobileNav'
 import AgentCards from './components/AgentCards'
 import SpendDashboard from './components/SpendDashboard'
+import BotGenerator from './components/BotGenerator'
 
 export default function App() {
   const [agents, setAgents] = useState([])
@@ -17,6 +18,7 @@ export default function App() {
   const [filterAgent, setFilterAgent] = useState(null)
   const [showChat, setShowChat] = useState(false)
   const [showSpend, setShowSpend] = useState(false)
+  const [showBotGen, setShowBotGen] = useState(false)
   const [mobileView, setMobileView] = useState('board')
 
   const refresh = useCallback(async () => {
@@ -123,6 +125,12 @@ export default function App() {
               </div>
             )}
             <button
+              onClick={() => setShowBotGen(true)}
+              className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-forge/15 text-forge border border-forge/30 rounded-xl text-sm hover:bg-forge/25 transition-colors"
+            >
+              ⚒️ <span className="hidden lg:inline">Generate Bot</span>
+            </button>
+            <button
               onClick={() => setShowSpend(true)}
               className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
             >
@@ -199,6 +207,13 @@ export default function App() {
 
       {showSpend && (
         <SpendDashboard onClose={() => setShowSpend(false)} />
+      )}
+
+      {showBotGen && (
+        <BotGenerator
+          onSubmit={(data) => { handleCreateTask(data); setShowBotGen(false) }}
+          onClose={() => setShowBotGen(false)}
+        />
       )}
 
       {selectedTask && (

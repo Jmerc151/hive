@@ -7,6 +7,7 @@ import { v4 as uuid } from 'uuid'
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
 import Anthropic from '@anthropic-ai/sdk'
 import webpush from 'web-push'
+import archiver from 'archiver'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -611,6 +612,21 @@ registerHeartbeat('nexus-retrospective', 7 * 24 * 60 * 60 * 1000, async () => {
 })
 
 
+// Bot opportunity scan — weekly
+registerHeartbeat('bot-opportunity-scan', 7 * 24 * 60 * 60 * 1000, async () => {
+  try {
+    const scout = agents.find(a => a.id === 'scout')
+    if (!scout) return
+    const taskId = uuid()
+    db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, 'medium', 'scout', 'todo')`)
+      .run(taskId, 'Bot Opportunity Scan', 'Research 5 trending bot/tool opportunities that could generate income. Consider current market trends, popular APIs, gaps in existing tools, and emerging niches.\n\nReturn your findings as a JSON array with this exact format:\n[\n  {\n    "name": "Bot Name",\n    "type": "chrome-extension|telegram-bot|discord-bot|web-app|cli-tool|api|landing-page",\n    "description": "What the bot does and why it\'s a good opportunity (2-3 sentences)",\n    "audience": "Target audience",\n    "monetization": "How to make money from it",\n    "reasoning": "Why this is a good opportunity right now"\n  }\n]\n\nFocus on ideas that are technically feasible as a solo project, have clear monetization paths, and are not oversaturated.')
+    setTimeout(() => processAgentQueue('scout'), 3000)
+    console.log('💓 Bot opportunity scan queued for Scout')
+  } catch (e) {
+    console.error('Bot opportunity scan failed:', e.message)
+  }
+})
+
 // ── Agents ─────────────────────────────────────────
 app.get('/api/agents', (req, res) => {
   const taskCounts = db.prepare(`
@@ -842,6 +858,18 @@ Start by analyzing the task and providing your approach.`
       taskId: task.id
     })
 
+    // Bot suggestion hook: parse Scout's output into bot_suggestions table
+    if (agent.id === 'scout' && task.title.toLowerCase().includes('bot opportunity')) {
+      try {
+        const suggestions = parseSuggestions(fullOutput)
+        const insert = db.prepare('INSERT OR IGNORE INTO bot_suggestions (id, name, type, description, audience, monetization, reasoning) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        for (const s of suggestions) {
+          insert.run(uuid(), s.name, s.type, s.description, s.audience, s.monetization, s.reasoning)
+        }
+        if (suggestions.length > 0) console.log(`🤖 Stored ${suggestions.length} bot suggestions from Scout`)
+      } catch (e) { console.error('Bot suggestion parse error:', e.message) }
+    }
+
     // Update memory → QA review → generate follow-ups → queue next
     updateAgentMemory(agent, task, fullOutput)
       .then(() => reviewCompletedWork(task, agent, fullOutput))
@@ -884,6 +912,105 @@ app.post('/api/agents/:id/stop', (req, res) => {
   db.prepare("UPDATE tasks SET status = 'failed', error = 'Stopped by user', completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
     .run(entry.taskId)
 
+  res.json({ ok: true })
+})
+
+// ── Bot Generator: Output Parser ──────────────────
+function parseForgeOutput(output) {
+  const files = []
+  // Match: ## filename.ext (or ### `filename.ext` or **filename.ext**) followed by a code block
+  const regex = /(?:^#{1,3}\s+`?([a-zA-Z0-9_\-/.]+\.[a-zA-Z0-9]+)`?\s*$|^\*\*([a-zA-Z0-9_\-/.]+\.[a-zA-Z0-9]+)\*\*\s*$)\s*```[\w]*\n([\s\S]*?)```/gm
+  let match
+  while ((match = regex.exec(output)) !== null) {
+    const filename = match[1] || match[2]
+    if (filename && match[3]) files.push({ filename: filename.trim(), content: match[3] })
+  }
+  // Fallback: looser matching
+  if (files.length === 0) {
+    const fallback = /^(.+\.(?:js|jsx|ts|tsx|json|md|html|css|env|txt|yml|yaml|toml|sh))\s*\n```[\w]*\n([\s\S]*?)```/gm
+    while ((match = fallback.exec(output)) !== null) {
+      const filename = match[1].replace(/^[#*`\s]+/, '').replace(/[*`\s]+$/, '').trim()
+      if (filename && match[2]) files.push({ filename, content: match[2] })
+    }
+  }
+  return files
+}
+
+function parseSuggestions(output) {
+  // Try to find a JSON array in the output
+  const jsonMatch = output.match(/\[[\s\S]*?\{[\s\S]*?"name"[\s\S]*?\}[\s\S]*?\]/)
+  if (jsonMatch) {
+    try {
+      const arr = JSON.parse(jsonMatch[0])
+      return arr.filter(s => s.name && s.type && s.description).map(s => ({
+        name: s.name, type: s.type, description: s.description,
+        audience: s.audience || '', monetization: s.monetization || '', reasoning: s.reasoning || ''
+      }))
+    } catch (e) { /* fall through */ }
+  }
+  return []
+}
+
+// ── Bot Generator: ZIP Download ───────────────────
+app.get('/api/tasks/:id/download', (req, res) => {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
+  if (!task) return res.status(404).json({ error: 'Task not found' })
+  if (!task.output) return res.status(400).json({ error: 'Task has no output' })
+
+  const files = parseForgeOutput(task.output)
+  if (files.length === 0) return res.status(400).json({ error: 'No files found in task output' })
+
+  const projectName = task.title.replace(/^Build\s+\w+:\s*/i, '').replace(/[^a-zA-Z0-9\-_ ]/g, '').trim().replace(/\s+/g, '-').toLowerCase() || 'bot-package'
+
+  res.setHeader('Content-Type', 'application/zip')
+  res.setHeader('Content-Disposition', `attachment; filename="${projectName}.zip"`)
+
+  const archive = archiver('zip', { zlib: { level: 9 } })
+  archive.on('error', () => res.status(500).end())
+  archive.pipe(res)
+  for (const file of files) {
+    archive.append(file.content, { name: `${projectName}/${file.filename}` })
+  }
+  archive.finalize()
+})
+
+// ── Bot Suggestions API ───────────────────────────
+app.get('/api/bot-suggestions', (req, res) => {
+  const suggestions = db.prepare('SELECT * FROM bot_suggestions WHERE used = 0 ORDER BY created_at DESC LIMIT 20').all()
+  res.json(suggestions)
+})
+
+app.post('/api/bot-suggestions/refresh', (req, res) => {
+  const taskId = uuid()
+  db.prepare(`
+    INSERT INTO tasks (id, title, description, priority, agent_id, status)
+    VALUES (?, ?, ?, 'high', 'scout', 'todo')
+  `).run(taskId, 'Bot Opportunity Scan', `Research 5 trending bot/tool opportunities that could generate income. Consider current market trends, popular APIs, gaps in existing tools, and emerging niches.
+
+Return your findings as a JSON array with this exact format:
+[
+  {
+    "name": "Bot Name",
+    "type": "chrome-extension|telegram-bot|discord-bot|web-app|cli-tool|api|landing-page",
+    "description": "What the bot does and why it's a good opportunity (2-3 sentences)",
+    "audience": "Target audience",
+    "monetization": "How to make money from it",
+    "reasoning": "Why this is a good opportunity right now"
+  }
+]
+
+Focus on ideas that are:
+- Technically feasible as a solo project
+- Have clear monetization paths
+- Solve real problems people are willing to pay for
+- Not oversaturated in the market`)
+
+  setTimeout(() => processAgentQueue('scout'), 2000)
+  res.status(201).json({ taskId, message: 'Scout is researching bot opportunities...' })
+})
+
+app.delete('/api/bot-suggestions/:id', (req, res) => {
+  db.prepare('DELETE FROM bot_suggestions WHERE id = ?').run(req.params.id)
   res.json({ ok: true })
 })
 

@@ -56,4 +56,28 @@ export const api = {
   getSpend: () => request('/spend'),
   getSettings: () => request('/settings'),
   updateSettings: (data) => request('/settings', { method: 'PATCH', body: data }),
+
+  // Bot Generator
+  getBotSuggestions: () => request('/bot-suggestions'),
+  refreshBotSuggestions: () => request('/bot-suggestions/refresh', { method: 'POST' }),
+  dismissSuggestion: (id) => request(`/bot-suggestions/${id}`, { method: 'DELETE' }),
+  downloadBot: async (taskId) => {
+    const headers = {}
+    if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`
+    const res = await fetch(`${BASE}/tasks/${taskId}/download`, { headers })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Download failed' }))
+      throw new Error(err.error || `Download failed: ${res.status}`)
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const filename = res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1] || 'bot-package.zip'
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  },
 }

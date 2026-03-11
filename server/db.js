@@ -63,6 +63,19 @@ db.exec(`
     task_id TEXT,
     created_at TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS bot_suggestions (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    description TEXT NOT NULL,
+    audience TEXT DEFAULT '',
+    monetization TEXT DEFAULT '',
+    reasoning TEXT DEFAULT '',
+    source TEXT DEFAULT 'scout',
+    created_at TEXT DEFAULT (datetime('now')),
+    used INTEGER DEFAULT 0
+  );
 `)
 
 // Migration-safe column additions

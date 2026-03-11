@@ -1,5 +1,27 @@
 # Hive Changelog
 
+## 2026-03-10 — Bot Generator (Session 2)
+
+### Bot Generator Feature
+- **BotGenerator.jsx** — New modal with form: bot name, type selector grid (7 types), description, advanced options (audience, monetization), Forge preview card
+- **Scout Suggestions** — "Ask Scout to suggest bot ideas" button fetches AI-generated bot opportunities
+  - `bot_suggestions` table in SQLite stores Scout's researched ideas
+  - `POST /api/bot-suggestions/refresh` creates a Scout task to research trending bots
+  - `GET /api/bot-suggestions` returns stored suggestions
+  - Clicking a suggestion pre-fills the form
+  - Post-task hook: when Scout completes a "Bot Opportunity" task, parses output into suggestions
+- **Weekly bot scan heartbeat** — Scout auto-researches bot opportunities every 7 days
+- **ZIP Download** — `GET /api/tasks/:id/download` parses Forge's markdown output, extracts code blocks, streams ZIP via `archiver`
+  - `parseForgeOutput()` — two-pass regex extracts files from ## heading + code block format
+  - `parseSuggestions()` — extracts JSON array from Scout output
+- **Download button** in TaskDetail footer for completed Forge tasks
+- **"Generate Bot" button** in dashboard header with Forge blue styling
+- Added `archiver` npm dependency for ZIP generation
+- Added 4 new API methods to `api.js`: `getBotSuggestions`, `refreshBotSuggestions`, `dismissSuggestion`, `downloadBot`
+
+### Bug Fix
+- Fixed PORT conflict: `API_PORT=3002` set explicitly in dev:server script, all PORT declarations now prioritize `API_PORT` over `PORT`
+
 ## 2026-03-10 — Initial Build (Session 1)
 
 ### Phase 1: Scaffold
