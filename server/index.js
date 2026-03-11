@@ -2414,9 +2414,9 @@ app.get('/api/health', (req, res) => {
   })
 })
 
-// ── Serve static in production ────────────────────
-if (process.env.NODE_ENV === 'production') {
-  const distPath = join(__dirname, '..', 'dist')
+// ── Serve static frontend ─────────────────────────
+const distPath = join(__dirname, '..', 'dist')
+if (existsSync(distPath)) {
   app.use(express.static(distPath))
   app.get('/{*splat}', (req, res) => {
     res.sendFile(join(distPath, 'index.html'))
