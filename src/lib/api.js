@@ -57,6 +57,9 @@ export const api = {
   getSettings: () => request('/settings'),
   updateSettings: (data) => request('/settings', { method: 'PATCH', body: data }),
 
+  // Prompt Optimizer
+  optimizePrompt: (id) => request(`/tasks/${id}/optimize`, { method: 'POST' }),
+
   // Bot Generator
   getBotSuggestions: () => request('/bot-suggestions'),
   refreshBotSuggestions: () => request('/bot-suggestions/refresh', { method: 'POST' }),
@@ -80,4 +83,88 @@ export const api = {
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
   },
+
+  // Scorecards
+  getScorecard: (agentId) => request(`/agents/${agentId}/scorecard`),
+  getScoreboards: () => request('/scorecards'),
+
+  // Approval Gates
+  approveTask: (id) => request(`/tasks/${id}/approve`, { method: 'POST' }),
+  rejectTask: (id) => request(`/tasks/${id}/reject`, { method: 'POST' }),
+
+  // Traces
+  getTraces: (id) => request(`/tasks/${id}/traces`),
+
+  // Pipelines
+  getPipelines: () => request('/pipelines'),
+  createPipeline: (data) => request('/pipelines', { method: 'POST', body: data }),
+  updatePipeline: (id, data) => request(`/pipelines/${id}`, { method: 'PATCH', body: data }),
+  deletePipeline: (id) => request(`/pipelines/${id}`, { method: 'DELETE' }),
+  runPipeline: (id) => request(`/pipelines/${id}/run`, { method: 'POST' }),
+
+  // Revenue
+  getRevenue: (params) => request(`/revenue${params ? '?' + new URLSearchParams(params) : ''}`),
+  createRevenue: (data) => request('/revenue', { method: 'POST', body: data }),
+  deleteRevenue: (id) => request(`/revenue/${id}`, { method: 'DELETE' }),
+  getRevenueSummary: () => request('/revenue/summary'),
+
+  // Event Triggers
+  getTriggers: () => request('/triggers'),
+  createTrigger: (data) => request('/triggers', { method: 'POST', body: data }),
+  updateTrigger: (id, data) => request(`/triggers/${id}`, { method: 'PATCH', body: data }),
+  deleteTrigger: (id) => request(`/triggers/${id}`, { method: 'DELETE' }),
+
+  // A/B Testing
+  abTest: (taskId, data) => request(`/tasks/${taskId}/ab-test`, { method: 'POST', body: data }),
+
+  // Agent Skills
+  getSkills: (agentId) => request(`/agents/${agentId}/skills`),
+  createSkill: (agentId, data) => request(`/agents/${agentId}/skills`, { method: 'POST', body: data }),
+  updateSkill: (id, data) => request(`/skills/${id}`, { method: 'PATCH', body: data }),
+  deleteSkill: (id) => request(`/skills/${id}`, { method: 'DELETE' }),
+
+  // Market Data
+  getQuote: (symbol) => request(`/market/quote/${symbol}`),
+  getHistory: (symbol, params) => request(`/market/history/${symbol}?${new URLSearchParams(params || {})}`),
+  getIndicators: (symbol) => request(`/market/indicators/${symbol}`),
+  searchSymbols: (q) => request(`/market/search?q=${q}`),
+
+  // Trading
+  getTradingAccount: () => request('/trading/account'),
+  getPositions: () => request('/trading/positions'),
+  placeOrder: (data) => request('/trading/orders', { method: 'POST', body: data }),
+  getOrders: (status) => request(`/trading/orders?status=${status || 'all'}`),
+  cancelOrder: (id) => request(`/trading/orders/${id}/cancel`, { method: 'POST' }),
+  closePosition: (symbol) => request(`/trading/close/${symbol}`, { method: 'POST' }),
+  closeAllPositions: () => request('/trading/close-all', { method: 'POST' }),
+  getMarketStatus: () => request('/trading/market-status'),
+  getTradeHistory: () => request('/trading/trades'),
+  getTradingConfig: () => request('/trading/config'),
+  updateTradingConfig: (data) => request('/trading/config', { method: 'PATCH', body: data }),
+  getWatchlist: () => request('/trading/watchlist'),
+  addToWatchlist: (data) => request('/trading/watchlist', { method: 'POST', body: data }),
+  removeFromWatchlist: (id) => request(`/trading/watchlist/${id}`, { method: 'DELETE' }),
+  getPortfolioHistory: () => request('/trading/portfolio-history'),
+
+  // Strategies
+  getStrategies: (params) => request(`/strategies${params ? '?' + new URLSearchParams(params) : ''}`),
+  createStrategy: (data) => request('/strategies', { method: 'POST', body: data }),
+  updateStrategy: (id, data) => request(`/strategies/${id}`, { method: 'PATCH', body: data }),
+  deleteStrategy: (id) => request(`/strategies/${id}`, { method: 'DELETE' }),
+  runBacktest: (id, data) => request(`/strategies/${id}/backtest`, { method: 'POST', body: data }),
+  getBacktests: (id) => request(`/strategies/${id}/backtests`),
+  getBacktest: (id) => request(`/backtests/${id}`),
+  deployStrategy: (id) => request(`/strategies/${id}/deploy`, { method: 'POST' }),
+  getDeployments: () => request('/deployments'),
+  pauseDeployment: (id) => request(`/deployments/${id}/pause`, { method: 'POST' }),
+  stopDeployment: (id) => request(`/deployments/${id}/stop`, { method: 'POST' }),
+  getStrategyPerformance: (id) => request(`/strategies/${id}/performance`),
+  getPerformanceLeaderboard: () => request('/performance/leaderboard'),
+
+  // Analysis — Multi-Lens Oracle
+  analyzeSymbol: (symbol) => request(`/analysis/${symbol}`),
+  getTradeConstraints: (symbol, side) => request(`/analysis/${symbol}/constraints?side=${side || 'buy'}`),
+  getTradeDecision: (symbol) => request(`/analysis/${symbol}/decide`, { method: 'POST' }),
+  getEnsemble: (symbol) => request(`/analysis/${symbol}/ensemble`),
+  getPersonas: () => request('/analysis/personas'),
 }

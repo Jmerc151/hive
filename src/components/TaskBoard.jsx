@@ -1,8 +1,10 @@
 import { useState } from 'react'
+import { api } from '../lib/api'
 
 const COLUMNS = [
   { id: 'backlog', label: 'Backlog', color: 'text-hive-400', dot: 'bg-hive-500' },
   { id: 'todo', label: 'To Do', color: 'text-blue-400', dot: 'bg-blue-400' },
+  { id: 'awaiting_approval', label: 'Approval', color: 'text-amber-400', dot: 'bg-amber-400' },
   { id: 'in_progress', label: 'In Progress', color: 'text-honey', dot: 'bg-honey' },
   { id: 'in_review', label: 'Review', color: 'text-prism', dot: 'bg-prism' },
   { id: 'done', label: 'Done', color: 'text-honey', dot: 'bg-honey' },
@@ -146,6 +148,19 @@ function TaskCard({ task, agent, onSelect, onRun }) {
           >
             Run ▶
           </button>
+        )}
+
+        {task.status === 'awaiting_approval' && (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={(e) => { e.stopPropagation(); api.approveTask(task.id) }}
+              className="text-xs px-2 py-0.5 bg-green-500/15 text-green-400 rounded hover:bg-green-500/25 font-medium"
+            >Approve</button>
+            <button
+              onClick={(e) => { e.stopPropagation(); api.rejectTask(task.id) }}
+              className="text-xs px-2 py-0.5 bg-red-500/15 text-red-400 rounded hover:bg-red-500/25 font-medium"
+            >Reject</button>
+          </div>
         )}
 
         {task.status === 'in_progress' && (

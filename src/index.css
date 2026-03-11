@@ -21,6 +21,11 @@
   --color-nexus: #ec4899;
   --color-success: #3BB273;
   --color-danger: #E84855;
+  --color-amber-400: #fbbf24;
+  --color-approval: #f59e0b;
+  --color-bull: #22c55e;
+  --color-bear: #ef4444;
+  --color-neutral: #6b7280;
   --font-sans: 'Inter', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 }

@@ -8,6 +8,10 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
 import Anthropic from '@anthropic-ai/sdk'
 import webpush from 'web-push'
 import archiver from 'archiver'
+import * as marketData from './services/marketData.js'
+import * as broker from './services/broker.js'
+import * as backtest from './services/backtest.js'
+import * as analysis from './services/analysis.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -693,12 +697,13 @@ app.get('/api/tasks', (req, res) => {
 })
 
 app.post('/api/tasks', (req, res) => {
-  const { title, description, priority, agent_id } = req.body
+  const { title, description, priority, agent_id, token_budget, requires_approval } = req.body
   const id = uuid()
+  const budget = token_budget || parseInt(getSetting('per_task_token_budget') || '0')
   db.prepare(`
-    INSERT INTO tasks (id, title, description, priority, agent_id, status)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(id, title, description || '', priority || 'medium', agent_id || null, agent_id ? 'todo' : 'backlog')
+    INSERT INTO tasks (id, title, description, priority, agent_id, status, token_budget, requires_approval)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, title, description || '', priority || 'medium', agent_id || null, agent_id ? 'todo' : 'backlog', budget, requires_approval ? 1 : 0)
 
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id)
   res.status(201).json(task)
@@ -715,7 +720,7 @@ app.patch('/api/tasks/:id', (req, res) => {
   const vals = []
 
   for (const [key, val] of Object.entries(fields)) {
-    if (['title', 'description', 'status', 'priority', 'agent_id', 'output', 'error', 'started_at', 'completed_at'].includes(key)) {
+    if (['title', 'description', 'status', 'priority', 'agent_id', 'output', 'error', 'started_at', 'completed_at', 'token_budget', 'requires_approval', 'pipeline_id', 'pipeline_step'].includes(key)) {
       sets.push(`${key} = ?`)
       vals.push(val)
     }
@@ -743,6 +748,49 @@ app.get('/api/tasks/:id/logs', (req, res) => {
 })
 
 // ══════════════════════════════════════════════════════
+// ██ Prompt Optimizer                                  ██
+// ══════════════════════════════════════════════════════
+
+app.post('/api/tasks/:id/optimize', async (req, res) => {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
+  if (!task) return res.status(404).json({ error: 'Task not found' })
+  if (!task.agent_id) return res.status(400).json({ error: 'No agent assigned' })
+
+  const agent = agents.find(a => a.id === task.agent_id)
+  if (!agent) return res.status(400).json({ error: 'Agent not found' })
+
+  try {
+    const response = await callClaude({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1024,
+      system: `You are Nexus, prompt optimizer for Hive's AI agent team. Your job is to rewrite task prompts so they are clearer, more structured, and easier for an AI agent to execute — saving tokens and improving output quality.
+
+The task will be executed by: ${agent.name} (${agent.role})
+
+Rules:
+- Keep the user's intent exactly — don't change WHAT they want, improve HOW it's expressed
+- Add structure: use ## sections (Requirements, Deliverables, Constraints) where helpful
+- Make vague instructions specific and actionable
+- Remove redundancy and filler
+- If the prompt is already well-structured, return it with minimal changes
+- Never add requirements the user didn't ask for
+- Keep it concise — don't pad with unnecessary sections
+
+Respond with ONLY the optimized prompt text. No preamble, no explanation.`,
+      messages: [{
+        role: 'user',
+        content: `Task title: ${task.title}\n\nOriginal prompt:\n${task.description || '(no description provided)'}`
+      }]
+    }, 'nexus', task.id)
+
+    const optimized = response.content.map(b => b.type === 'text' ? b.text : '').join('').trim()
+    res.json({ original: task.description || '', optimized })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ══════════════════════════════════════════════════════
 // ██ ReAct LOOP — Multi-step reasoning                ██
 // ══════════════════════════════════════════════════════
 
@@ -767,6 +815,21 @@ app.post('/api/tasks/:id/run', async (req, res) => {
     db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
       .run(task.id, agent.id, `Paused: ${limitErr.message}`, 'warning')
     return res.status(429).json({ error: limitErr.message })
+  }
+
+  // ── Approval Gates ──────────────────────────────
+  const approvalThreshold = parseFloat(getSetting('approval_threshold_usd') || '999')
+  const approvalKeywords = (getSetting('approval_keywords') || '').split(',').map(k => k.trim().toLowerCase()).filter(Boolean)
+  const needsApproval = task.requires_approval === 1 ||
+    (approvalThreshold < 999 && task.estimated_cost >= approvalThreshold) ||
+    approvalKeywords.some(kw => (task.title + ' ' + task.description).toLowerCase().includes(kw))
+
+  if (needsApproval && task.status !== 'awaiting_approval') {
+    db.prepare("UPDATE tasks SET status = 'awaiting_approval', updated_at = datetime('now') WHERE id = ?").run(task.id)
+    db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+      .run(task.id, agent.id, 'Requires approval before running', 'warning')
+    sendPushToAll({ title: '⏸️ Approval Required', body: task.title, tag: `approval-${task.id}`, taskId: task.id })
+    return res.json({ ok: true, message: 'Task requires approval', awaiting_approval: true })
   }
 
   db.prepare("UPDATE tasks SET status = 'in_progress', started_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(task.id)
@@ -807,16 +870,41 @@ Start by analyzing the task and providing your approach.`
       db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
         .run(task.id, agent.id, `ReAct step ${step + 1}/${MAX_STEPS}...`, 'info')
 
+      // Token budget check
+      const taskBudget = task.token_budget || parseInt(getSetting('per_task_token_budget') || '0')
+      if (taskBudget > 0) {
+        const currentUsage = db.prepare('SELECT tokens_used FROM tasks WHERE id = ?').get(task.id)
+        if (currentUsage && currentUsage.tokens_used >= taskBudget) {
+          db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+            .run(task.id, agent.id, `Token budget reached (${currentUsage.tokens_used}/${taskBudget})`, 'warning')
+          break
+        }
+      }
+
+      // Inject agent skills into prompt
+      const skills = db.prepare('SELECT name, description FROM agent_skills WHERE agent_id = ? AND enabled = 1').all(agent.id)
+      const skillsContext = skills.length > 0 ? `\n\nYour available skills: ${skills.map(s => `${s.name} (${s.description})`).join(', ')}` : ''
+
+      const traceStart = Date.now()
       const response = await callClaude({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 8192,
-        system: agent.systemPrompt,
+        system: agent.systemPrompt + skillsContext,
         messages,
       }, agent.id, task.id, abortController.signal)
+
+      const traceDuration = Date.now() - traceStart
+      const traceTokensIn = response.usage?.input_tokens || 0
+      const traceTokensOut = response.usage?.output_tokens || 0
+      const traceCost = (traceTokensIn * COST_PER_INPUT_TOKEN) + (traceTokensOut * COST_PER_OUTPUT_TOKEN)
 
       const stepOutput = response.content.map(b => b.type === 'text' ? b.text : '').join('\n')
       fullOutput += `\n--- Step ${step + 1} ---\n${stepOutput}`
       messages.push({ role: 'assistant', content: stepOutput })
+
+      // Log trace
+      db.prepare('INSERT INTO task_traces (task_id, agent_id, step, type, input_summary, output_summary, tokens_in, tokens_out, cost, duration_ms, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(task.id, agent.id, step + 1, 'llm_call', messages[messages.length - 2]?.content?.slice(0, 500) || '', stepOutput.slice(0, 500), traceTokensIn, traceTokensOut, traceCost, traceDuration, 'claude-sonnet-4-20250514')
 
       // Check for consultation requests
       const consultMatch = stepOutput.match(/\[CONSULT:(\w+)\]\s*(.+)/s)
@@ -825,9 +913,12 @@ Start by analyzing the task and providing your approach.`
         db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
           .run(task.id, agent.id, `Consulting ${targetAgentId}: ${question.slice(0, 200)}`, 'info')
 
+        const consultStart = Date.now()
         const consultResponse = await agentConsult(agent, targetAgentId, question, `Task: ${task.title}`)
 
         if (consultResponse) {
+          db.prepare('INSERT INTO task_traces (task_id, agent_id, step, type, input_summary, output_summary, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)')
+            .run(task.id, targetAgentId, step + 1, 'consult', question.slice(0, 500), consultResponse.slice(0, 500), Date.now() - consultStart)
           messages.push({
             role: 'user',
             content: `Response from ${targetAgentId}:\n${consultResponse}\n\nNow continue with your task, incorporating this input.`
@@ -868,6 +959,49 @@ Start by analyzing the task and providing your approach.`
         }
         if (suggestions.length > 0) console.log(`🤖 Stored ${suggestions.length} bot suggestions from Scout`)
       } catch (e) { console.error('Bot suggestion parse error:', e.message) }
+    }
+
+    // Strategy discovery hook: parse Scout's output into strategies table
+    if (agent.id === 'scout' && task.title.toLowerCase().includes('strategy discover')) {
+      try {
+        const jsonMatch = fullOutput.match(/\[[\s\S]*?\{[\s\S]*?"name"[\s\S]*?\}[\s\S]*?\]/)
+        if (jsonMatch) {
+          const strategies = JSON.parse(jsonMatch[0])
+          const insert = db.prepare('INSERT OR IGNORE INTO strategies (id, name, description, type, logic, source, source_url, status, discovered_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          let count = 0
+          for (const s of strategies) {
+            if (!s.name || !s.logic) continue
+            const existing = db.prepare('SELECT id FROM strategies WHERE name = ? AND source_url = ?').get(s.name, s.source_url || '')
+            if (existing) continue
+            insert.run(uuid(), s.name, s.description || '', s.type || 'technical', JSON.stringify(s.logic), s.source || 'scout', s.source_url || '', 'discovered', 'scout')
+            count++
+          }
+          if (count > 0) console.log(`📈 Stored ${count} trading strategies from Scout`)
+        }
+      } catch (e) { console.error('Strategy parse error:', e.message) }
+    }
+
+    // Pipeline continuation: if task is part of a pipeline, run next step
+    if (task.pipeline_id) {
+      try {
+        const pipeline = db.prepare('SELECT * FROM pipelines WHERE id = ?').get(task.pipeline_id)
+        if (pipeline) {
+          const steps = JSON.parse(pipeline.steps)
+          const nextStep = steps.find(s => s.position === task.pipeline_step + 1)
+          if (nextStep) {
+            const nextId = uuid()
+            const nextPrompt = nextStep.prompt_template.replace('{{previous_output}}', fullOutput.slice(0, 4000))
+            db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status, pipeline_id, pipeline_step) VALUES (?, ?, ?, 'high', ?, 'todo', ?, ?)`)
+              .run(nextId, `[Pipeline: ${pipeline.name}] Step ${nextStep.position}`, nextPrompt, nextStep.agent_id, pipeline.id, nextStep.position)
+            db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+              .run(task.id, agent.id, `Pipeline continues → Step ${nextStep.position} (${nextStep.agent_id})`, 'info')
+            setTimeout(() => processAgentQueue(nextStep.agent_id), 2000)
+          } else {
+            db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+              .run('system', '🔗 Pipeline', '🔗', '#8b5cf6', `Pipeline "${pipeline.name}" completed all ${steps.length} steps!`)
+          }
+        }
+      } catch (e) { console.error('Pipeline continuation error:', e.message) }
     }
 
     // Update memory → QA review → generate follow-ups → queue next
@@ -1012,6 +1146,854 @@ Focus on ideas that are:
 app.delete('/api/bot-suggestions/:id', (req, res) => {
   db.prepare('DELETE FROM bot_suggestions WHERE id = ?').run(req.params.id)
   res.json({ ok: true })
+})
+
+// ══════════════════════════════════════════════════════
+// ██ Agent Scorecards                                  ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/scorecards', (req, res) => {
+  const scorecards = agents.map(a => buildScorecard(a.id))
+  res.json(scorecards)
+})
+
+app.get('/api/agents/:id/scorecard', (req, res) => {
+  const agent = agents.find(a => a.id === req.params.id)
+  if (!agent) return res.status(404).json({ error: 'Agent not found' })
+  res.json(buildScorecard(req.params.id))
+})
+
+function buildScorecard(agentId) {
+  const done = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status = 'done'").get(agentId)?.c || 0
+  const failed = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status = 'failed'").get(agentId)?.c || 0
+  const inProgress = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status = 'in_progress'").get(agentId)?.c || 0
+  const todo = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status = 'todo'").get(agentId)?.c || 0
+  const successRate = (done + failed) > 0 ? Math.round((done / (done + failed)) * 100) : 0
+
+  const avgDuration = db.prepare("SELECT AVG(CAST((julianday(completed_at) - julianday(started_at)) * 86400 AS INTEGER)) as avg_sec FROM tasks WHERE agent_id = ? AND status = 'done' AND started_at IS NOT NULL AND completed_at IS NOT NULL").get(agentId)?.avg_sec || 0
+  const avgTokens = db.prepare("SELECT AVG(tokens_used) as avg FROM tasks WHERE agent_id = ? AND status = 'done' AND tokens_used > 0").get(agentId)?.avg || 0
+  const avgCost = db.prepare("SELECT AVG(estimated_cost) as avg FROM tasks WHERE agent_id = ? AND status = 'done' AND estimated_cost > 0").get(agentId)?.avg || 0
+  const totalSpend = db.prepare("SELECT COALESCE(SUM(cost), 0) as total FROM spend_log WHERE agent_id = ?").get(agentId)?.total || 0
+
+  // QA pass rate from Nexus reviews
+  const qaTotal = db.prepare("SELECT COUNT(*) as c FROM task_logs WHERE agent_id = 'nexus' AND task_id IN (SELECT id FROM tasks WHERE agent_id = ?) AND (message LIKE '%PASS%' OR message LIKE '%FAIL%' OR message LIKE '%NEEDS WORK%')").get(agentId)?.c || 0
+  const qaPassed = db.prepare("SELECT COUNT(*) as c FROM task_logs WHERE agent_id = 'nexus' AND task_id IN (SELECT id FROM tasks WHERE agent_id = ?) AND message LIKE '%PASS%'").get(agentId)?.c || 0
+  const qaPassRate = qaTotal > 0 ? Math.round((qaPassed / qaTotal) * 100) : 100
+
+  // 7-day trend
+  const weekTrend = db.prepare("SELECT date(completed_at) as date, COUNT(*) as count FROM tasks WHERE agent_id = ? AND status = 'done' AND completed_at >= date('now', '-7 days') GROUP BY date(completed_at) ORDER BY date ASC").all(agentId)
+
+  // Revenue attribution
+  const revenue = db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM revenue_entries WHERE agent_id = ?").get(agentId)?.total || 0
+
+  return {
+    agent_id: agentId,
+    tasks: { done, failed, in_progress: inProgress, todo, total: done + failed + inProgress + todo },
+    successRate,
+    avgDurationSec: Math.round(avgDuration),
+    avgTokens: Math.round(avgTokens),
+    avgCost: parseFloat(avgCost.toFixed(4)),
+    totalSpend: parseFloat(totalSpend.toFixed(4)),
+    qaPassRate,
+    weekTrend,
+    revenue: parseFloat(revenue.toFixed(2)),
+    roi: parseFloat((revenue - totalSpend).toFixed(2))
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// ██ Approval Gates                                    ██
+// ══════════════════════════════════════════════════════
+
+app.post('/api/tasks/:id/approve', (req, res) => {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
+  if (!task) return res.status(404).json({ error: 'Task not found' })
+  if (task.status !== 'awaiting_approval') return res.status(400).json({ error: 'Task is not awaiting approval' })
+
+  db.prepare("UPDATE tasks SET status = 'todo', requires_approval = 0, updated_at = datetime('now') WHERE id = ?").run(task.id)
+  db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+    .run(task.id, task.agent_id, 'Approved — queued to run', 'success')
+
+  if (task.agent_id) {
+    setTimeout(() => processAgentQueue(task.agent_id), 1000)
+  }
+  res.json({ ok: true })
+})
+
+app.post('/api/tasks/:id/reject', (req, res) => {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
+  if (!task) return res.status(404).json({ error: 'Task not found' })
+
+  const { reason } = req.body || {}
+  db.prepare("UPDATE tasks SET status = 'backlog', requires_approval = 0, updated_at = datetime('now') WHERE id = ?").run(task.id)
+  db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+    .run(task.id, task.agent_id, `Rejected${reason ? ': ' + reason : ''}`, 'warning')
+  res.json({ ok: true })
+})
+
+// ══════════════════════════════════════════════════════
+// ██ Task Traces                                       ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/tasks/:id/traces', (req, res) => {
+  const traces = db.prepare('SELECT * FROM task_traces WHERE task_id = ? ORDER BY step ASC, created_at ASC').all(req.params.id)
+  res.json(traces)
+})
+
+// ══════════════════════════════════════════════════════
+// ██ Pipelines                                         ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/pipelines', (req, res) => {
+  const pipelines = db.prepare('SELECT * FROM pipelines ORDER BY created_at DESC').all()
+  res.json(pipelines.map(p => ({ ...p, steps: JSON.parse(p.steps) })))
+})
+
+app.post('/api/pipelines', (req, res) => {
+  const { name, description, steps } = req.body
+  if (!name || !steps || !Array.isArray(steps)) return res.status(400).json({ error: 'Name and steps required' })
+  const id = uuid()
+  db.prepare('INSERT INTO pipelines (id, name, description, steps) VALUES (?, ?, ?, ?)').run(id, name, description || '', JSON.stringify(steps))
+  const pipeline = db.prepare('SELECT * FROM pipelines WHERE id = ?').get(id)
+  res.status(201).json({ ...pipeline, steps: JSON.parse(pipeline.steps) })
+})
+
+app.patch('/api/pipelines/:id', (req, res) => {
+  const { name, description, steps } = req.body
+  const sets = []
+  const vals = []
+  if (name) { sets.push('name = ?'); vals.push(name) }
+  if (description !== undefined) { sets.push('description = ?'); vals.push(description) }
+  if (steps) { sets.push('steps = ?'); vals.push(JSON.stringify(steps)) }
+  if (sets.length === 0) return res.status(400).json({ error: 'No valid fields' })
+  sets.push("updated_at = datetime('now')")
+  vals.push(req.params.id)
+  db.prepare(`UPDATE pipelines SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
+  const pipeline = db.prepare('SELECT * FROM pipelines WHERE id = ?').get(req.params.id)
+  res.json(pipeline ? { ...pipeline, steps: JSON.parse(pipeline.steps) } : null)
+})
+
+app.delete('/api/pipelines/:id', (req, res) => {
+  db.prepare('DELETE FROM pipelines WHERE id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+app.post('/api/pipelines/:id/run', async (req, res) => {
+  const pipeline = db.prepare('SELECT * FROM pipelines WHERE id = ?').get(req.params.id)
+  if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' })
+
+  const steps = JSON.parse(pipeline.steps)
+  if (steps.length === 0) return res.status(400).json({ error: 'Pipeline has no steps' })
+
+  // Create first step task
+  const firstStep = steps.find(s => s.position === 1) || steps[0]
+  const taskId = uuid()
+  db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status, pipeline_id, pipeline_step) VALUES (?, ?, ?, 'high', ?, 'todo', ?, ?)`)
+    .run(taskId, `[Pipeline: ${pipeline.name}] Step 1`, firstStep.prompt_template, firstStep.agent_id, pipeline.id, 1)
+
+  db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+    .run('system', '🔗 Pipeline', '🔗', '#8b5cf6', `Started pipeline "${pipeline.name}" (${steps.length} steps)`)
+
+  setTimeout(() => processAgentQueue(firstStep.agent_id), 2000)
+  res.status(201).json({ taskId, pipeline: pipeline.name, totalSteps: steps.length })
+})
+
+// ══════════════════════════════════════════════════════
+// ██ Revenue Attribution                               ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/revenue', (req, res) => {
+  const entries = db.prepare('SELECT * FROM revenue_entries ORDER BY date DESC, created_at DESC LIMIT 100').all()
+  res.json(entries)
+})
+
+app.post('/api/revenue', (req, res) => {
+  const { title, amount, source, agent_id, task_id, notes, date } = req.body
+  if (!title || amount === undefined) return res.status(400).json({ error: 'Title and amount required' })
+  const id = uuid()
+  db.prepare('INSERT INTO revenue_entries (id, title, amount, source, agent_id, task_id, notes, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, title, amount, source || '', agent_id || null, task_id || null, notes || '', date || new Date().toISOString().slice(0, 10))
+  const entry = db.prepare('SELECT * FROM revenue_entries WHERE id = ?').get(id)
+  res.status(201).json(entry)
+})
+
+app.delete('/api/revenue/:id', (req, res) => {
+  db.prepare('DELETE FROM revenue_entries WHERE id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+app.get('/api/revenue/summary', (req, res) => {
+  const totalRevenue = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM revenue_entries').get().total
+  const totalSpend = db.prepare('SELECT COALESCE(SUM(cost), 0) as total FROM spend_log').get().total
+
+  const byAgent = db.prepare(`
+    SELECT r.agent_id, COALESCE(SUM(r.amount), 0) as revenue,
+    (SELECT COALESCE(SUM(s.cost), 0) FROM spend_log s WHERE s.agent_id = r.agent_id) as spend
+    FROM revenue_entries r WHERE r.agent_id IS NOT NULL GROUP BY r.agent_id
+  `).all()
+
+  const bySource = db.prepare('SELECT source, SUM(amount) as total, COUNT(*) as count FROM revenue_entries GROUP BY source ORDER BY total DESC').all()
+
+  const weekTrend = db.prepare("SELECT date, SUM(amount) as daily_revenue FROM revenue_entries WHERE date >= date('now', '-30 days') GROUP BY date ORDER BY date ASC").all()
+
+  res.json({
+    totalRevenue: parseFloat(totalRevenue.toFixed(2)),
+    totalSpend: parseFloat(totalSpend.toFixed(2)),
+    netROI: parseFloat((totalRevenue - totalSpend).toFixed(2)),
+    byAgent,
+    bySource,
+    weekTrend
+  })
+})
+
+// ══════════════════════════════════════════════════════
+// ██ Event Triggers                                    ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/triggers', (req, res) => {
+  const triggers = db.prepare('SELECT * FROM event_triggers ORDER BY created_at DESC').all()
+  res.json(triggers.map(t => ({ ...t, config: JSON.parse(t.config), action: JSON.parse(t.action) })))
+})
+
+app.post('/api/triggers', (req, res) => {
+  const { name, type, config, action } = req.body
+  if (!name || !type || !action) return res.status(400).json({ error: 'Name, type, and action required' })
+  const id = uuid()
+  const triggerConfig = { ...config, secret: config?.secret || uuid().slice(0, 8) }
+  db.prepare('INSERT INTO event_triggers (id, name, type, config, action) VALUES (?, ?, ?, ?, ?)')
+    .run(id, name, type, JSON.stringify(triggerConfig), JSON.stringify(action))
+  const trigger = db.prepare('SELECT * FROM event_triggers WHERE id = ?').get(id)
+  res.status(201).json({ ...trigger, config: JSON.parse(trigger.config), action: JSON.parse(trigger.action) })
+})
+
+app.patch('/api/triggers/:id', (req, res) => {
+  const { name, enabled, config, action } = req.body
+  const sets = []
+  const vals = []
+  if (name) { sets.push('name = ?'); vals.push(name) }
+  if (enabled !== undefined) { sets.push('enabled = ?'); vals.push(enabled ? 1 : 0) }
+  if (config) { sets.push('config = ?'); vals.push(JSON.stringify(config)) }
+  if (action) { sets.push('action = ?'); vals.push(JSON.stringify(action)) }
+  if (sets.length === 0) return res.status(400).json({ error: 'No valid fields' })
+  vals.push(req.params.id)
+  db.prepare(`UPDATE event_triggers SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
+  const trigger = db.prepare('SELECT * FROM event_triggers WHERE id = ?').get(req.params.id)
+  res.json(trigger ? { ...trigger, config: JSON.parse(trigger.config), action: JSON.parse(trigger.action) } : null)
+})
+
+app.delete('/api/triggers/:id', (req, res) => {
+  db.prepare('DELETE FROM event_triggers WHERE id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+// Webhook receiver (public — no auth, validates secret)
+app.post('/api/webhooks/:triggerId', (req, res) => {
+  const trigger = db.prepare('SELECT * FROM event_triggers WHERE id = ? AND enabled = 1').get(req.params.triggerId)
+  if (!trigger) return res.status(404).json({ error: 'Trigger not found or disabled' })
+
+  const config = JSON.parse(trigger.config)
+  const secret = req.headers['x-webhook-secret'] || req.query.secret
+  if (config.secret && secret !== config.secret) return res.status(403).json({ error: 'Invalid secret' })
+
+  const action = JSON.parse(trigger.action)
+  const payload = JSON.stringify(req.body).slice(0, 2000)
+
+  db.prepare("UPDATE event_triggers SET last_fired = datetime('now') WHERE id = ?").run(trigger.id)
+
+  if (action.type === 'run_task') {
+    const taskId = uuid()
+    const desc = (action.prompt_template || 'Triggered by webhook').replace('{{payload}}', payload)
+    db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, ?, ?, 'todo')`)
+      .run(taskId, `[Trigger: ${trigger.name}]`, desc, action.priority || 'medium', action.agent_id)
+    if (action.agent_id) setTimeout(() => processAgentQueue(action.agent_id), 2000)
+    res.json({ ok: true, taskId })
+  } else if (action.type === 'run_pipeline' && action.pipeline_id) {
+    // Trigger pipeline run
+    const PORT = process.env.API_PORT || process.env.PORT || 3002
+    fetch(`http://localhost:${PORT}/api/pipelines/${action.pipeline_id}/run`, { method: 'POST' }).catch(() => {})
+    res.json({ ok: true, pipeline_id: action.pipeline_id })
+  } else {
+    res.status(400).json({ error: 'Unknown action type' })
+  }
+})
+
+// ══════════════════════════════════════════════════════
+// ██ A/B Prompt Testing                                ██
+// ══════════════════════════════════════════════════════
+
+app.post('/api/tasks/:id/ab-test', async (req, res) => {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
+  if (!task) return res.status(404).json({ error: 'Task not found' })
+  if (!task.agent_id) return res.status(400).json({ error: 'No agent assigned' })
+
+  const agent = agents.find(a => a.id === task.agent_id)
+  if (!agent) return res.status(400).json({ error: 'Agent not found' })
+
+  const { promptA, promptB } = req.body
+  if (!promptA || !promptB) return res.status(400).json({ error: 'Both promptA and promptB required' })
+
+  try {
+    const [responseA, responseB] = await Promise.all([
+      callClaude({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 2048,
+        system: agent.systemPrompt,
+        messages: [{ role: 'user', content: `Task: ${task.title}\n\n${promptA}` }],
+      }, 'nexus', task.id),
+      callClaude({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 2048,
+        system: agent.systemPrompt,
+        messages: [{ role: 'user', content: `Task: ${task.title}\n\n${promptB}` }],
+      }, 'nexus', task.id)
+    ])
+
+    const outputA = responseA.content.map(b => b.type === 'text' ? b.text : '').join('')
+    const outputB = responseB.content.map(b => b.type === 'text' ? b.text : '').join('')
+
+    const result = {
+      promptA: { text: promptA, output: outputA, tokens: (responseA.usage?.input_tokens || 0) + (responseA.usage?.output_tokens || 0) },
+      promptB: { text: promptB, output: outputB, tokens: (responseB.usage?.input_tokens || 0) + (responseB.usage?.output_tokens || 0) }
+    }
+
+    db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+      .run(task.id, 'nexus', `A/B test completed — A: ${result.promptA.tokens} tokens, B: ${result.promptB.tokens} tokens`, 'info')
+
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ══════════════════════════════════════════════════════
+// ██ Agent Skill Registry                              ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/agents/:id/skills', (req, res) => {
+  const skills = db.prepare('SELECT * FROM agent_skills WHERE agent_id = ? ORDER BY created_at ASC').all(req.params.id)
+  res.json(skills)
+})
+
+app.post('/api/agents/:id/skills', (req, res) => {
+  const { name, description, type, config } = req.body
+  if (!name) return res.status(400).json({ error: 'Skill name required' })
+  const id = uuid()
+  db.prepare('INSERT INTO agent_skills (id, agent_id, name, description, type, config) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, req.params.id, name, description || '', type || 'custom', JSON.stringify(config || {}))
+  const skill = db.prepare('SELECT * FROM agent_skills WHERE id = ?').get(id)
+  res.status(201).json(skill)
+})
+
+app.patch('/api/skills/:id', (req, res) => {
+  const { name, description, enabled, config } = req.body
+  const sets = []
+  const vals = []
+  if (name) { sets.push('name = ?'); vals.push(name) }
+  if (description !== undefined) { sets.push('description = ?'); vals.push(description) }
+  if (enabled !== undefined) { sets.push('enabled = ?'); vals.push(enabled ? 1 : 0) }
+  if (config) { sets.push('config = ?'); vals.push(JSON.stringify(config)) }
+  if (sets.length === 0) return res.status(400).json({ error: 'No valid fields' })
+  vals.push(req.params.id)
+  db.prepare(`UPDATE agent_skills SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
+  const skill = db.prepare('SELECT * FROM agent_skills WHERE id = ?').get(req.params.id)
+  res.json(skill)
+})
+
+app.delete('/api/skills/:id', (req, res) => {
+  db.prepare('DELETE FROM agent_skills WHERE id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+// ══════════════════════════════════════════════════════
+// ██ TRADING — Market Data                             ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/market/quote/:symbol', async (req, res) => {
+  try {
+    const data = await marketData.getQuote(req.params.symbol.toUpperCase())
+    res.json(data)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/market/history/:symbol', async (req, res) => {
+  try {
+    const { period = '1y', interval = '1d' } = req.query
+    const data = await marketData.getHistory(req.params.symbol.toUpperCase(), period, interval)
+    res.json(data)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/market/indicators/:symbol', async (req, res) => {
+  try {
+    const data = await marketData.getIndicators(req.params.symbol.toUpperCase())
+    res.json(data)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/market/search', async (req, res) => {
+  try {
+    const results = await marketData.searchSymbols(req.query.q || '')
+    res.json(results)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ══════════════════════════════════════════════════════
+// ██ ANALYSIS — Multi-Lens Oracle + Ensemble           ██
+// ══════════════════════════════════════════════════════
+
+// Multi-lens analysis (5 analyst personas)
+app.get('/api/analysis/:symbol', async (req, res) => {
+  try {
+    const result = await analysis.analyzeSymbol(req.params.symbol.toUpperCase(), callClaude)
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Deterministic trade constraints
+app.get('/api/analysis/:symbol/constraints', async (req, res) => {
+  try {
+    const result = await analysis.computeTradeConstraints(req.params.symbol.toUpperCase(), req.query.side || 'buy')
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// LLM trade decision (analysis + constraints → action)
+app.post('/api/analysis/:symbol/decide', async (req, res) => {
+  try {
+    const symbol = req.params.symbol.toUpperCase()
+    const [analysisResult, constraints] = await Promise.all([
+      analysis.analyzeSymbol(symbol, callClaude),
+      analysis.computeTradeConstraints(symbol)
+    ])
+    const decision = await analysis.makeTradeDecision(symbol, analysisResult, constraints, callClaude)
+    res.json({ analysis: analysisResult, constraints, decision })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Strategy ensemble evaluation
+app.get('/api/analysis/:symbol/ensemble', async (req, res) => {
+  try {
+    const result = await analysis.evaluateEnsemble(req.params.symbol.toUpperCase())
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// List available analyst personas
+app.get('/api/analysis/personas', async (req, res) => {
+  res.json(analysis.PERSONAS.map(p => ({ id: p.id, name: p.name, icon: p.icon, description: p.description })))
+})
+
+// ══════════════════════════════════════════════════════
+// ██ TRADING — Broker (Alpaca)                         ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/trading/account', async (req, res) => {
+  try {
+    const account = await broker.getAccount()
+    res.json(account)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/trading/positions', async (req, res) => {
+  try {
+    const positions = await broker.getPositions()
+    res.json(positions)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/trading/orders', async (req, res) => {
+  try {
+    const result = await broker.placeOrder(req.body)
+    if (!result.ok) return res.status(400).json(result)
+    res.status(201).json(result)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/trading/orders', async (req, res) => {
+  try {
+    const orders = await broker.getOrders(req.query.status)
+    res.json(orders)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/trading/orders/:id/cancel', async (req, res) => {
+  try {
+    const result = await broker.cancelOrder(req.params.id)
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/trading/close/:symbol', async (req, res) => {
+  try {
+    const result = await broker.closePosition(req.params.symbol.toUpperCase())
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/trading/close-all', async (req, res) => {
+  try {
+    const result = await broker.closeAllPositions()
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/trading/market-status', async (req, res) => {
+  try {
+    const status = await broker.isMarketOpen()
+    res.json(status)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/trading/trades', (req, res) => {
+  const trades = db.prepare('SELECT * FROM trades ORDER BY created_at DESC LIMIT 100').all()
+  res.json(trades)
+})
+
+app.get('/api/trading/config', (req, res) => {
+  const keys = ['trading_enabled', 'trading_mode', 'max_position_size_usd', 'max_daily_trades', 'max_portfolio_percent', 'default_stop_loss_percent', 'strategy_auto_deploy', 'min_backtest_sharpe', 'min_backtest_win_rate']
+  const config = {}
+  for (const key of keys) config[key] = getSetting(key)
+  res.json(config)
+})
+
+app.patch('/api/trading/config', (req, res) => {
+  const allowed = ['trading_enabled', 'trading_mode', 'max_position_size_usd', 'max_daily_trades', 'max_portfolio_percent', 'default_stop_loss_percent', 'strategy_auto_deploy', 'min_backtest_sharpe', 'min_backtest_win_rate']
+  for (const [key, value] of Object.entries(req.body)) {
+    if (allowed.includes(key)) setSetting(key, String(value))
+  }
+  res.json({ ok: true })
+})
+
+app.get('/api/trading/watchlist', (req, res) => {
+  const items = db.prepare('SELECT * FROM watchlist ORDER BY added_at DESC').all()
+  res.json(items)
+})
+
+app.post('/api/trading/watchlist', (req, res) => {
+  const { symbol, notes } = req.body
+  if (!symbol) return res.status(400).json({ error: 'Symbol required' })
+  const id = uuid()
+  try {
+    db.prepare('INSERT INTO watchlist (id, symbol, notes) VALUES (?, ?, ?)').run(id, symbol.toUpperCase(), notes || '')
+    const item = db.prepare('SELECT * FROM watchlist WHERE id = ?').get(id)
+    res.status(201).json(item)
+  } catch (e) {
+    if (e.message.includes('UNIQUE')) return res.status(409).json({ error: 'Symbol already in watchlist' })
+    throw e
+  }
+})
+
+app.delete('/api/trading/watchlist/:id', (req, res) => {
+  db.prepare('DELETE FROM watchlist WHERE id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+app.get('/api/trading/portfolio-history', (req, res) => {
+  const snapshots = db.prepare('SELECT * FROM portfolio_snapshots ORDER BY created_at DESC LIMIT 500').all()
+  res.json(snapshots)
+})
+
+// ══════════════════════════════════════════════════════
+// ██ TRADING — Strategies                              ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/strategies', (req, res) => {
+  const { status } = req.query
+  const strategies = status
+    ? db.prepare('SELECT * FROM strategies WHERE status = ? ORDER BY created_at DESC').all(status)
+    : db.prepare('SELECT * FROM strategies ORDER BY created_at DESC').all()
+  res.json(strategies.map(s => ({ ...s, logic: JSON.parse(s.logic) })))
+})
+
+app.post('/api/strategies', (req, res) => {
+  const { name, description, type, logic, source, source_url } = req.body
+  if (!name || !logic) return res.status(400).json({ error: 'Name and logic required' })
+  const id = uuid()
+  db.prepare('INSERT INTO strategies (id, name, description, type, logic, source, source_url, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, name, description || '', type || 'technical', JSON.stringify(logic), source || 'manual', source_url || '', 'discovered')
+  const strategy = db.prepare('SELECT * FROM strategies WHERE id = ?').get(id)
+  res.status(201).json({ ...strategy, logic: JSON.parse(strategy.logic) })
+})
+
+app.patch('/api/strategies/:id', (req, res) => {
+  const { name, description, type, logic, status } = req.body
+  const sets = []
+  const vals = []
+  if (name) { sets.push('name = ?'); vals.push(name) }
+  if (description !== undefined) { sets.push('description = ?'); vals.push(description) }
+  if (type) { sets.push('type = ?'); vals.push(type) }
+  if (logic) { sets.push('logic = ?'); vals.push(JSON.stringify(logic)) }
+  if (status) { sets.push('status = ?'); vals.push(status) }
+  if (sets.length === 0) return res.status(400).json({ error: 'No valid fields' })
+  sets.push("updated_at = datetime('now')")
+  vals.push(req.params.id)
+  db.prepare(`UPDATE strategies SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
+  const strategy = db.prepare('SELECT * FROM strategies WHERE id = ?').get(req.params.id)
+  res.json(strategy ? { ...strategy, logic: JSON.parse(strategy.logic) } : null)
+})
+
+app.delete('/api/strategies/:id', (req, res) => {
+  db.prepare('DELETE FROM strategies WHERE id = ?').run(req.params.id)
+  db.prepare('DELETE FROM strategy_backtests WHERE strategy_id = ?').run(req.params.id)
+  db.prepare('DELETE FROM bot_deployments WHERE strategy_id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+app.post('/api/strategies/:id/backtest', async (req, res) => {
+  try {
+    const { symbol = 'SPY', period = '1y', initialCapital = 10000 } = req.body || {}
+    const result = await backtest.runBacktest(req.params.id, symbol, period, initialCapital)
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/strategies/:id/backtests', (req, res) => {
+  const backtests = db.prepare('SELECT * FROM strategy_backtests WHERE strategy_id = ? ORDER BY created_at DESC').all(req.params.id)
+  res.json(backtests.map(b => ({ ...b, equity_curve: JSON.parse(b.equity_curve || '[]'), trade_log: JSON.parse(b.trade_log || '[]') })))
+})
+
+app.get('/api/backtests/:id', (req, res) => {
+  const bt = db.prepare('SELECT * FROM strategy_backtests WHERE id = ?').get(req.params.id)
+  if (!bt) return res.status(404).json({ error: 'Backtest not found' })
+  res.json({ ...bt, equity_curve: JSON.parse(bt.equity_curve || '[]'), trade_log: JSON.parse(bt.trade_log || '[]') })
+})
+
+app.post('/api/strategies/:id/deploy', (req, res) => {
+  const strategy = db.prepare('SELECT * FROM strategies WHERE id = ?').get(req.params.id)
+  if (!strategy) return res.status(404).json({ error: 'Strategy not found' })
+
+  const { symbols = ['SPY'] } = req.body || {}
+  const id = uuid()
+  db.prepare('INSERT INTO bot_deployments (id, strategy_id, symbols, status) VALUES (?, ?, ?, ?)')
+    .run(id, strategy.id, JSON.stringify(symbols), 'active')
+  db.prepare("UPDATE strategies SET status = 'deployed', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+  res.status(201).json({ id, strategy_id: strategy.id, symbols, status: 'active' })
+})
+
+app.get('/api/deployments', (req, res) => {
+  const deployments = db.prepare('SELECT d.*, s.name as strategy_name, s.type as strategy_type FROM bot_deployments d LEFT JOIN strategies s ON d.strategy_id = s.id ORDER BY d.started_at DESC').all()
+  res.json(deployments.map(d => ({ ...d, symbols: JSON.parse(d.symbols) })))
+})
+
+app.post('/api/deployments/:id/pause', (req, res) => {
+  db.prepare("UPDATE bot_deployments SET status = 'paused' WHERE id = ?").run(req.params.id)
+  res.json({ ok: true })
+})
+
+app.post('/api/deployments/:id/stop', (req, res) => {
+  const dep = db.prepare('SELECT * FROM bot_deployments WHERE id = ?').get(req.params.id)
+  db.prepare("UPDATE bot_deployments SET status = 'stopped', stopped_at = datetime('now') WHERE id = ?").run(req.params.id)
+  if (dep) db.prepare("UPDATE strategies SET status = 'approved', updated_at = datetime('now') WHERE id = ?").run(dep.strategy_id)
+  res.json({ ok: true })
+})
+
+app.get('/api/strategies/:id/performance', (req, res) => {
+  const perf = db.prepare('SELECT * FROM strategy_performance WHERE strategy_id = ? ORDER BY date DESC LIMIT 30').all(req.params.id)
+  res.json(perf)
+})
+
+app.get('/api/performance/leaderboard', (req, res) => {
+  const leaderboard = db.prepare(`
+    SELECT s.id, s.name, s.type, s.status,
+      COALESCE(SUM(p.pnl), 0) as total_pnl,
+      COALESCE(SUM(p.trades), 0) as total_trades,
+      COALESCE(SUM(p.win_count), 0) as total_wins
+    FROM strategies s
+    LEFT JOIN strategy_performance p ON s.id = p.strategy_id
+    WHERE s.status IN ('deployed', 'approved')
+    GROUP BY s.id
+    ORDER BY total_pnl DESC
+  `).all()
+  res.json(leaderboard)
+})
+
+// ══════════════════════════════════════════════════════
+// ██ TRADING — Heartbeats                              ██
+// ══════════════════════════════════════════════════════
+
+// Strategy executor — every 5 minutes (market hours only)
+registerHeartbeat('strategy-executor', 5 * 60 * 1000, async () => {
+  try {
+    const enabled = getSetting('trading_enabled')
+    if (enabled === 'false') return
+
+    const marketStatus = await broker.isMarketOpen()
+    if (!marketStatus.isOpen) return
+
+    const deployments = db.prepare("SELECT * FROM bot_deployments WHERE status = 'active'").all()
+    for (const dep of deployments) {
+      try {
+        const signals = await backtest.evaluateDeploymentSignals(dep)
+        for (const sig of signals) {
+          if (sig.signal === 'buy') {
+            const result = await broker.placeOrder({ symbol: sig.symbol, qty: 1, side: 'buy', strategyId: dep.strategy_id })
+            if (result.ok) {
+              db.prepare('UPDATE bot_deployments SET trades_count = trades_count + 1, last_signal = ?, last_signal_at = datetime(\'now\') WHERE id = ?')
+                .run(`BUY ${sig.symbol}`, dep.id)
+              console.log(`📈 Strategy executor: BUY ${sig.symbol} (deployment ${dep.id})`)
+            }
+          } else if (sig.signal === 'sell') {
+            const result = await broker.closePosition(sig.symbol)
+            if (result.ok) {
+              db.prepare('UPDATE bot_deployments SET last_signal = ?, last_signal_at = datetime(\'now\') WHERE id = ?')
+                .run(`SELL ${sig.symbol}`, dep.id)
+              console.log(`📉 Strategy executor: SELL ${sig.symbol} (deployment ${dep.id})`)
+            }
+          }
+        }
+      } catch (e) {
+        console.error(`Strategy executor failed for deployment ${dep.id}:`, e.message)
+      }
+    }
+  } catch (e) {
+    console.error('Strategy executor heartbeat failed:', e.message)
+  }
+})
+
+// Order sync — every 5 minutes
+registerHeartbeat('order-sync', 5 * 60 * 1000, async () => {
+  try {
+    const result = await broker.syncOrderFills()
+    if (result.synced > 0) console.log(`🔄 Synced ${result.synced} order fills`)
+  } catch (e) {
+    console.error('Order sync failed:', e.message)
+  }
+})
+
+// Portfolio snapshot — every hour (market hours only)
+registerHeartbeat('portfolio-snapshot', 60 * 60 * 1000, async () => {
+  try {
+    const marketStatus = await broker.isMarketOpen()
+    if (!marketStatus.isOpen) return
+    await broker.takePortfolioSnapshot()
+    console.log('📸 Portfolio snapshot taken')
+  } catch (e) {
+    console.error('Portfolio snapshot failed:', e.message)
+  }
+})
+
+// Market cache cleanup — every 30 minutes
+registerHeartbeat('market-cache-cleanup', 30 * 60 * 1000, () => {
+  const cleaned = marketData.cleanExpiredCache()
+  if (cleaned > 0) console.log(`🧹 Cleaned ${cleaned} expired cache entries`)
+})
+
+// Strategy discovery — every 24 hours
+registerHeartbeat('strategy-discovery', 24 * 60 * 60 * 1000, async () => {
+  try {
+    const scout = agents.find(a => a.id === 'scout')
+    if (!scout) return
+    const taskId = uuid()
+    db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, 'high', 'scout', 'todo')`)
+      .run(taskId, 'Trading Strategy Discovery', `Search GitHub, Reddit r/algotrading, and X/Twitter for profitable algorithmic trading strategies. Look for:
+
+1. **GitHub repos** with specific entry/exit rules (not just frameworks)
+2. **Reddit r/algotrading** discussions about strategies with verified backtests
+3. **X/Twitter** posts about algo trading bots, backtested results, and new techniques
+
+Search terms: "algo trading bot", "RSI strategy backtest", "MACD crossover strategy", "mean reversion bot", "momentum strategy results", "trading bot github"
+
+For each strategy found, extract:
+- Clear entry and exit conditions using these indicators: rsi14, macd, sma20, sma50, sma200, ema12, ema26, bollinger_upper, bollinger_lower, price, volume
+- Use operators: >, <, >=, <=
+
+Return ONLY a JSON array:
+[
+  {
+    "name": "Strategy Name",
+    "type": "technical|momentum|mean_reversion|custom",
+    "description": "What it does and why it works",
+    "source": "github|reddit|x",
+    "source_url": "URL where you found it",
+    "logic": {
+      "entry_conditions": [{"indicator": "rsi14", "operator": "<", "value": 30}],
+      "exit_conditions": [{"indicator": "rsi14", "operator": ">", "value": 70}],
+      "indicators": ["rsi14"],
+      "stop_loss_percent": 5
+    }
+  }
+]
+
+Find 3-5 promising strategies with specific, testable rules.`)
+    setTimeout(() => processAgentQueue('scout'), 3000)
+    console.log('💓 Strategy discovery queued for Scout')
+  } catch (e) {
+    console.error('Strategy discovery heartbeat failed:', e.message)
+  }
+})
+
+// Auto-backtest newly discovered strategies — every 6 hours
+registerHeartbeat('auto-backtest', 6 * 60 * 60 * 1000, async () => {
+  try {
+    const discovered = db.prepare("SELECT * FROM strategies WHERE status = 'discovered' LIMIT 5").all()
+    if (discovered.length === 0) return
+
+    const minSharpe = parseFloat(getSetting('min_backtest_sharpe') || '1.0')
+    const minWinRate = parseFloat(getSetting('min_backtest_win_rate') || '55')
+
+    for (const strategy of discovered) {
+      try {
+        db.prepare("UPDATE strategies SET status = 'backtesting', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+        const result = await backtest.runBacktest(strategy.id, 'SPY', '1y', 10000)
+
+        if (result.sharpe_ratio >= minSharpe && result.win_rate >= minWinRate) {
+          db.prepare("UPDATE strategies SET status = 'approved', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+          console.log(`✅ Strategy "${strategy.name}" APPROVED — Sharpe: ${result.sharpe_ratio}, Win: ${result.win_rate}%`)
+
+          // Auto-deploy if enabled
+          const autoDeploy = getSetting('strategy_auto_deploy')
+          if (autoDeploy === 'true') {
+            const depId = uuid()
+            db.prepare('INSERT INTO bot_deployments (id, strategy_id, symbols, status) VALUES (?, ?, ?, ?)').run(depId, strategy.id, '["SPY"]', 'active')
+            db.prepare("UPDATE strategies SET status = 'deployed', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+            console.log(`🚀 Auto-deployed strategy "${strategy.name}"`)
+          }
+        } else {
+          db.prepare("UPDATE strategies SET status = 'retired', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+          console.log(`❌ Strategy "${strategy.name}" RETIRED — Sharpe: ${result.sharpe_ratio}, Win: ${result.win_rate}%`)
+        }
+      } catch (e) {
+        db.prepare("UPDATE strategies SET status = 'discovered', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+        console.error(`Backtest failed for "${strategy.name}":`, e.message)
+      }
+    }
+  } catch (e) {
+    console.error('Auto-backtest heartbeat failed:', e.message)
+  }
 })
 
 // ── Stats ──────────────────────────────────────────

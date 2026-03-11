@@ -9,6 +9,15 @@ import MobileNav from './components/MobileNav'
 import AgentCards from './components/AgentCards'
 import SpendDashboard from './components/SpendDashboard'
 import BotGenerator from './components/BotGenerator'
+import PromptReviewModal from './components/PromptReviewModal'
+import AgentScorecard from './components/AgentScorecard'
+import RevenuePanel from './components/RevenuePanel'
+import PipelineBuilder from './components/PipelineBuilder'
+import EventTriggers from './components/EventTriggers'
+import SkillRegistry from './components/SkillRegistry'
+import ABTestPanel from './components/ABTestPanel'
+import TraceView from './components/TraceView'
+import TradingDashboard from './components/TradingDashboard'
 
 export default function App() {
   const [agents, setAgents] = useState([])
@@ -19,7 +28,15 @@ export default function App() {
   const [showChat, setShowChat] = useState(false)
   const [showSpend, setShowSpend] = useState(false)
   const [showBotGen, setShowBotGen] = useState(false)
+  const [reviewTaskId, setReviewTaskId] = useState(null)
   const [mobileView, setMobileView] = useState('board')
+  const [showScorecard, setShowScorecard] = useState(null) // agent object
+  const [showRevenue, setShowRevenue] = useState(false)
+  const [showPipelines, setShowPipelines] = useState(false)
+  const [showTriggers, setShowTriggers] = useState(false)
+  const [showSkills, setShowSkills] = useState(null) // agent object
+  const [abTestTask, setAbTestTask] = useState(null) // task object
+  const [showTrading, setShowTrading] = useState(false)
 
   const refresh = useCallback(async () => {
     const [a, t] = await Promise.all([api.getAgents(), api.getTasks()])
@@ -60,7 +77,11 @@ export default function App() {
     refresh()
   }
 
-  const handleRunTask = async (taskId) => {
+  const handleRunTask = (taskId) => {
+    setReviewTaskId(taskId)
+  }
+
+  const handleDirectRun = async (taskId) => {
     await api.runTask(taskId)
     refresh()
   }
@@ -98,6 +119,8 @@ export default function App() {
           onStopAgent={handleStopAgent}
           onNewTask={() => setShowCreate(true)}
           taskCount={tasks.length}
+          onScorecard={(agent) => setShowScorecard(agent)}
+          onSkills={(agent) => setShowSkills(agent)}
         />
       </div>
 
@@ -124,6 +147,30 @@ export default function App() {
                 <span className="text-xs font-medium text-honey">{activeCount} running</span>
               </div>
             )}
+            <button
+              onClick={() => setShowTriggers(true)}
+              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
+            >
+              ⚡ <span className="hidden xl:inline">Triggers</span>
+            </button>
+            <button
+              onClick={() => setShowPipelines(true)}
+              className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
+            >
+              🔗 <span className="hidden lg:inline">Pipelines</span>
+            </button>
+            <button
+              onClick={() => setShowRevenue(true)}
+              className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
+            >
+              💵 <span className="hidden lg:inline">Revenue</span>
+            </button>
+            <button
+              onClick={() => setShowTrading(true)}
+              className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
+            >
+              📈 <span className="hidden lg:inline">Trading</span>
+            </button>
             <button
               onClick={() => setShowBotGen(true)}
               className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-forge/15 text-forge border border-forge/30 rounded-xl text-sm hover:bg-forge/25 transition-colors"
@@ -220,10 +267,72 @@ export default function App() {
         <TaskDetail
           task={tasks.find(t => t.id === selectedTask)}
           agent={agents.find(a => a.id === tasks.find(t => t.id === selectedTask)?.agent_id)}
+          agents={agents}
           onClose={() => setSelectedTask(null)}
           onRun={handleRunTask}
           onUpdate={handleUpdateTask}
           onDelete={handleDeleteTask}
+          onAbTest={(task) => { setAbTestTask(task); setSelectedTask(null) }}
+        />
+      )}
+
+      {reviewTaskId && (
+        <PromptReviewModal
+          task={tasks.find(t => t.id === reviewTaskId)}
+          agent={agents.find(a => a.id === tasks.find(t => t.id === reviewTaskId)?.agent_id)}
+          onRun={(taskId) => { handleDirectRun(taskId); setReviewTaskId(null) }}
+          onClose={() => setReviewTaskId(null)}
+        />
+      )}
+
+      {showScorecard && (
+        <AgentScorecard
+          agent={showScorecard}
+          onClose={() => setShowScorecard(null)}
+        />
+      )}
+
+      {showRevenue && (
+        <RevenuePanel
+          agents={agents}
+          onClose={() => setShowRevenue(false)}
+        />
+      )}
+
+      {showPipelines && (
+        <PipelineBuilder
+          agents={agents}
+          onClose={() => setShowPipelines(false)}
+        />
+      )}
+
+      {showTriggers && (
+        <EventTriggers
+          agents={agents}
+          pipelines={[]}
+          onClose={() => setShowTriggers(false)}
+        />
+      )}
+
+      {showSkills && (
+        <SkillRegistry
+          agent={showSkills}
+          onClose={() => setShowSkills(null)}
+        />
+      )}
+
+      {showTrading && (
+        <TradingDashboard
+          agents={agents}
+          onClose={() => setShowTrading(false)}
+        />
+      )}
+
+      {abTestTask && (
+        <ABTestPanel
+          task={abTestTask}
+          agent={agents.find(a => a.id === abTestTask?.agent_id)}
+          onClose={() => setAbTestTask(null)}
         />
       )}
     </div>

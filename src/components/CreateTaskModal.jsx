@@ -5,6 +5,8 @@ export default function CreateTaskModal({ agents, onSubmit, onClose }) {
   const [description, setDescription] = useState('')
   const [priority, setPriority] = useState('medium')
   const [agentId, setAgentId] = useState('')
+  const [tokenBudget, setTokenBudget] = useState('')
+  const [requiresApproval, setRequiresApproval] = useState(false)
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -13,7 +15,9 @@ export default function CreateTaskModal({ agents, onSubmit, onClose }) {
       title: title.trim(),
       description: description.trim(),
       priority,
-      agent_id: agentId || null
+      agent_id: agentId || null,
+      token_budget: tokenBudget ? parseInt(tokenBudget) : 0,
+      requires_approval: requiresApproval
     })
   }
 
@@ -82,6 +86,31 @@ export default function CreateTaskModal({ agents, onSubmit, onClose }) {
                   </option>
                 ))}
               </select>
+            </div>
+          </div>
+
+          {/* Token Budget & Approval */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-hive-300 mb-1.5">Token Budget</label>
+              <input
+                type="number"
+                value={tokenBudget}
+                onChange={e => setTokenBudget(e.target.value)}
+                placeholder="Default (from settings)"
+                className="w-full bg-hive-900 border border-hive-600 rounded-lg px-3 py-2.5 text-sm text-hive-100 placeholder:text-hive-500 focus:outline-none focus:ring-2 focus:ring-honey/50 focus:border-honey"
+              />
+            </div>
+            <div className="flex items-end pb-1">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={requiresApproval}
+                  onChange={e => setRequiresApproval(e.target.checked)}
+                  className="w-4 h-4 rounded border-hive-600 bg-hive-900 accent-honey"
+                />
+                <span className="text-sm text-hive-300">Require approval before run</span>
+              </label>
             </div>
           </div>
 

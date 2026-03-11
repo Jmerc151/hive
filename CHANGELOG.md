@@ -1,5 +1,92 @@
 # Hive Changelog
 
+## 2026-03-11 — 10-Feature Mega Build (Session 3b)
+
+### 1. Agent Scorecards
+- `AgentScorecard.jsx` — Per-agent performance dashboard with success rate, avg duration, avg cost, QA pass rate, 7-day trend, task breakdown
+- `GET /api/scorecards` + `GET /api/agents/:id/scorecard` — Aggregates tasks, logs, spend into scorecard data
+- Accessible via sidebar icons (click agent's chart icon)
+
+### 2. Approval Gates
+- Tasks can require approval before running (per-task flag, cost threshold, keyword triggers)
+- New `awaiting_approval` status column in TaskBoard with amber styling
+- `POST /api/tasks/:id/approve` + `POST /api/tasks/:id/reject` endpoints
+- Approve/Reject buttons in TaskBoard cards and TaskDetail footer
+- Push notification when a task needs approval
+- Configurable settings: `approval_threshold_usd`, `approval_keywords`
+
+### 3. Per-Task Token Budget Caps
+- `token_budget` field in CreateTaskModal (number input, defaults from settings)
+- Token budget progress bar in TaskDetail (green/red based on usage)
+- ReAct loop checks budget before each LLM call, stops gracefully when exceeded
+
+### 4. Trace View
+- `TraceView.jsx` — Vertical timeline of task execution steps
+- Each trace node: step number, type icon, agent, tokens, cost, duration
+- Expandable input/output summaries per step
+- Summary bar: total steps, tokens, cost, duration
+- New "Trace" tab in TaskDetail alongside details/logs/output
+- `task_traces` table logs every LLM call, consultation, and tool use
+
+### 5. Chained Pipelines
+- `PipelineBuilder.jsx` — Visual pipeline editor with list/edit views
+- Create multi-step workflows chaining agents (e.g. Scout → Quill → Dealer)
+- `{{previous_output}}` template variable injects prior step's output
+- Pipeline CRUD + `POST /api/pipelines/:id/run` endpoint
+- Post-completion hook: when a pipeline task finishes, auto-creates next step
+- Pipeline step indicator in TaskDetail
+
+### 6. Revenue Attribution
+- `RevenuePanel.jsx` — Income tracking modal with ROI calculations
+- Summary cards: total revenue, total spend, net ROI
+- Per-agent ROI breakdown table
+- Revenue by source breakdown
+- Revenue CRUD + `GET /api/revenue/summary` endpoint
+- Header button: "Revenue" with dollar sign icon
+
+### 7. Event-Based Triggers
+- `EventTriggers.jsx` — Webhook trigger management UI
+- Create triggers that auto-create tasks or run pipelines on webhook
+- `POST /api/webhooks/:triggerId` — Public webhook receiver with secret validation
+- Webhook URL displayed with copy-friendly format
+- Enable/disable toggles, last-fired timestamps
+
+### 8. A/B Prompt Testing
+- `ABTestPanel.jsx` — Side-by-side prompt comparison
+- Run two prompt variants in parallel, compare outputs and token efficiency
+- `POST /api/tasks/:id/ab-test` endpoint
+- Accessible via "A/B Test" button in TaskDetail footer for runnable tasks
+
+### 9. Agent Skill Registry
+- `SkillRegistry.jsx` — Per-agent skill management with toggle switches
+- 6 skill types: web_search, code_exec, file_io, api_call, data_analysis, custom
+- Skills CRUD endpoints, skills injected into agent system prompt during task execution
+- Accessible via sidebar skill icon per agent
+
+### 10. Infrastructure
+- 5 new database tables: `task_traces`, `revenue_entries`, `pipelines`, `event_triggers`, `agent_skills`
+- 4 new columns on tasks: `token_budget`, `requires_approval`, `pipeline_id`, `pipeline_step`
+- ~20 new API methods in `api.js`
+- ~20 new server endpoints in `server/index.js`
+- Updated: App.jsx, TaskBoard.jsx, TaskDetail.jsx, CreateTaskModal.jsx, Sidebar.jsx, index.css
+
+---
+
+## 2026-03-11 — Prompt Optimizer (Session 3)
+
+### Prompt Optimizer Feature
+- **PromptReviewModal.jsx** — New modal intercepts "Run Agent" flow, shows original vs optimized prompt side-by-side
+  - Nexus (meta-agent) rewrites task descriptions for clarity, structure, and AI-readability before credits are spent
+  - Editable optimized prompt with Reset button
+  - Three options: "Run Optimized", "Run Edited Prompt", or "Skip — Run Original"
+  - Graceful error handling: if optimization fails (e.g. no API key), shows original prompt with "Skip — Run Original"
+- **`POST /api/tasks/:id/optimize`** — Server endpoint calls Claude (max_tokens: 1024, charged to Nexus) to restructure prompts
+  - Adds ## sections (Requirements, Deliverables, Constraints) where helpful
+  - Preserves user intent, improves expression
+- **App.jsx flow change** — `handleRunTask` now opens PromptReviewModal instead of running directly; `handleDirectRun` added for post-review execution
+- **All run paths covered** — TaskBoard card "Run" buttons, TaskDetail "Run Agent" button, all go through review modal
+- Added `optimizePrompt()` API method to `api.js`
+
 ## 2026-03-10 — Bot Generator (Session 2)
 
 ### Bot Generator Feature

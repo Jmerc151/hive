@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
 import { api } from '../lib/api'
+import TraceView from './TraceView'
 
-const STATUS_OPTIONS = ['backlog', 'todo', 'in_progress', 'in_review', 'done']
-const STATUS_LABELS = { backlog: 'Backlog', todo: 'To Do', in_progress: 'In Progress', in_review: 'Review', done: 'Done', failed: 'Failed' }
-const STATUS_COLORS = { backlog: 'text-hive-400', todo: 'text-blue-400', in_progress: 'text-honey', in_review: 'text-prism', done: 'text-honey', failed: 'text-red-400' }
+const STATUS_OPTIONS = ['backlog', 'todo', 'awaiting_approval', 'in_progress', 'in_review', 'done']
+const STATUS_LABELS = { backlog: 'Backlog', todo: 'To Do', awaiting_approval: 'Awaiting Approval', in_progress: 'In Progress', in_review: 'Review', done: 'Done', failed: 'Failed' }
+const STATUS_COLORS = { backlog: 'text-hive-400', todo: 'text-blue-400', awaiting_approval: 'text-amber-400', in_progress: 'text-honey', in_review: 'text-prism', done: 'text-honey', failed: 'text-red-400' }
 const LOG_COLORS = { info: 'text-blue-400', success: 'text-green-400', error: 'text-red-400', warning: 'text-yellow-400', output: 'text-hive-300' }
 
-export default function TaskDetail({ task, agent, onClose, onRun, onUpdate, onDelete }) {
+export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpdate, onDelete, onAbTest }) {
   const [logs, setLogs] = useState([])
   const [tab, setTab] = useState('details')
   const [downloading, setDownloading] = useState(false)
@@ -58,7 +59,7 @@ export default function TaskDetail({ task, agent, onClose, onRun, onUpdate, onDe
 
         {/* Tabs */}
         <div className="flex border-b border-hive-700">
-          {['details', 'logs', 'output'].map(t => (
+          {['details', 'logs', 'output', 'trace'].map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -120,6 +121,32 @@ export default function TaskDetail({ task, agent, onClose, onRun, onUpdate, onDe
                 </div>
               </div>
 
+              {/* Token Budget */}
+              {task.token_budget > 0 && (
+                <div>
+                  <h3 className="text-sm font-medium text-hive-300 mb-2">Token Budget</h3>
+                  <div className="p-3 bg-hive-700/30 rounded-lg border border-hive-700">
+                    <div className="flex justify-between text-xs mb-1.5">
+                      <span className="text-hive-400">Used: {(task.tokens_used || 0).toLocaleString()}</span>
+                      <span className="text-hive-400">Budget: {task.token_budget.toLocaleString()}</span>
+                    </div>
+                    <div className="w-full bg-hive-700 rounded-full h-2">
+                      <div
+                        className={`h-2 rounded-full transition-all ${(task.tokens_used || 0) / task.token_budget > 0.9 ? 'bg-red-500' : 'bg-honey'}`}
+                        style={{ width: `${Math.min(100, ((task.tokens_used || 0) / task.token_budget) * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Pipeline indicator */}
+              {task.pipeline_id && (
+                <div className="flex items-center gap-2 p-2 bg-hive-700/30 rounded-lg border border-hive-700 text-xs text-hive-400">
+                  🔗 Pipeline step {task.pipeline_step || '?'}
+                </div>
+              )}
+
               {/* Timestamps */}
               <div className="text-xs text-hive-500 space-y-1">
                 <div>Created: {new Date(task.created_at).toLocaleString()}</div>
@@ -154,6 +181,10 @@ export default function TaskDetail({ task, agent, onClose, onRun, onUpdate, onDe
               {task.output || 'No output yet.'}
             </div>
           )}
+
+          {tab === 'trace' && (
+            <TraceView taskId={task.id} agents={agents} />
+          )}
         </div>
 
         {/* Footer Actions */}
@@ -165,6 +196,22 @@ export default function TaskDetail({ task, agent, onClose, onRun, onUpdate, onDe
             Delete Task
           </button>
           <div className="flex gap-2">
+            {task.status === 'awaiting_approval' && (
+              <>
+                <button
+                  onClick={async () => { await api.rejectTask(task.id) }}
+                  className="px-4 py-2 text-sm text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 transition-colors"
+                >
+                  Reject
+                </button>
+                <button
+                  onClick={async () => { await api.approveTask(task.id) }}
+                  className="px-4 py-2 bg-green-600 text-white rounded-lg font-medium text-sm hover:bg-green-700 transition-colors"
+                >
+                  Approve & Run
+                </button>
+              </>
+            )}
             {task.status === 'done' && task.agent_id === 'forge' && task.output && (
               <button
                 onClick={handleDownload}
@@ -175,12 +222,20 @@ export default function TaskDetail({ task, agent, onClose, onRun, onUpdate, onDe
               </button>
             )}
             {(task.status === 'todo' || task.status === 'backlog' || task.status === 'failed') && task.agent_id && (
-              <button
-                onClick={() => onRun(task.id)}
-                className="px-4 py-2 bg-honey text-white rounded-lg font-medium text-sm hover:bg-honey-dim transition-colors"
-              >
-                Run Agent ▶
-              </button>
+              <>
+                <button
+                  onClick={() => onAbTest(task)}
+                  className="px-3 py-2 text-sm text-hive-400 border border-hive-600 rounded-lg hover:text-hive-200 hover:border-hive-500 transition-colors"
+                >
+                  🔬 A/B Test
+                </button>
+                <button
+                  onClick={() => onRun(task.id)}
+                  className="px-4 py-2 bg-honey text-white rounded-lg font-medium text-sm hover:bg-honey-dim transition-colors"
+                >
+                  Run Agent ▶
+                </button>
+              </>
             )}
           </div>
         </div>

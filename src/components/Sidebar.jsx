@@ -5,7 +5,7 @@ const STATUS_COLORS = {
   idle: 'bg-hive-500'
 }
 
-export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgent, onNewTask, taskCount }) {
+export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgent, onNewTask, taskCount, onScorecard, onSkills }) {
   const [collapsed, setCollapsed] = useState(false)
 
   if (collapsed) {
@@ -83,8 +83,17 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
                   </div>
                   <div className="text-xs text-hive-400 truncate">{agent.role}</div>
                 </div>
-                <div className="text-xs text-hive-500 font-mono">
-                  {agent.taskCounts?.completed || 0}
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onScorecard?.(agent) }}
+                    className="text-xs text-hive-500 hover:text-honey transition-colors"
+                    title="Scorecard"
+                  >📊</button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onSkills?.(agent) }}
+                    className="text-xs text-hive-500 hover:text-honey transition-colors"
+                    title="Skills"
+                  >⚙️</button>
                 </div>
               </div>
               {agent.isRunning && (
