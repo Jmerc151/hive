@@ -12,6 +12,7 @@ import * as marketData from './services/marketData.js'
 import * as broker from './services/broker.js'
 import * as backtest from './services/backtest.js'
 import * as analysis from './services/analysis.js'
+import * as email from './services/email.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -829,6 +830,7 @@ app.post('/api/tasks/:id/run', async (req, res) => {
     db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
       .run(task.id, agent.id, 'Requires approval before running', 'warning')
     sendPushToAll({ title: '⏸️ Approval Required', body: task.title, tag: `approval-${task.id}`, taskId: task.id })
+    email.sendApprovalEmail(task, agent).catch(() => {})
     return res.json({ ok: true, message: 'Task requires approval', awaiting_approval: true })
   }
 
@@ -948,6 +950,22 @@ Start by analyzing the task and providing your approach.`
       tag: `task-done-${task.id}`,
       taskId: task.id
     })
+    email.sendTaskCompletedEmail(task, agent).catch(() => {})
+
+    // Self-improvement proposal hook: parse proposals from agent output
+    if (task.title.startsWith('[Self-Improvement]')) {
+      try {
+        const jsonMatch = fullOutput.match(/\[[\s\S]*?\{[\s\S]*?"title"[\s\S]*?"type"[\s\S]*?\}[\s\S]*?\]/)
+        if (jsonMatch) {
+          const proposals = JSON.parse(jsonMatch[0])
+          for (const p of proposals) {
+            if (!p.title || !p.type) continue
+            createProposal({ ...p, proposed_by: agent.id, source_task_id: task.id })
+          }
+          console.log(`💡 Created ${proposals.length} proposals from ${agent.name}`)
+        }
+      } catch (e) { console.error('Proposal parse error:', e.message) }
+    }
 
     // Bot suggestion hook: parse Scout's output into bot_suggestions table
     if (agent.id === 'scout' && task.title.toLowerCase().includes('bot opportunity')) {
@@ -1600,6 +1618,70 @@ app.get('/api/analysis/personas', async (req, res) => {
 })
 
 // ══════════════════════════════════════════════════════
+// ██ PROPOSALS                                         ██
+// ══════════════════════════════════════════════════════
+
+function createProposal(data) {
+  const id = uuid()
+  db.prepare(`INSERT INTO proposals (id, type, title, description, code_diff, proposed_by, priority, effort, source_task_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    id, data.type || 'feature', data.title, data.description || '', data.code_diff || '',
+    data.proposed_by || 'system', data.priority || 'medium', data.effort || 'medium', data.source_task_id || null
+  )
+  const proposal = db.prepare('SELECT * FROM proposals WHERE id = ?').get(id)
+  email.sendProposalEmail(proposal).catch(() => {})
+  return proposal
+}
+
+app.get('/api/proposals', (req, res) => {
+  const status = req.query.status
+  const rows = status
+    ? db.prepare('SELECT * FROM proposals WHERE status = ? ORDER BY created_at DESC').all(status)
+    : db.prepare('SELECT * FROM proposals ORDER BY created_at DESC').all()
+  res.json(rows)
+})
+
+app.patch('/api/proposals/:id', (req, res) => {
+  const { status, user_notes } = req.body
+  const sets = []
+  const vals = []
+  if (status) { sets.push('status = ?'); vals.push(status) }
+  if (user_notes !== undefined) { sets.push('user_notes = ?'); vals.push(user_notes) }
+  sets.push("updated_at = datetime('now')")
+  vals.push(req.params.id)
+  db.prepare(`UPDATE proposals SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
+  const proposal = db.prepare('SELECT * FROM proposals WHERE id = ?').get(req.params.id)
+
+  // When a feature/design proposal is approved → auto-create a Forge task
+  if (status === 'approved' && proposal && ['feature', 'design', 'code'].includes(proposal.type)) {
+    const taskId = uuid()
+    const taskTitle = `[Proposal] ${proposal.title}`
+    const taskDesc = `Implement approved proposal:\n\n${proposal.description}\n\n${proposal.code_diff ? 'Code diff:\n' + proposal.code_diff : ''}`
+    db.prepare(`INSERT INTO tasks (id, title, description, status, priority, agent_id) VALUES (?, ?, ?, 'todo', ?, 'forge')`).run(
+      taskId, taskTitle, taskDesc, proposal.priority || 'medium'
+    )
+    db.prepare("UPDATE proposals SET status = 'implemented' WHERE id = ?").run(proposal.id)
+    console.log(`🔨 Created Forge task for approved proposal: ${proposal.title}`)
+  }
+
+  res.json(proposal)
+})
+
+app.delete('/api/proposals/:id', (req, res) => {
+  db.prepare('DELETE FROM proposals WHERE id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+app.post('/api/proposals', (req, res) => {
+  try {
+    const proposal = createProposal(req.body)
+    res.json(proposal)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ══════════════════════════════════════════════════════
 // ██ TRADING — Broker (Alpaca)                         ██
 // ══════════════════════════════════════════════════════
 
@@ -1994,6 +2076,112 @@ registerHeartbeat('auto-backtest', 6 * 60 * 60 * 1000, async () => {
   } catch (e) {
     console.error('Auto-backtest heartbeat failed:', e.message)
   }
+})
+
+// ══════════════════════════════════════════════════════
+// ██ SELF-IMPROVEMENT HEARTBEATS                       ██
+// ══════════════════════════════════════════════════════
+
+function canAffordSelfImprovement() {
+  if (getSetting('self_improvement_enabled') !== 'true') return false
+  const dailyLimit = parseFloat(getSetting('daily_limit_usd') || '5')
+  const budgetPercent = parseFloat(getSetting('self_improvement_budget_percent') || '20') / 100
+  const todaySpend = getTodaySpend()
+  return todaySpend < dailyLimit * (1 - budgetPercent) // only if under 80% of daily limit
+}
+
+// UX Design Review — Nexus evaluates Hive UI weekly
+registerHeartbeat('ux-design-review', 7 * 24 * 60 * 60 * 1000, async () => {
+  if (!canAffordSelfImprovement()) return console.log('💡 Skipping UX review — budget guard')
+  try {
+    const taskId = uuid()
+    db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, 'low', 'nexus', 'todo')`)
+      .run(taskId, '[Self-Improvement] UX Design Review',
+        `Review the Hive dashboard UI/UX. Consider:
+- Layout, visual hierarchy, information density
+- Color usage, spacing, typography
+- Mobile responsiveness
+- User workflow efficiency
+- Missing UI elements or confusing interactions
+
+Output your findings as a JSON array of proposals:
+[{"type":"design","title":"...","description":"...","priority":"medium","effort":"medium"}]
+
+Be specific and actionable. Focus on the highest-impact improvements.`)
+    console.log('🎨 Created UX design review task')
+    setTimeout(() => processAgentQueue('nexus'), 5000)
+  } catch (e) { console.error('UX review heartbeat failed:', e.message) }
+})
+
+// Feature Discovery — Scout researches competing dashboards weekly
+registerHeartbeat('feature-discovery', 7 * 24 * 60 * 60 * 1000, async () => {
+  if (!canAffordSelfImprovement()) return console.log('💡 Skipping feature discovery — budget guard')
+  try {
+    const existingProposals = db.prepare("SELECT title FROM proposals WHERE status IN ('pending','approved','implemented') ORDER BY created_at DESC LIMIT 20").all()
+    const existingList = existingProposals.map(p => p.title).join(', ') || 'none yet'
+
+    const taskId = uuid()
+    db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, 'low', 'scout', 'todo')`)
+      .run(taskId, '[Self-Improvement] Feature Discovery',
+        `Research what features top AI agent dashboards and autonomous systems have. Think about:
+- Agent monitoring and observability tools
+- Task orchestration patterns
+- Cost optimization features
+- Collaboration and communication tools
+- Analytics and reporting dashboards
+- Security and access control
+
+Existing proposals (avoid duplicates): ${existingList}
+
+Output your findings as a JSON array of proposals:
+[{"type":"feature","title":"...","description":"...","priority":"medium","effort":"medium"}]
+
+Focus on features that would make Hive more powerful and useful. Be creative but practical.`)
+    console.log('🔍 Created feature discovery task')
+    setTimeout(() => processAgentQueue('scout'), 5000)
+  } catch (e) { console.error('Feature discovery heartbeat failed:', e.message) }
+})
+
+// Self-Assessment — Nexus reviews performance weekly + sends weekly summary email
+registerHeartbeat('self-assessment', 7 * 24 * 60 * 60 * 1000, async () => {
+  try {
+    // Always send weekly summary regardless of budget
+    const completedTasks = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'done' AND completed_at >= datetime('now', '-7 days')").get().c
+    const failedTasks = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'failed' AND completed_at >= datetime('now', '-7 days')").get().c
+    const totalSpend = db.prepare("SELECT COALESCE(SUM(cost), 0) as total FROM spend_log WHERE date >= date('now', '-7 days')").get().total
+    const pendingProposals = db.prepare("SELECT COUNT(*) as c FROM proposals WHERE status = 'pending'").get().c
+
+    let nexusAnalysis = null
+    if (canAffordSelfImprovement()) {
+      // Have Nexus analyze the week and propose workflow improvements
+      const taskId = uuid()
+      db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, 'low', 'nexus', 'todo')`)
+        .run(taskId, '[Self-Improvement] Weekly Self-Assessment',
+          `Review Hive's performance this week:
+- Tasks completed: ${completedTasks}, Failed: ${failedTasks}
+- Total spend: $${totalSpend.toFixed(2)}
+- Pending proposals: ${pendingProposals}
+
+Analyze what went well, what failed, and why. Propose improvements to:
+- Agent prompts and system messages
+- Task routing and priority logic
+- Error handling and retry strategies
+- Cost efficiency
+
+Output your findings as a JSON array of proposals:
+[{"type":"workflow","title":"...","description":"...","priority":"medium","effort":"medium"}]
+
+Also include a brief summary paragraph at the top (before the JSON) for the weekly email.`)
+      console.log('📊 Created self-assessment task')
+      setTimeout(() => processAgentQueue('nexus'), 5000)
+    }
+
+    // Send weekly summary email
+    email.sendWeeklySummaryEmail({
+      completedTasks, failedTasks, totalSpend, pendingProposals, nexusAnalysis
+    }).catch(() => {})
+    console.log('📧 Sent weekly summary email')
+  } catch (e) { console.error('Self-assessment heartbeat failed:', e.message) }
 })
 
 // ── Stats ──────────────────────────────────────────

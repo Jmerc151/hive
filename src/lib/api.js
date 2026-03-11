@@ -167,4 +167,10 @@ export const api = {
   getTradeDecision: (symbol) => request(`/analysis/${symbol}/decide`, { method: 'POST' }),
   getEnsemble: (symbol) => request(`/analysis/${symbol}/ensemble`),
   getPersonas: () => request('/analysis/personas'),
+
+  // Proposals
+  getProposals: (status) => request(`/proposals${status ? `?status=${status}` : ''}`),
+  createProposal: (data) => request('/proposals', { method: 'POST', body: data }),
+  updateProposal: (id, data) => request(`/proposals/${id}`, { method: 'PATCH', body: data }),
+  deleteProposal: (id) => request(`/proposals/${id}`, { method: 'DELETE' }),
 }

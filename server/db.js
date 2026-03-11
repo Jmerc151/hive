@@ -237,6 +237,22 @@ db.exec(`
     win_count INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS proposals (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL CHECK(type IN ('feature','design','code','prompt','workflow')),
+    title TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    code_diff TEXT DEFAULT '',
+    proposed_by TEXT NOT NULL,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','implemented')),
+    priority TEXT DEFAULT 'medium' CHECK(priority IN ('low','medium','high')),
+    effort TEXT DEFAULT 'medium' CHECK(effort IN ('low','medium','high')),
+    user_notes TEXT DEFAULT '',
+    source_task_id TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
 `)
 
 // Migration-safe column additions
@@ -264,7 +280,15 @@ const defaults = {
   default_stop_loss_percent: '5',
   strategy_auto_deploy: 'false',
   min_backtest_sharpe: '1.0',
-  min_backtest_win_rate: '55'
+  min_backtest_win_rate: '55',
+  notification_email: 'Johnmercurio151@gmail.com',
+  email_enabled: 'true',
+  email_on_completion: 'false',
+  email_on_approval: 'true',
+  email_on_proposal: 'true',
+  email_weekly_summary: 'true',
+  self_improvement_enabled: 'true',
+  self_improvement_budget_percent: '20'
 }
 
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')

@@ -18,6 +18,7 @@ import SkillRegistry from './components/SkillRegistry'
 import ABTestPanel from './components/ABTestPanel'
 import TraceView from './components/TraceView'
 import TradingDashboard from './components/TradingDashboard'
+import ProposalsPanel from './components/ProposalsPanel'
 
 export default function App() {
   const [agents, setAgents] = useState([])
@@ -37,6 +38,7 @@ export default function App() {
   const [showSkills, setShowSkills] = useState(null) // agent object
   const [abTestTask, setAbTestTask] = useState(null) // task object
   const [showTrading, setShowTrading] = useState(false)
+  const [showProposals, setShowProposals] = useState(false)
 
   const refresh = useCallback(async () => {
     const [a, t] = await Promise.all([api.getAgents(), api.getTasks()])
@@ -170,6 +172,12 @@ export default function App() {
               className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
             >
               📈 <span className="hidden lg:inline">Trading</span>
+            </button>
+            <button
+              onClick={() => setShowProposals(true)}
+              className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-yellow-500/10 text-yellow-400 rounded-xl text-sm hover:bg-yellow-500/20 transition-colors border border-yellow-500/20"
+            >
+              💡 <span className="hidden lg:inline">Proposals</span>
             </button>
             <button
               onClick={() => setShowBotGen(true)}
@@ -325,6 +333,13 @@ export default function App() {
         <TradingDashboard
           agents={agents}
           onClose={() => setShowTrading(false)}
+        />
+      )}
+
+      {showProposals && (
+        <ProposalsPanel
+          agents={agents}
+          onClose={() => setShowProposals(false)}
         />
       )}
 
