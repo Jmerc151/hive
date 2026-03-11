@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+@theme {
+  --color-hive-900: #1A1A2E;
+  --color-hive-800: #16213E;
+  --color-hive-700: #1F2B47;
+  --color-hive-600: #2A3A5C;
+  --color-hive-500: #4A5568;
+  --color-hive-400: #8896AB;
+  --color-hive-300: #B8C4D6;
+  --color-hive-200: #D6DEE8;
+  --color-hive-100: #EDF0F5;
+  --color-hive-50: #F7F8FA;
+  --color-honey: #E8C547;
+  --color-honey-dim: #C9A830;
+  --color-scout: #06b6d4;
+  --color-forge: #3b82f6;
+  --color-quill: #8b5cf6;
+  --color-dealer: #3BB273;
+  --color-oracle: #E8C547;
+  --color-nexus: #ec4899;
+  --color-success: #3BB273;
+  --color-danger: #E84855;
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+body {
+  margin: 0;
+  background: var(--color-hive-900);
+  color: var(--color-hive-100);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior: none;
+}
+
+/* Safe areas for notched phones */
+.safe-top { padding-top: env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+
+/* Prevent pull-to-refresh in PWA */
+html { overscroll-behavior: none; }
+
+/* Touch feedback */
+button { -webkit-tap-highlight-color: transparent; }
+
+/* Smooth scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-hive-700); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-hive-600); }
+
+/* Hide scrollbar on mobile for cleaner look */
+@media (max-width: 768px) {
+  ::-webkit-scrollbar { display: none; }
+  * { scrollbar-width: none; }
+}
+
+/* Standalone PWA status bar */
+@media all and (display-mode: standalone) {
+  body { padding-top: env(safe-area-inset-top); }
+}
