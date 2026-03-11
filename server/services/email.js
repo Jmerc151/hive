@@ -171,5 +171,5 @@ function statCard(label, value, color) {
 }
 
 function getDashboardUrl() {
-  return process.env.HIVE_URL || 'http://34.219.198.167:3002'
+  return process.env.HIVE_URL || ''
 }

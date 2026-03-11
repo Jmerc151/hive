@@ -1,10 +1,12 @@
 import express from 'express'
 import cors from 'cors'
+import helmet from 'helmet'
+import rateLimit from 'express-rate-limit'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import db from './db.js'
 import { v4 as uuid } from 'uuid'
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } from 'fs'
 import Anthropic from '@anthropic-ai/sdk'
 import webpush from 'web-push'
 import archiver from 'archiver'
@@ -17,25 +19,43 @@ import * as email from './services/email.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
 
+// ── Security headers ─────────────────────────────
+app.use(helmet({ contentSecurityPolicy: false })) // CSP off — SPA serves its own scripts
+
+// ── Rate limiting ────────────────────────────────
+app.use(rateLimit({ windowMs: 60 * 1000, max: 100, standardHeaders: true, legacyHeaders: false }))
+
 // CORS — allow frontend
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3333,http://localhost:5173').split(',')
 app.use(cors({ origin: ALLOWED_ORIGINS }))
 app.use(express.json())
 
-// ── Auth middleware ────────────────────────────────
-const API_KEY = process.env.HIVE_API_KEY
-if (API_KEY) {
-  app.use('/api', (req, res, next) => {
-    const token = req.headers.authorization?.replace('Bearer ', '')
-    if (token !== API_KEY) {
-      return res.status(401).json({ error: 'Unauthorized' })
-    }
-    next()
-  })
-  console.log('🔒 Auth enabled — requests require Bearer token')
-} else {
-  console.log('⚠️  No HIVE_API_KEY set — API is open (set it in production!)')
+// ── Auth middleware (MANDATORY) ──────────────────
+let API_KEY = process.env.HIVE_API_KEY
+if (!API_KEY) {
+  // Auto-generate a key on first boot
+  API_KEY = uuid() + '-' + uuid()
+  const envPath = join(__dirname, '..', '.env')
+  try {
+    appendFileSync(envPath, `\nHIVE_API_KEY=${API_KEY}\n`)
+    console.log('🔑 Generated new API key and saved to .env')
+  } catch (e) {
+    console.log('🔑 Generated API key (could not save to .env — set it manually)')
+  }
+  console.log(`🔑 Your API key: ${API_KEY}`)
+  console.log('   Save this key — you will need it to access the dashboard.')
 }
+// Always enforce auth on /api routes (except webhooks which have their own secret)
+app.use('/api', (req, res, next) => {
+  // Allow webhook endpoints (they validate their own secrets)
+  if (req.path.startsWith('/webhooks/') && req.method === 'POST') return next()
+  const token = req.headers.authorization?.replace('Bearer ', '')
+  if (token !== API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  next()
+})
+console.log('🔒 Auth enforced — all API requests require Bearer token')
 
 // Anthropic client
 const anthropic = new Anthropic() // uses ANTHROPIC_API_KEY env var
@@ -117,9 +137,19 @@ async function callClaude(opts, agentId, taskId, signal) {
   return response
 }
 
-// Web Push setup
-const VAPID_PUBLIC = process.env.VAPID_PUBLIC_KEY || 'BJzTO_33QaJQKmSo6s639IQ8O3VdYIYB2AgcMmGA_6zroPrWL8UHho56bOqSp6pav6YGVFkdwe15ZnmVW6Z8W3M'
-const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || 'vkrHsFUbb4ZnhroYqUA5MzZzu8cbK1ZnTlltkf6_ixg'
+// Web Push setup — generate VAPID keys if not set
+let VAPID_PUBLIC = process.env.VAPID_PUBLIC_KEY
+let VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY
+if (!VAPID_PUBLIC || !VAPID_PRIVATE) {
+  const vapidKeys = webpush.generateVAPIDKeys()
+  VAPID_PUBLIC = vapidKeys.publicKey
+  VAPID_PRIVATE = vapidKeys.privateKey
+  const envPath = join(__dirname, '..', '.env')
+  try {
+    appendFileSync(envPath, `\nVAPID_PUBLIC_KEY=${VAPID_PUBLIC}\nVAPID_PRIVATE_KEY=${VAPID_PRIVATE}\n`)
+    console.log('🔔 Generated VAPID keys and saved to .env')
+  } catch (e) { /* ignore */ }
+}
 webpush.setVapidDetails('mailto:hive@agents.app', VAPID_PUBLIC, VAPID_PRIVATE)
 
 // In-memory push subscriptions
@@ -1377,7 +1407,7 @@ app.post('/api/triggers', (req, res) => {
   const { name, type, config, action } = req.body
   if (!name || !type || !action) return res.status(400).json({ error: 'Name, type, and action required' })
   const id = uuid()
-  const triggerConfig = { ...config, secret: config?.secret || uuid().slice(0, 8) }
+  const triggerConfig = { ...config, secret: config?.secret || uuid() }
   db.prepare('INSERT INTO event_triggers (id, name, type, config, action) VALUES (?, ?, ?, ?, ?)')
     .run(id, name, type, JSON.stringify(triggerConfig), JSON.stringify(action))
   const trigger = db.prepare('SELECT * FROM event_triggers WHERE id = ?').get(id)
@@ -1410,7 +1440,7 @@ app.post('/api/webhooks/:triggerId', (req, res) => {
   if (!trigger) return res.status(404).json({ error: 'Trigger not found or disabled' })
 
   const config = JSON.parse(trigger.config)
-  const secret = req.headers['x-webhook-secret'] || req.query.secret
+  const secret = req.headers['x-webhook-secret']
   if (config.secret && secret !== config.secret) return res.status(403).json({ error: 'Invalid secret' })
 
   const action = JSON.parse(trigger.action)
