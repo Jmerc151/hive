@@ -50,9 +50,11 @@ if (API_KEY) {
 const anthropic = new Anthropic() // uses ANTHROPIC_API_KEY env var
 
 // ── Spend Controls ────────────────────────────────
-// Cost per token (Sonnet 4 pricing: $3/MTok input, $15/MTok output)
-const COST_PER_INPUT_TOKEN = 3 / 1_000_000
-const COST_PER_OUTPUT_TOKEN = 15 / 1_000_000
+const MODEL_COSTS = {
+  'claude-sonnet-4-20250514': { input: 3 / 1_000_000, output: 15 / 1_000_000 },
+  'claude-haiku-4-5-20251001': { input: 0.80 / 1_000_000, output: 4 / 1_000_000 },
+}
+const DEFAULT_COST = MODEL_COSTS['claude-sonnet-4-20250514']
 
 function getSetting(key) {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key)
@@ -114,7 +116,8 @@ async function callClaude(opts, agentId, taskId, signal) {
 
   const tokensIn = response.usage?.input_tokens || 0
   const tokensOut = response.usage?.output_tokens || 0
-  const cost = (tokensIn * COST_PER_INPUT_TOKEN) + (tokensOut * COST_PER_OUTPUT_TOKEN)
+  const pricing = MODEL_COSTS[opts.model] || DEFAULT_COST
+  const cost = (tokensIn * pricing.input) + (tokensOut * pricing.output)
 
   logSpend(agentId, tokensIn, tokensOut, cost, taskId)
 
@@ -192,7 +195,7 @@ async function updateAgentMemory(agent, task, output) {
     const currentMemory = readAgentMemory(agent.id)
 
     const response = await callClaude({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       system: `You are a memory curator for ${agent.name} (${agent.role}). Extract the most important learnings, decisions, and context from completed work that would help this agent perform better on future tasks.
 
@@ -284,7 +287,7 @@ async function agentConsult(fromAgent, toAgentId, question, taskContext) {
     const toMemory = readAgentMemory(toAgentId)
 
     const response = await callClaude({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 2048,
       system: `${toAgent.systemPrompt}
 
@@ -595,7 +598,7 @@ registerHeartbeat('memory-compaction', 7 * 24 * 60 * 60 * 1000, async () => {
     if (memory.length > 10000) {
       try {
         const response = await callClaude({
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-haiku-4-5-20251001',
           max_tokens: 2048,
           system: `Compact this agent memory to the most important 50% of content. Keep the most valuable learnings — especially income-generating insights, successful strategies, and key patterns. Remove redundant or outdated entries. Preserve markdown formatting.`,
           messages: [{ role: 'user', content: memory }]
@@ -781,7 +784,7 @@ app.post('/api/tasks/:id/optimize', async (req, res) => {
 
   try {
     const response = await callClaude({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       system: `You are Nexus, prompt optimizer for Hive's AI agent team. Your job is to rewrite task prompts so they are clearer, more structured, and easier for an AI agent to execute — saving tokens and improving output quality.
 
@@ -917,7 +920,7 @@ Start by analyzing the task and providing your approach.`
       const traceDuration = Date.now() - traceStart
       const traceTokensIn = response.usage?.input_tokens || 0
       const traceTokensOut = response.usage?.output_tokens || 0
-      const traceCost = (traceTokensIn * COST_PER_INPUT_TOKEN) + (traceTokensOut * COST_PER_OUTPUT_TOKEN)
+      const traceCost = (traceTokensIn * DEFAULT_COST.input) + (traceTokensOut * DEFAULT_COST.output)
 
       const stepOutput = response.content.map(b => b.type === 'text' ? b.text : '').join('\n')
       fullOutput += `\n--- Step ${step + 1} ---\n${stepOutput}`
@@ -2274,7 +2277,7 @@ app.post('/api/chat/standup', async (req, res) => {
 
   try {
     const response = await callClaude({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 2048,
       messages: [{
         role: 'user',
