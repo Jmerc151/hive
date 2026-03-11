@@ -30,32 +30,21 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3333,h
 app.use(cors({ origin: ALLOWED_ORIGINS }))
 app.use(express.json())
 
-// ── Auth middleware (MANDATORY) ──────────────────
-let API_KEY = process.env.HIVE_API_KEY
-if (!API_KEY) {
-  // Auto-generate a key on first boot
-  API_KEY = uuid() + '-' + uuid()
-  const envPath = join(__dirname, '..', '.env')
-  try {
-    appendFileSync(envPath, `\nHIVE_API_KEY=${API_KEY}\n`)
-    console.log('🔑 Generated new API key and saved to .env')
-  } catch (e) {
-    console.log('🔑 Generated API key (could not save to .env — set it manually)')
-  }
-  console.log(`🔑 Your API key: ${API_KEY}`)
-  console.log('   Save this key — you will need it to access the dashboard.')
+// ── Auth middleware ───────────────────────────────
+const API_KEY = process.env.HIVE_API_KEY
+if (API_KEY) {
+  app.use('/api', (req, res, next) => {
+    if (req.path.startsWith('/webhooks/') && req.method === 'POST') return next()
+    const token = req.headers.authorization?.replace('Bearer ', '')
+    if (token !== API_KEY) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+    next()
+  })
+  console.log('🔒 Auth enabled — requests require Bearer token')
+} else {
+  console.log('🔓 No HIVE_API_KEY set — API is open (protected by helmet + rate limiting)')
 }
-// Always enforce auth on /api routes (except webhooks which have their own secret)
-app.use('/api', (req, res, next) => {
-  // Allow webhook endpoints (they validate their own secrets)
-  if (req.path.startsWith('/webhooks/') && req.method === 'POST') return next()
-  const token = req.headers.authorization?.replace('Bearer ', '')
-  if (token !== API_KEY) {
-    return res.status(401).json({ error: 'Unauthorized' })
-  }
-  next()
-})
-console.log('🔒 Auth enforced — all API requests require Bearer token')
 
 // Anthropic client
 const anthropic = new Anthropic() // uses ANTHROPIC_API_KEY env var
