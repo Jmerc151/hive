@@ -674,37 +674,43 @@ ${toMemory.slice(-1500) || '(no prior knowledge)'}`,
 // ── Auto Task Generation ────────────────────────────
 async function generateFollowUpTasks(completedTask, agent, output) {
   try {
-    const allTasks = db.prepare('SELECT title, status, agent_id FROM tasks ORDER BY created_at DESC LIMIT 20').all()
+    // Cap: don't generate more if queue is already full
+    const pendingCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo', 'in_progress')").get().c
+    if (pendingCount >= 15) {
+      console.log(`⏸️ Skipping follow-up generation — ${pendingCount} tasks already pending (max 15)`)
+      return
+    }
+
+    const allTasks = db.prepare('SELECT title, status, agent_id FROM tasks ORDER BY created_at DESC LIMIT 30').all()
     const taskContext = allTasks.map(t => `- [${t.status}] ${t.title}`).join('\n')
 
     const response = await callClaude({
       model: getAgentModel('nexus'),
-      max_tokens: 512,
-      system: `You are a strategic task planner for Hive, a personal AI agent team focused on generating income across multiple channels: digital products, content/affiliate, freelance services, and stock/crypto trading.
+      max_tokens: 300,
+      system: `You are a task planner for Hive, an AI agent team. Generate exactly 1 follow-up task.
 
-Available agents and their specialties:
-${agents.map(a => `- ${a.id}: ${a.name} (${a.role}) — ${a.description}`).join('\n')}
+Available agents:
+${agents.map(a => `- ${a.id}: ${a.name} — ${a.role}`).join('\n')}
 
-Generate 1-3 follow-up tasks based on completed work. Each task should:
-- Be actionable, specific, and assigned to the most appropriate agent
-- Connect back to income generation — either directly (build product, find gig, write content) or indirectly (improve process, learn skill, analyze results)
-- Build on momentum — if something is working, create tasks to double down on it
+Rules:
+- Generate EXACTLY 1 task, not 2 or 3
+- The task must be DIRECTLY actionable — not "research" or "analyze" unless that research produces a specific deliverable
+- Do NOT create tasks similar to any existing task in the list below
+- Do NOT create meta-tasks (tracking systems, dashboards, frameworks, playbooks)
+- Focus on tasks that DIRECTLY generate income: place a trade, submit a proposal, publish content, build a product
 
-IMPORTANT: Do NOT duplicate existing tasks. Do NOT create vague tasks. Each must be concrete enough for an agent to execute.
-
-Respond with ONLY valid JSON — an array of objects with: title, description, agent_id, priority (low/medium/high)`,
+Respond with ONLY valid JSON array with 1 object: [{title, description, agent_id, priority}]`,
       messages: [{
         role: 'user',
-        content: `Completed task: "${completedTask.title}"
-Agent: ${agent.name} (${agent.role})
+        content: `Completed: "${completedTask.title}" by ${agent.name}
 
-Output summary (first 2000 chars):
-${output.slice(0, 2000)}
+Output (first 1000 chars):
+${output.slice(0, 1000)}
 
-Existing tasks (avoid duplicates):
+Existing tasks (DO NOT duplicate):
 ${taskContext}
 
-Generate follow-up tasks as JSON array:`
+Generate 1 follow-up task:`
       }]
     }, agent.id, completedTask.id)
 
@@ -713,32 +719,34 @@ Generate follow-up tasks as JSON array:`
     if (!jsonMatch) return
 
     const newTasks = JSON.parse(jsonMatch[0])
-    const created = []
+    const t = newTasks[0]
+    if (!t?.title) return
 
-    for (const t of newTasks.slice(0, 3)) {
-      const validAgent = agents.find(a => a.id === t.agent_id)
-      if (!validAgent || !t.title) continue
+    const validAgent = agents.find(a => a.id === t.agent_id)
+    if (!validAgent) return
 
-      const id = uuid()
-      db.prepare(`
-        INSERT INTO tasks (id, title, description, priority, agent_id, status)
-        VALUES (?, ?, ?, ?, ?, 'todo')
-      `).run(id, t.title, t.description || '', t.priority || 'medium', t.agent_id)
-      created.push({ title: t.title, agent: validAgent.name, agentId: t.agent_id })
+    // Dedup: check for similar titles
+    const existingTitles = allTasks.map(t => t.title.toLowerCase())
+    const newTitleLower = t.title.toLowerCase()
+    const isDuplicate = existingTitles.some(existing => {
+      const words = newTitleLower.split(/\s+/)
+      const matchCount = words.filter(w => w.length > 3 && existing.includes(w)).length
+      return matchCount >= Math.floor(words.length * 0.6)
+    })
+    if (isDuplicate) {
+      console.log(`⏸️ Skipping duplicate follow-up: "${t.title}"`)
+      return
     }
 
-    if (created.length > 0) {
-      const taskList = created.map(t => `• ${t.title} → ${t.agent}`).join('\n')
-      db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
-        .run('system', '🧠 Task Planner', '🧠', '#a855f7', `Generated ${created.length} follow-up task${created.length > 1 ? 's' : ''}:\n${taskList}`)
+    const id = uuid()
+    db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, ?, ?, 'todo')`)
+      .run(id, t.title, t.description || '', t.priority || 'medium', t.agent_id)
 
-      console.log(`🧠 Auto-generated ${created.length} follow-up tasks from "${completedTask.title}"`)
+    db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+      .run('system', '🧠 Task Planner', '🧠', '#a855f7', `Generated follow-up: ${t.title} → ${validAgent.name}`)
 
-      const affectedAgents = [...new Set(created.map(t => t.agentId))]
-      for (const agentId of affectedAgents) {
-        setTimeout(() => processAgentQueue(agentId), 5000)
-      }
-    }
+    console.log(`🧠 Follow-up: "${t.title}" → ${validAgent.name}`)
+    setTimeout(() => processAgentQueue(t.agent_id), 5000)
   } catch (err) {
     console.error('Auto-task generation failed:', err.message)
   }
@@ -3140,10 +3148,18 @@ function buildChatSnapshot() {
   const monthlyLimit = getSetting('monthly_limit_usd') || '100'
   sections.push(`## Spend\nToday: $${todayTotal.toFixed(4)} / $${dailyLimit} | Month: $${monthTotal.toFixed(4)} / $${monthlyLimit}`)
 
-  const recent = db.prepare("SELECT title, status, agent_id, priority FROM tasks ORDER BY updated_at DESC LIMIT 10").all()
-  if (recent.length) {
-    sections.push('## Recent Tasks\n' + recent.map(t => `- [${t.status}] "${t.title}" (${t.agent_id})`).join('\n'))
+  const inProgress = db.prepare("SELECT title, agent_id FROM tasks WHERE status = 'in_progress' ORDER BY updated_at DESC LIMIT 5").all()
+  if (inProgress.length) {
+    sections.push('## Currently Working On\n' + inProgress.map(t => `- ${t.agent_id}: "${t.title}"`).join('\n'))
   }
+
+  const recentDone = db.prepare("SELECT title, agent_id, completed_at FROM tasks WHERE status = 'done' ORDER BY completed_at DESC LIMIT 5").all()
+  if (recentDone.length) {
+    sections.push('## Recently Completed\n' + recentDone.map(t => `- ${t.agent_id}: "${t.title}"`).join('\n'))
+  }
+
+  const todoCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'todo'").get().c
+  sections.push(`## Queue: ${todoCount} tasks waiting`)
 
   const paused = getSetting('pause_all_agents') || 'false'
   const qa = getSetting('qa_reviews_enabled') || 'true'
@@ -3358,9 +3374,17 @@ Find 3-5 strategies with specific, testable rules.`, 'high', 'scout', 'todo')
   }
 }
 
-const CHAT_SYSTEM_PROMPT = `You are Hive Assistant — the command center for an autonomous AI income agent team.
-You help the user monitor, control, and direct their 6 agents: Scout (research), Forge (building), Quill (writing), Dealer (sales), Oracle (trading), Nexus (optimization).
-Be concise and direct. Use markdown: **bold**, bullet lists. No fluff.
+const CHAT_SYSTEM_PROMPT = `You are Hive — the user's AI operations manager. Talk like a real person, not a dashboard. You oversee 6 AI agents: Scout (research), Forge (building), Quill (writing), Dealer (sales), Oracle (trading), Nexus (optimization).
+
+Your personality:
+- Talk naturally like a sharp, friendly manager giving status updates over coffee
+- Say "we" not "the agents" — you're part of the team
+- Be honest about what's working and what's not
+- Give opinions and recommendations, don't just report facts
+- Keep it brief — 2-4 sentences for simple questions, short bullet lists for complex ones
+- Use casual language: "Scout's been grinding on..." not "Scout has been executing..."
+- If something isn't going well, say so directly: "Oracle's been spinning its wheels" not "Oracle has encountered challenges"
+- When the user says hi or asks what's up, give a quick natural summary of what's happening right now
 
 ## Actions
 When the user asks you to DO something, output an action block:
@@ -4239,6 +4263,17 @@ Every strategy MUST have:
 }
 
 seedTradingSkills()
+
+// One-time cleanup: purge excessive todo tasks (keep newest 15)
+const todoCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'todo'").get().c
+if (todoCount > 15) {
+  const keep = db.prepare("SELECT id FROM tasks WHERE status = 'todo' ORDER BY created_at DESC LIMIT 15").all().map(r => r.id)
+  if (keep.length > 0) {
+    const placeholders = keep.map(() => '?').join(',')
+    const deleted = db.prepare(`DELETE FROM tasks WHERE status = 'todo' AND id NOT IN (${placeholders})`).run(...keep)
+    console.log(`🧹 Cleaned up ${deleted.changes} excess todo tasks (kept newest 15)`)
+  }
+}
 
 const PORT = process.env.API_PORT || process.env.PORT || 3002
 app.listen(PORT, '0.0.0.0', () => {
