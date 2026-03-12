@@ -1,5 +1,23 @@
 # Hive Changelog
 
+## 2026-03-12 — Agent Tool Execution System
+
+### Real Tools for Agents
+- **TOOL_REGISTRY** — 22 real tools wired into the ReAct loop: market data, trading, backtesting, analysis, strategy management, task creation, memory access
+- **Text-pattern tool calling** — `[TOOL:name]{args}[/TOOL]` syntax works with all models (DeepSeek R1, Perplexity Sonar, Claude)
+- **ReAct loop upgraded** — MAX_STEPS 3→8, tool parsing + parallel execution, 30s timeout per tool, 5 tools/step limit, 10KB result truncation
+- **Agent authorization** — each tool has an allowed agents list (Oracle gets trading tools, Scout gets research + save_strategy, Nexus gets task/memory management)
+- **Tool trace logging** — all tool calls logged to task_traces with SSE streaming for real-time visibility
+- **Updated agent prompts** — Oracle, Scout, Nexus system prompts now reference real tool syntax instead of fake capability claims
+
+### Tools Available
+- Market data: get_quote, get_history, get_indicators, search_symbols
+- Trading: place_order, get_positions, get_account, close_position, close_all_positions, is_market_open, get_orders
+- Analysis: analyze_symbol, compute_trade_constraints, evaluate_ensemble
+- Backtesting: run_backtest, run_walkforward
+- Strategy: list_strategies, save_strategy
+- Management: create_task, list_tasks, read_memory
+
 ## 2026-03-11 — BUILD 2-6: Full Feature Suite
 
 ### BUILD 2: Agent Network Graph

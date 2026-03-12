@@ -210,6 +210,298 @@ const agents = JSON.parse(readFileSync(agentsPath, 'utf8'))
 const activeRuns = new Map()
 
 // ══════════════════════════════════════════════════════
+// ██ TOOL REGISTRY — Real tools for agent execution   ██
+// ══════════════════════════════════════════════════════
+
+const TOOL_REGISTRY = [
+  {
+    name: 'get_quote',
+    description: 'Get real-time stock quote with price, change, volume, market cap',
+    params: { symbol: { type: 'string', required: true, description: 'Stock ticker (e.g. AAPL, SPY)' } },
+    agents: ['scout', 'oracle'],
+    execute: async (args) => await marketData.getQuote(args.symbol)
+  },
+  {
+    name: 'get_history',
+    description: 'Get historical OHLCV price bars for charting and analysis',
+    params: {
+      symbol: { type: 'string', required: true, description: 'Stock ticker' },
+      period: { type: 'string', required: false, description: 'Time period: 1w, 1mo, 3mo, 6mo, 1y, 2y (default: 1y)' },
+      interval: { type: 'string', required: false, description: 'Bar interval: 1d, 1wk (default: 1d)' }
+    },
+    agents: ['oracle'],
+    execute: async (args) => {
+      const data = await marketData.getHistory(args.symbol, args.period || '1y', args.interval || '1d')
+      return data.slice(-60)
+    }
+  },
+  {
+    name: 'get_indicators',
+    description: 'Get technical indicators: RSI14, MACD, SMA20/50/200, EMA12/26, Bollinger Bands, trend signal',
+    params: { symbol: { type: 'string', required: true, description: 'Stock ticker' } },
+    agents: ['scout', 'oracle'],
+    execute: async (args) => await marketData.getIndicators(args.symbol)
+  },
+  {
+    name: 'search_symbols',
+    description: 'Search for stock tickers by company name',
+    params: { query: { type: 'string', required: true, description: 'Search query (e.g. "Tesla", "artificial intelligence")' } },
+    agents: ['scout', 'oracle'],
+    execute: async (args) => await marketData.searchSymbols(args.query)
+  },
+  {
+    name: 'run_backtest',
+    description: 'Backtest a saved strategy on a symbol. Returns Sharpe ratio, win rate, max drawdown, total return, trade count',
+    params: {
+      strategyId: { type: 'string', required: true, description: 'Strategy ID from strategies table' },
+      symbol: { type: 'string', required: false, description: 'Ticker to test on (default: SPY)' },
+      period: { type: 'string', required: false, description: 'Backtest period (default: 1y)' }
+    },
+    agents: ['oracle'],
+    execute: async (args) => await backtest.runBacktest(args.strategyId, args.symbol || 'SPY', args.period || '1y')
+  },
+  {
+    name: 'run_walkforward',
+    description: 'Walk-forward validation with 70/30 train/test split. Detects overfitting.',
+    params: {
+      strategyId: { type: 'string', required: true, description: 'Strategy ID' },
+      symbol: { type: 'string', required: false, description: 'Ticker (default: SPY)' },
+      period: { type: 'string', required: false, description: 'Period (default: 2y)' }
+    },
+    agents: ['oracle'],
+    execute: async (args) => await backtest.runWalkForwardBacktest(args.strategyId, args.symbol || 'SPY', args.period || '2y')
+  },
+  {
+    name: 'place_order',
+    description: 'Place a paper trade order on Alpaca. Returns trade ID and status.',
+    params: {
+      symbol: { type: 'string', required: true, description: 'Stock ticker' },
+      qty: { type: 'number', required: true, description: 'Number of shares' },
+      side: { type: 'string', required: true, description: 'buy or sell' },
+      type: { type: 'string', required: false, description: 'market or limit (default: market)' },
+      limitPrice: { type: 'number', required: false, description: 'Limit price (required for limit orders)' },
+      strategyId: { type: 'string', required: false, description: 'Strategy ID for attribution' }
+    },
+    agents: ['oracle'],
+    execute: async (args) => await broker.placeOrder(args)
+  },
+  {
+    name: 'get_positions',
+    description: 'Get all open positions with P&L',
+    params: {},
+    agents: ['oracle'],
+    execute: async () => await broker.getPositions()
+  },
+  {
+    name: 'get_account',
+    description: 'Get account info: equity, buying power, cash, day P&L',
+    params: {},
+    agents: ['oracle'],
+    execute: async () => await broker.getAccount()
+  },
+  {
+    name: 'close_position',
+    description: 'Close a specific open position',
+    params: { symbol: { type: 'string', required: true, description: 'Ticker to close' } },
+    agents: ['oracle'],
+    execute: async (args) => await broker.closePosition(args.symbol)
+  },
+  {
+    name: 'close_all_positions',
+    description: 'Close ALL open positions immediately',
+    params: {},
+    agents: ['oracle'],
+    execute: async () => await broker.closeAllPositions()
+  },
+  {
+    name: 'is_market_open',
+    description: 'Check if US stock market is currently open',
+    params: {},
+    agents: ['oracle'],
+    execute: async () => await broker.isMarketOpen()
+  },
+  {
+    name: 'get_orders',
+    description: 'Get recent orders with status',
+    params: { status: { type: 'string', required: false, description: 'Filter: open, closed, all (default: all)' } },
+    agents: ['oracle'],
+    execute: async (args) => await broker.getOrders(args.status || 'all')
+  },
+  {
+    name: 'analyze_symbol',
+    description: 'Run multi-lens AI analysis with 5 analyst personas (Value, Momentum, Contrarian, Technical, Risk). Returns composite signal and trade recommendation.',
+    params: { symbol: { type: 'string', required: true, description: 'Stock ticker to analyze' } },
+    agents: ['oracle'],
+    execute: async (args) => await analysis.analyzeSymbol(args.symbol, callClaude, 'oracle')
+  },
+  {
+    name: 'compute_trade_constraints',
+    description: 'Get position sizing limits: max shares, max USD, stop loss price, daily trades remaining',
+    params: {
+      symbol: { type: 'string', required: true, description: 'Stock ticker' },
+      side: { type: 'string', required: false, description: 'buy or sell (default: buy)' }
+    },
+    agents: ['oracle'],
+    execute: async (args) => await analysis.computeTradeConstraints(args.symbol, args.side || 'buy')
+  },
+  {
+    name: 'evaluate_ensemble',
+    description: 'Evaluate all approved strategies on a symbol. Returns weighted composite signal.',
+    params: { symbol: { type: 'string', required: true, description: 'Stock ticker' } },
+    agents: ['oracle'],
+    execute: async (args) => await analysis.evaluateEnsemble(args.symbol)
+  },
+  {
+    name: 'list_strategies',
+    description: 'List trading strategies filtered by status',
+    params: { status: { type: 'string', required: false, description: 'Filter: discovered, backtesting, paper_testing, approved, deployed, retired (default: all)' } },
+    agents: ['scout', 'oracle', 'nexus'],
+    execute: async (args) => {
+      if (args.status) {
+        return db.prepare('SELECT id, name, type, status, description, entry_conditions, exit_conditions, indicators, stop_loss_percent, created_at FROM strategies WHERE status = ? ORDER BY created_at DESC LIMIT 20').all(args.status)
+      }
+      return db.prepare('SELECT id, name, type, status, description, entry_conditions, exit_conditions, indicators, stop_loss_percent, created_at FROM strategies ORDER BY created_at DESC LIMIT 20').all()
+    }
+  },
+  {
+    name: 'save_strategy',
+    description: 'Save a newly discovered trading strategy',
+    params: {
+      name: { type: 'string', required: true, description: 'Strategy name' },
+      type: { type: 'string', required: true, description: 'Type: momentum, mean_reversion, breakout, trend_following, etc.' },
+      description: { type: 'string', required: true, description: 'What the strategy does' },
+      entry_conditions: { type: 'string', required: true, description: 'JSON string of entry rules' },
+      exit_conditions: { type: 'string', required: true, description: 'JSON string of exit rules' },
+      indicators: { type: 'string', required: true, description: 'Comma-separated indicator list' },
+      stop_loss_percent: { type: 'number', required: false, description: 'Stop loss % (default: 5)' },
+      source: { type: 'string', required: false, description: 'Where found: github, reddit, x, original' },
+      source_url: { type: 'string', required: false, description: 'URL of source' }
+    },
+    agents: ['scout'],
+    execute: async (args) => {
+      const id = uuid()
+      db.prepare('INSERT INTO strategies (id, name, type, description, entry_conditions, exit_conditions, indicators, stop_loss_percent, source, source_url, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+        id, args.name, args.type, args.description, args.entry_conditions, args.exit_conditions, args.indicators, args.stop_loss_percent || 5, args.source || 'original', args.source_url || '', 'discovered'
+      )
+      return { id, name: args.name, status: 'discovered', message: 'Strategy saved. It will be auto-backtested.' }
+    }
+  },
+  {
+    name: 'create_task',
+    description: 'Create a new task for any agent',
+    params: {
+      agent_id: { type: 'string', required: true, description: 'Agent to assign: scout, forge, quill, dealer, oracle, nexus' },
+      title: { type: 'string', required: true, description: 'Task title' },
+      description: { type: 'string', required: true, description: 'Task details' },
+      priority: { type: 'string', required: false, description: 'low, medium, high, critical (default: medium)' }
+    },
+    agents: ['nexus', 'scout'],
+    execute: async (args) => {
+      const id = uuid()
+      db.prepare('INSERT INTO tasks (id, title, description, agent_id, priority, status) VALUES (?, ?, ?, ?, ?, ?)').run(
+        id, args.title, args.description, args.agent_id, args.priority || 'medium', 'todo'
+      )
+      return { id, title: args.title, agent_id: args.agent_id, status: 'todo', message: 'Task created and queued.' }
+    }
+  },
+  {
+    name: 'list_tasks',
+    description: 'List recent tasks, optionally filtered by agent or status',
+    params: {
+      agent_id: { type: 'string', required: false, description: 'Filter by agent' },
+      status: { type: 'string', required: false, description: 'Filter: todo, in_progress, done, failed' },
+      limit: { type: 'number', required: false, description: 'Max results (default: 20)' }
+    },
+    agents: ['nexus'],
+    execute: async (args) => {
+      const conditions = []
+      const params = []
+      if (args.agent_id) { conditions.push('agent_id = ?'); params.push(args.agent_id) }
+      if (args.status) { conditions.push('status = ?'); params.push(args.status) }
+      const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : ''
+      const limit = args.limit || 20
+      return db.prepare(`SELECT id, title, agent_id, status, priority, output, created_at, completed_at FROM tasks ${where} ORDER BY created_at DESC LIMIT ?`).all(...params, limit)
+    }
+  },
+  {
+    name: 'read_memory',
+    description: 'Read an agent\'s persistent memory/learnings file',
+    params: { agent_id: { type: 'string', required: true, description: 'Agent ID to read memory for' } },
+    agents: ['nexus'],
+    execute: async (args) => {
+      const memPath = join(__dirname, '..', 'memory', `${args.agent_id}.md`)
+      try { return readFileSync(memPath, 'utf8') } catch { return 'No memory file found.' }
+    }
+  }
+]
+
+function getAgentTools(agentId) {
+  return TOOL_REGISTRY.filter(t => t.agents.includes(agentId))
+}
+
+function buildToolsPrompt(agentId) {
+  const tools = getAgentTools(agentId)
+  if (tools.length === 0) return ''
+
+  let prompt = '\n\n## Available Tools\n\nYou have REAL tools that execute actual actions. USE THEM. Do not just describe what you would do — call the tools and work with real data.\n\nTo call a tool, use this exact syntax:\n[TOOL:tool_name]{"param":"value"}[/TOOL]\n\nYou will receive the result in a [TOOL_RESULT:tool_name] block. Read the result and continue your work.\nYou can call multiple tools in one response. Each on its own line.\n\n### Tools:\n'
+
+  for (const tool of tools) {
+    const paramList = Object.entries(tool.params).map(([k, v]) => `${k} (${v.type}${v.required ? ', required' : ''}) — ${v.description}`).join('; ')
+    prompt += `- **${tool.name}** — ${tool.description}\n  Params: ${paramList || 'none'}\n`
+  }
+
+  prompt += '\n### Rules:\n- ALWAYS use tools when you need data. Never make up market data, prices, or indicators.\n- Wait for tool results before drawing conclusions.\n- If a tool returns an error, adapt your approach.\n- You can call multiple tools per step.\n'
+
+  return prompt
+}
+
+function parseToolCalls(text) {
+  const toolCalls = []
+  const regex = /\[TOOL:(\w+)\]([\s\S]*?)\[\/TOOL\]/g
+  let match
+  while ((match = regex.exec(text)) !== null) {
+    try {
+      const args = JSON.parse(match[2].trim())
+      toolCalls.push({ name: match[1], args, raw: match[0] })
+    } catch (e) {
+      try {
+        const cleaned = match[2].trim().replace(/'/g, '"')
+        const args = JSON.parse(cleaned)
+        toolCalls.push({ name: match[1], args, raw: match[0] })
+      } catch {
+        toolCalls.push({ name: match[1], args: {}, raw: match[0], parseError: e.message })
+      }
+    }
+  }
+  return toolCalls
+}
+
+async function executeTool(toolCall, agentId, taskId) {
+  const tool = TOOL_REGISTRY.find(t => t.name === toolCall.name)
+  if (!tool) return { name: toolCall.name, error: `Unknown tool: ${toolCall.name}` }
+  if (!tool.agents.includes(agentId)) return { name: toolCall.name, error: `Agent ${agentId} is not authorized to use ${toolCall.name}` }
+  if (toolCall.parseError) return { name: toolCall.name, error: `Invalid JSON args: ${toolCall.parseError}` }
+
+  for (const [param, schema] of Object.entries(tool.params)) {
+    if (schema.required && (toolCall.args[param] === undefined || toolCall.args[param] === null)) {
+      return { name: toolCall.name, error: `Missing required param: ${param}` }
+    }
+  }
+
+  try {
+    const result = await Promise.race([
+      tool.execute(toolCall.args),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Tool execution timed out (30s)')), 30000))
+    ])
+    let resultStr = JSON.stringify(result, null, 0)
+    if (resultStr.length > 10000) resultStr = resultStr.slice(0, 10000) + '...(truncated)'
+    return { name: toolCall.name, resultStr }
+  } catch (e) {
+    return { name: toolCall.name, error: e.message }
+  }
+}
+
+// ══════════════════════════════════════════════════════
 // ██ AGENT MEMORY — Persistent learnings per agent    ██
 // ══════════════════════════════════════════════════════
 
@@ -952,12 +1244,16 @@ app.post('/api/tasks/:id/run', async (req, res) => {
 
   res.json({ ok: true, message: `Agent ${agent.name} is working on it` })
 
-  // ── ReAct Loop ──────────────────────────────────
+  // ── ReAct Loop (with tool execution) ─────────────
   try {
     const agentMemory = readAgentMemory(agent.id)
-    const MAX_STEPS = 3
+    const MAX_STEPS = 8
+    const MAX_TOOLS_PER_STEP = 5
     let messages = []
     let fullOutput = ''
+    let totalToolCalls = 0
+
+    const toolsPrompt = buildToolsPrompt(agent.id)
 
     const initialPrompt = `Task: ${task.title}
 
@@ -966,13 +1262,16 @@ Details: ${task.description || 'No additional details.'}
 ${agentMemory ? `## Your Memory (learnings from past tasks):\n${agentMemory.slice(-2000)}\n` : ''}
 
 ## Instructions
-You are working on this task using a multi-step approach:
-1. First, THINK about the task and what you need to do
-2. If you need input from another agent, say: [CONSULT:agent_id] question here
-   Available agents: ${agents.filter(a => a.id !== agent.id).map(a => `${a.id} (${a.name} - ${a.role})`).join(', ')}
-3. Provide your solution with complete, actionable output
+You are working on this task. You have real tools available — USE THEM to get actual data and take real actions.
 
-Start by analyzing the task and providing your approach.`
+1. THINK about what you need to do
+2. Call tools to get real data or take actions: [TOOL:name]{"param":"value"}[/TOOL]
+3. If you need input from another agent: [CONSULT:agent_id] question here
+   Available agents: ${agents.filter(a => a.id !== agent.id).map(a => `${a.id} (${a.name} - ${a.role})`).join(', ')}
+4. Analyze tool results and provide your final output
+
+DO NOT make up data. If you need market prices, indicators, or account info — call the tools.
+Start by analyzing the task and calling any tools you need.`
 
     messages.push({ role: 'user', content: initialPrompt })
 
@@ -993,7 +1292,7 @@ Start by analyzing the task and providing your approach.`
         }
       }
 
-      // Inject V2 skills (full SKILL.md content) into prompt
+      // Inject V2 skills
       const skillsV2 = db.prepare(
         'SELECT s.name, s.skill_md FROM agent_skills_v2 asv JOIN skills s ON s.id = asv.skill_id WHERE asv.agent_id = ? AND asv.enabled = 1 ORDER BY asv.priority'
       ).all(agent.id)
@@ -1006,7 +1305,7 @@ Start by analyzing the task and providing your approach.`
       const response = await callClaude({
         model: agentModel,
         max_tokens: 4096,
-        system: agent.systemPrompt + skillsContext,
+        system: agent.systemPrompt + toolsPrompt + skillsContext,
         messages,
       }, agent.id, task.id, abortController.signal)
 
@@ -1024,15 +1323,53 @@ Start by analyzing the task and providing your approach.`
       db.prepare('INSERT INTO task_traces (task_id, agent_id, step, type, input_summary, output_summary, tokens_in, tokens_out, cost, duration_ms, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .run(task.id, agent.id, step + 1, 'llm_call', messages[messages.length - 2]?.content?.slice(0, 500) || '', stepOutput.slice(0, 500), traceTokensIn, traceTokensOut, traceCost, traceDuration, agentModel)
 
-      // Emit SSE trace event
       traceBus.emitTrace({
         agent_id: agent.id, task_id: task.id, event_type: 'THOUGHT',
         payload: { content: stepOutput.slice(0, 500), step: step + 1, latency_ms: traceDuration, token_count: traceTokensIn + traceTokensOut, cost: traceCost, model: agentModel }
       })
 
-      // Check for consultation requests
+      // ── Parse tool calls ──
+      const toolCalls = parseToolCalls(stepOutput)
       const consultMatch = stepOutput.match(/\[CONSULT:(\w+)\]\s*(.+)/s)
+
+      let hadAction = false
+
+      // Execute tool calls (max 5 per step)
+      if (toolCalls.length > 0 && step < MAX_STEPS - 1) {
+        hadAction = true
+        const callsToRun = toolCalls.slice(0, MAX_TOOLS_PER_STEP)
+        totalToolCalls += callsToRun.length
+
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+          .run(task.id, agent.id, `Executing ${callsToRun.length} tool(s): ${callsToRun.map(c => c.name).join(', ')}`, 'info')
+
+        const results = await Promise.all(callsToRun.map(tc => executeTool(tc, agent.id, task.id)))
+
+        let resultsText = ''
+        for (const r of results) {
+          if (r.error) {
+            resultsText += `[TOOL_ERROR:${r.name}]${r.error}[/TOOL_ERROR]\n\n`
+            db.prepare('INSERT INTO task_traces (task_id, agent_id, step, type, input_summary, output_summary, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)')
+              .run(task.id, agent.id, step + 1, 'tool_error', r.name, r.error, 0)
+          } else {
+            resultsText += `[TOOL_RESULT:${r.name}]${r.resultStr}[/TOOL_RESULT]\n\n`
+            db.prepare('INSERT INTO task_traces (task_id, agent_id, step, type, input_summary, output_summary, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)')
+              .run(task.id, agent.id, step + 1, 'tool_call', `${r.name}(${JSON.stringify(toolCalls.find(tc => tc.name === r.name)?.args || {}).slice(0, 200)})`, (r.resultStr || '').slice(0, 500), 0)
+          }
+
+          traceBus.emitTrace({
+            agent_id: agent.id, task_id: task.id, event_type: 'TOOL',
+            payload: { tool: r.name, error: r.error || null, result_preview: (r.resultStr || r.error || '').slice(0, 300), step: step + 1 }
+          })
+        }
+
+        messages.push({ role: 'user', content: resultsText.trim() + '\n\nContinue working on the task with these results.' })
+        continue
+      }
+
+      // Check for consultation requests
       if (consultMatch && step < MAX_STEPS - 1) {
+        hadAction = true
         const [, targetAgentId, question] = consultMatch
         db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
           .run(task.id, agent.id, `Consulting ${targetAgentId}: ${question.slice(0, 200)}`, 'info')
@@ -1057,9 +1394,8 @@ Start by analyzing the task and providing your approach.`
         }
       }
 
-      if (!consultMatch || step === MAX_STEPS - 1) {
-        break
-      }
+      // No tools, no consults → agent is done
+      if (!hadAction) break
     }
 
     activeRuns.delete(agent.id)
