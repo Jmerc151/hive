@@ -97,14 +97,20 @@ export const api = {
   getAgentsSummary: (range) => request(`/analytics/agents/summary?range=${range || '30d'}`),
 
   // Intel Feed (BUILD 4)
-  getIntel: (params) => request(`/intel${params ? '?' + new URLSearchParams(params) : ''}`),
+  getIntel: (params) => {
+    const clean = params ? Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null)) : null
+    return request(`/intel${clean && Object.keys(clean).length ? '?' + new URLSearchParams(clean) : ''}`)
+  },
   updateIntelStatus: (id, status) => request(`/intel/${id}/status`, { method: 'PATCH', body: { status } }),
 
   // Command Bar (BUILD 5)
   parseCommand: (text) => request('/commands/parse', { method: 'POST', body: { text } }),
 
   // Skills V2 (BUILD 6)
-  getSkillsV2: (params) => request(`/skills${params ? '?' + new URLSearchParams(params) : ''}`),
+  getSkillsV2: (params) => {
+    const clean = params ? Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')) : null
+    return request(`/skills${clean && Object.keys(clean).length ? '?' + new URLSearchParams(clean) : ''}`)
+  },
   getSkillDetail: (slug) => request(`/skills/${slug}`),
   createSkillV2: (data) => request('/skills', { method: 'POST', body: data }),
   updateSkillV2: (slug, data) => request(`/skills/${slug}`, { method: 'PUT', body: data }),

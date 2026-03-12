@@ -77,7 +77,7 @@ export default function SkillRegistryV2({ onClose }) {
 
   const refresh = () => {
     setLoading(true)
-    api.getSkillsV2({ search: search || undefined })
+    api.getSkillsV2(search ? { search } : {})
       .then(data => setSkills(Array.isArray(data) ? data : data?.skills || []))
       .catch(() => setSkills([]))
       .finally(() => setLoading(false))
