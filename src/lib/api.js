@@ -168,6 +168,18 @@ export const api = {
   getEnsemble: (symbol) => request(`/analysis/${symbol}/ensemble`),
   getPersonas: () => request('/analysis/personas'),
 
+  // Projects
+  getProjects: () => request('/projects'),
+
+  // History
+  getHistory: (params) => request(`/history${params ? '?' + new URLSearchParams(params) : ''}`),
+
+  // Search
+  search: (q) => request(`/search?q=${encodeURIComponent(q)}`),
+
+  // Pipeline Status
+  getPipelineStatus: (id) => request(`/pipelines/${id}/status`),
+
   // Proposals
   getProposals: (status) => request(`/proposals${status ? `?status=${status}` : ''}`),
   createProposal: (data) => request('/proposals', { method: 'POST', body: data }),

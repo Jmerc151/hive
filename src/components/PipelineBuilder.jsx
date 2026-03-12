@@ -8,9 +8,28 @@ export default function PipelineBuilder({ agents, onClose }) {
   const [description, setDescription] = useState('')
   const [steps, setSteps] = useState([])
   const [running, setRunning] = useState(null)
+  const [pipelineStatuses, setPipelineStatuses] = useState({}) // { pipelineId: { current_step, steps: [...] } }
 
   const refresh = () => api.getPipelines().then(setPipelines).catch(() => {})
   useEffect(() => { refresh() }, [])
+
+  // Fetch live status for each pipeline
+  useEffect(() => {
+    if (pipelines.length === 0) return
+    const fetchStatuses = async () => {
+      const statuses = {}
+      for (const p of pipelines) {
+        try {
+          const s = await api.getPipelineStatus(p.id)
+          if (s) statuses[p.id] = s
+        } catch {}
+      }
+      setPipelineStatuses(statuses)
+    }
+    fetchStatuses()
+    const interval = setInterval(fetchStatuses, 5000)
+    return () => clearInterval(interval)
+  }, [pipelines.length])
 
   const startNew = () => {
     setEditing('new')
@@ -105,14 +124,24 @@ export default function PipelineBuilder({ agents, onClose }) {
                       <button onClick={() => handleDelete(p.id)} className="px-2 py-1 text-xs text-red-400 hover:text-red-300">Del</button>
                     </div>
                   </div>
-                  {/* Steps preview */}
+                  {/* Steps preview with status */}
                   <div className="flex items-center gap-1 flex-wrap">
                     {p.steps.sort((a, b) => a.position - b.position).map((s, i) => {
                       const agent = agents.find(a => a.id === s.agent_id)
+                      const ps = pipelineStatuses[p.id]
+                      const stepInfo = ps?.steps?.[i]
+                      const stepStatus = stepInfo?.status
+                      const dotColor = stepStatus === 'done' ? 'bg-green-500' :
+                                       stepStatus === 'in_progress' ? 'bg-honey animate-pulse' :
+                                       stepStatus === 'failed' ? 'bg-red-500' : 'bg-hive-600'
+                      const borderColor = stepStatus === 'done' ? 'border-green-500/30' :
+                                          stepStatus === 'in_progress' ? 'border-honey/30' :
+                                          stepStatus === 'failed' ? 'border-red-500/30' : 'border-transparent'
                       return (
                         <div key={i} className="flex items-center gap-1">
                           {i > 0 && <span className="text-hive-600 text-xs">→</span>}
-                          <span className="text-xs px-2 py-0.5 bg-hive-700 rounded-full flex items-center gap-1">
+                          <span className={`text-xs px-2 py-0.5 bg-hive-700 rounded-full flex items-center gap-1.5 border ${borderColor}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
                             <span>{agent?.avatar || '🤖'}</span>
                             <span className="text-hive-300">{agent?.name || s.agent_id}</span>
                           </span>

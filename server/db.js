@@ -262,6 +262,7 @@ try { db.exec(`ALTER TABLE tasks ADD COLUMN token_budget INTEGER DEFAULT 0`) } c
 try { db.exec(`ALTER TABLE tasks ADD COLUMN requires_approval INTEGER DEFAULT 0`) } catch (e) { /* already exists */ }
 try { db.exec(`ALTER TABLE tasks ADD COLUMN pipeline_id TEXT`) } catch (e) { /* already exists */ }
 try { db.exec(`ALTER TABLE tasks ADD COLUMN pipeline_step INTEGER DEFAULT 0`) } catch (e) { /* already exists */ }
+try { db.exec(`ALTER TABLE tasks ADD COLUMN nexus_score INTEGER`) } catch (e) { /* already exists */ }
 
 // Default settings
 const defaults = {

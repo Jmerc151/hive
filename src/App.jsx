@@ -19,6 +19,9 @@ import ABTestPanel from './components/ABTestPanel'
 import TraceView from './components/TraceView'
 import TradingDashboard from './components/TradingDashboard'
 import ProposalsPanel from './components/ProposalsPanel'
+import ProjectsPanel from './components/ProjectsPanel'
+import HistoryPanel from './components/HistoryPanel'
+import SearchBar from './components/SearchBar'
 
 export default function App() {
   const [agents, setAgents] = useState([])
@@ -39,6 +42,8 @@ export default function App() {
   const [abTestTask, setAbTestTask] = useState(null) // task object
   const [showTrading, setShowTrading] = useState(false)
   const [showProposals, setShowProposals] = useState(false)
+  const [showProjects, setShowProjects] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
 
   const refresh = useCallback(async () => {
     const [a, t] = await Promise.all([api.getAgents(), api.getTasks()])
@@ -149,6 +154,19 @@ export default function App() {
                 <span className="text-xs font-medium text-honey">{activeCount} running</span>
               </div>
             )}
+            <SearchBar agents={agents} onSelectTask={setSelectedTask} />
+            <button
+              onClick={() => setShowProjects(true)}
+              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
+            >
+              📁 <span className="hidden xl:inline">Projects</span>
+            </button>
+            <button
+              onClick={() => setShowHistory(true)}
+              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
+            >
+              📜 <span className="hidden xl:inline">History</span>
+            </button>
             <button
               onClick={() => setShowTriggers(true)}
               className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
@@ -348,6 +366,22 @@ export default function App() {
           task={abTestTask}
           agent={agents.find(a => a.id === abTestTask?.agent_id)}
           onClose={() => setAbTestTask(null)}
+        />
+      )}
+
+      {showProjects && (
+        <ProjectsPanel
+          agents={agents}
+          onSelectTask={(id) => { setSelectedTask(id); setShowProjects(false) }}
+          onClose={() => setShowProjects(false)}
+        />
+      )}
+
+      {showHistory && (
+        <HistoryPanel
+          agents={agents}
+          onSelectTask={(id) => { setSelectedTask(id); setShowHistory(false) }}
+          onClose={() => setShowHistory(false)}
         />
       )}
     </div>

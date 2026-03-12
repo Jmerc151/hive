@@ -171,12 +171,27 @@ function TaskCard({ task, agent, onSelect, onRun }) {
         )}
 
         {task.status === 'done' && (
-          <span className="text-xs text-honey font-medium flex items-center gap-1">
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
-            Done
-          </span>
+          <div className="flex items-center gap-1.5">
+            {task.nexus_score != null && (
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                task.nexus_score >= 7 ? 'bg-green-500/15 text-green-400' :
+                task.nexus_score >= 4 ? 'bg-yellow-500/15 text-yellow-400' : 'bg-red-500/15 text-red-400'
+              }`}>{task.nexus_score}/10</span>
+            )}
+            <span className="text-xs text-honey font-medium flex items-center gap-1">
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+              Done
+            </span>
+          </div>
+        )}
+
+        {task.status === 'awaiting_approval' && task.nexus_score != null && (
+          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded mr-1 ${
+            task.nexus_score >= 7 ? 'bg-green-500/15 text-green-400' :
+            task.nexus_score >= 4 ? 'bg-yellow-500/15 text-yellow-400' : 'bg-red-500/15 text-red-400'
+          }`}>{task.nexus_score}/10</span>
         )}
       </div>
     </div>

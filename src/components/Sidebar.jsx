@@ -5,6 +5,13 @@ const STATUS_COLORS = {
   idle: 'bg-hive-500'
 }
 
+const MODEL_SHORT = {
+  'perplexity/sonar-pro': 'Sonar',
+  'deepseek/deepseek-r1': 'R1',
+  'anthropic/claude-haiku-4-5': 'Haiku',
+  'anthropic/claude-sonnet-4-5': 'Sonnet',
+}
+
 export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgent, onNewTask, taskCount, onScorecard, onSkills }) {
   const [collapsed, setCollapsed] = useState(false)
 
@@ -82,6 +89,18 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
                     <span className={`w-2 h-2 rounded-full ${agent.isRunning ? STATUS_COLORS.running : STATUS_COLORS.idle}`} />
                   </div>
                   <div className="text-xs text-hive-400 truncate">{agent.role}</div>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    {agent.model && (
+                      <span className="text-[10px] px-1.5 py-0.5 bg-hive-700/80 text-hive-400 rounded font-mono">
+                        {MODEL_SHORT[agent.model] || agent.model.split('/').pop()}
+                      </span>
+                    )}
+                    {agent.todaySpend != null && (
+                      <span className={`text-[10px] font-medium ${agent.todaySpend > 1 ? 'text-amber-400' : 'text-hive-500'}`}>
+                        ${agent.todaySpend.toFixed(2)}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-center gap-1">
                   <button

@@ -102,7 +102,7 @@ export async function analyzeSymbol(symbol, callClaude, agentId = 'oracle') {
 
   // Run all personas in parallel via a single Claude call with structured output
   const response = await callClaude({
-    model: 'claude-sonnet-4-20250514',
+    model: 'anthropic/claude-sonnet-4-5',
     max_tokens: 2048,
     system: `You are a multi-perspective stock analysis engine. You will analyze a stock through 5 different investor personas simultaneously and produce a composite recommendation.
 
@@ -281,7 +281,7 @@ export async function makeTradeDecision(symbol, analysis, constraints, callClaud
   }
 
   const response = await callClaude({
-    model: 'claude-sonnet-4-20250514',
+    model: 'anthropic/claude-sonnet-4-5',
     max_tokens: 512,
     system: `You are a disciplined trade execution engine. Given an analysis and hard constraints, decide EXACTLY what to do. You CANNOT exceed the constraints — they are absolute limits.
 

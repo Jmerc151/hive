@@ -7,7 +7,7 @@ import { dirname, join } from 'path'
 import db from './db.js'
 import { v4 as uuid } from 'uuid'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } from 'fs'
-import Anthropic from '@anthropic-ai/sdk'
+import OpenAI from 'openai'
 import webpush from 'web-push'
 import archiver from 'archiver'
 import * as marketData from './services/marketData.js'
@@ -46,15 +46,33 @@ if (API_KEY) {
   console.log('🔓 No HIVE_API_KEY set — API is open (protected by helmet + rate limiting)')
 }
 
-// Anthropic client
-const anthropic = new Anthropic() // uses ANTHROPIC_API_KEY env var
+// OpenRouter client — routes to multiple model providers via one API
+const openai = new OpenAI({
+  baseURL: 'https://openrouter.ai/api/v1',
+  apiKey: process.env.OPENROUTER_API_KEY || '',
+})
+
+// ── Agent Model Assignment ──────────────────────────
+const AGENT_MODELS = {
+  scout:  'perplexity/sonar-pro',
+  forge:  'deepseek/deepseek-r1',
+  quill:  'anthropic/claude-haiku-4-5',
+  dealer: 'anthropic/claude-haiku-4-5',
+  oracle: 'anthropic/claude-sonnet-4-5',
+  nexus:  'anthropic/claude-sonnet-4-5',
+}
+function getAgentModel(agentId) {
+  return AGENT_MODELS[agentId] || 'anthropic/claude-sonnet-4-5'
+}
 
 // ── Spend Controls ────────────────────────────────
 const MODEL_COSTS = {
-  'claude-sonnet-4-20250514': { input: 3 / 1_000_000, output: 15 / 1_000_000 },
-  'claude-haiku-4-5-20251001': { input: 0.80 / 1_000_000, output: 4 / 1_000_000 },
+  'perplexity/sonar-pro':         { input: 3 / 1_000_000, output: 15 / 1_000_000 },
+  'deepseek/deepseek-r1':         { input: 0.55 / 1_000_000, output: 2.19 / 1_000_000 },
+  'anthropic/claude-haiku-4-5':   { input: 0.80 / 1_000_000, output: 4 / 1_000_000 },
+  'anthropic/claude-sonnet-4-5':  { input: 3 / 1_000_000, output: 15 / 1_000_000 },
 }
-const DEFAULT_COST = MODEL_COSTS['claude-sonnet-4-20250514']
+const DEFAULT_COST = MODEL_COSTS['anthropic/claude-sonnet-4-5']
 
 function getSetting(key) {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key)
@@ -108,14 +126,34 @@ function checkSpendLimit(agentId) {
   }
 }
 
-// Wrapped Claude call that tracks spend
+// ── Helpers: convert Anthropic message format → OpenAI format ──
+function flattenContent(content) {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) return content.map(b => b.type === 'text' ? b.text : (b.text || '')).join('')
+  return String(content || '')
+}
+
+// Wrapped LLM call that tracks spend (OpenRouter via OpenAI SDK)
 async function callClaude(opts, agentId, taskId, signal) {
   checkSpendLimit(agentId)
 
-  const response = await anthropic.messages.create(opts, signal ? { signal } : undefined)
+  // Convert Anthropic message format → OpenAI messages array
+  const messages = []
+  if (opts.system) {
+    messages.push({ role: 'system', content: flattenContent(opts.system) })
+  }
+  for (const msg of (opts.messages || [])) {
+    messages.push({ role: msg.role, content: flattenContent(msg.content) })
+  }
 
-  const tokensIn = response.usage?.input_tokens || 0
-  const tokensOut = response.usage?.output_tokens || 0
+  const response = await openai.chat.completions.create({
+    model: opts.model,
+    messages,
+    max_tokens: opts.max_tokens,
+  }, signal ? { signal } : undefined)
+
+  const tokensIn = response.usage?.prompt_tokens || 0
+  const tokensOut = response.usage?.completion_tokens || 0
   const pricing = MODEL_COSTS[opts.model] || DEFAULT_COST
   const cost = (tokensIn * pricing.input) + (tokensOut * pricing.output)
 
@@ -126,7 +164,11 @@ async function callClaude(opts, agentId, taskId, signal) {
       .run(tokensIn + tokensOut, cost, taskId)
   }
 
-  return response
+  // Return Anthropic-compatible shape so all existing parsing code works unchanged
+  return {
+    content: [{ type: 'text', text: response.choices?.[0]?.message?.content || '' }],
+    usage: { input_tokens: tokensIn, output_tokens: tokensOut },
+  }
 }
 
 // Web Push setup — generate VAPID keys if not set
@@ -195,7 +237,7 @@ async function updateAgentMemory(agent, task, output) {
     const currentMemory = readAgentMemory(agent.id)
 
     const response = await callClaude({
-      model: 'claude-haiku-4-5-20251001',
+      model: getAgentModel(agent.id),
       max_tokens: 1024,
       system: `You are a memory curator for ${agent.name} (${agent.role}). Extract the most important learnings, decisions, and context from completed work that would help this agent perform better on future tasks.
 
@@ -287,7 +329,7 @@ async function agentConsult(fromAgent, toAgentId, question, taskContext) {
     const toMemory = readAgentMemory(toAgentId)
 
     const response = await callClaude({
-      model: 'claude-haiku-4-5-20251001',
+      model: getAgentModel(toAgentId),
       max_tokens: 2048,
       system: `${toAgent.systemPrompt}
 
@@ -325,7 +367,7 @@ async function generateFollowUpTasks(completedTask, agent, output) {
     const taskContext = allTasks.map(t => `- [${t.status}] ${t.title}`).join('\n')
 
     const response = await callClaude({
-      model: 'claude-sonnet-4-20250514',
+      model: getAgentModel('nexus'),
       max_tokens: 2048,
       system: `You are a strategic task planner for Hive, a personal AI agent team focused on generating income across multiple channels: digital products, content/affiliate, freelance services, and stock/crypto trading.
 
@@ -406,7 +448,7 @@ async function reviewCompletedWork(completedTask, agent, output) {
       .run(completedTask.id, 'nexus', 'Nexus is reviewing this work...', 'info')
 
     const response = await callClaude({
-      model: 'claude-sonnet-4-20250514',
+      model: getAgentModel('nexus'),
       max_tokens: 4096,
       system: `You are Nexus, the meta-agent and quality reviewer for Hive — a personal AI agent team focused on income generation. You review the output of other agents to ensure quality, actionability, and alignment with income goals.
 
@@ -454,6 +496,18 @@ ${output.slice(0, 4000)}`
       .run('nexus', nexus.name, nexus.avatar, nexus.color,
         `${emoji} **Review of "${completedTask.title}"** (by ${agent.name}):\n\n${shortReview}`)
 
+    // Store Nexus score on task
+    if (score !== null) {
+      db.prepare('UPDATE tasks SET nexus_score = ? WHERE id = ?').run(score, completedTask.id)
+    }
+    // Auto-hold low-scoring tasks for human review
+    if (score !== null && score < 7 && verdict !== 'PASS') {
+      db.prepare("UPDATE tasks SET status = 'awaiting_approval', updated_at = datetime('now') WHERE id = ?").run(completedTask.id)
+      db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)').run(completedTask.id, 'nexus', `Score ${score}/10 — moved to approval queue for human review`, 'warning')
+      sendPushToAll({ title: '⏸️ Review Needed', body: `${completedTask.title} scored ${score}/10`, tag: `review-${completedTask.id}` })
+      email.sendApprovalEmail(completedTask, agent).catch(() => {})
+    }
+
     if (verdict === 'FAIL' || (score !== null && score <= 4)) {
       const fixId = uuid()
       db.prepare(`
@@ -494,7 +548,7 @@ async function troubleshootAndRetry(failedTask, agent, errorMsg) {
       .run(failedTask.id, 'system', `Troubleshooting failure (attempt ${retries + 1}/${MAX_RETRIES})...`, 'info')
 
     const response = await callClaude({
-      model: 'claude-sonnet-4-20250514',
+      model: getAgentModel('nexus'),
       max_tokens: 2048,
       system: `You are a troubleshooter for Hive, a personal AI agent team. A task just failed. Your job is to:
 1. Diagnose WHY it failed based on the error message and logs
@@ -598,7 +652,7 @@ registerHeartbeat('memory-compaction', 7 * 24 * 60 * 60 * 1000, async () => {
     if (memory.length > 10000) {
       try {
         const response = await callClaude({
-          model: 'claude-haiku-4-5-20251001',
+          model: getAgentModel(agent.id),
           max_tokens: 2048,
           system: `Compact this agent memory to the most important 50% of content. Keep the most valuable learnings — especially income-generating insights, successful strategies, and key patterns. Remove redundant or outdated entries. Preserve markdown formatting.`,
           messages: [{ role: 'user', content: memory }]
@@ -672,7 +726,9 @@ app.get('/api/agents', (req, res) => {
         total: counts.reduce((s, c) => s + c.count, 0)
       },
       isRunning: activeRuns.has(agent.id),
-      hasMemory: readAgentMemory(agent.id).length > 0
+      hasMemory: readAgentMemory(agent.id).length > 0,
+      model: getAgentModel(agent.id),
+      todaySpend: getTodaySpend(agent.id),
     }
   })
   res.json(enriched)
@@ -784,7 +840,7 @@ app.post('/api/tasks/:id/optimize', async (req, res) => {
 
   try {
     const response = await callClaude({
-      model: 'claude-haiku-4-5-20251001',
+      model: getAgentModel('nexus'),
       max_tokens: 1024,
       system: `You are Nexus, prompt optimizer for Hive's AI agent team. Your job is to rewrite task prompts so they are clearer, more structured, and easier for an AI agent to execute — saving tokens and improving output quality.
 
@@ -909,9 +965,10 @@ Start by analyzing the task and providing your approach.`
       const skills = db.prepare('SELECT name, description FROM agent_skills WHERE agent_id = ? AND enabled = 1').all(agent.id)
       const skillsContext = skills.length > 0 ? `\n\nYour available skills: ${skills.map(s => `${s.name} (${s.description})`).join(', ')}` : ''
 
+      const agentModel = getAgentModel(agent.id)
       const traceStart = Date.now()
       const response = await callClaude({
-        model: 'claude-sonnet-4-20250514',
+        model: agentModel,
         max_tokens: 8192,
         system: agent.systemPrompt + skillsContext,
         messages,
@@ -920,7 +977,8 @@ Start by analyzing the task and providing your approach.`
       const traceDuration = Date.now() - traceStart
       const traceTokensIn = response.usage?.input_tokens || 0
       const traceTokensOut = response.usage?.output_tokens || 0
-      const traceCost = (traceTokensIn * DEFAULT_COST.input) + (traceTokensOut * DEFAULT_COST.output)
+      const tracePricing = MODEL_COSTS[agentModel] || DEFAULT_COST
+      const traceCost = (traceTokensIn * tracePricing.input) + (traceTokensOut * tracePricing.output)
 
       const stepOutput = response.content.map(b => b.type === 'text' ? b.text : '').join('\n')
       fullOutput += `\n--- Step ${step + 1} ---\n${stepOutput}`
@@ -928,7 +986,7 @@ Start by analyzing the task and providing your approach.`
 
       // Log trace
       db.prepare('INSERT INTO task_traces (task_id, agent_id, step, type, input_summary, output_summary, tokens_in, tokens_out, cost, duration_ms, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(task.id, agent.id, step + 1, 'llm_call', messages[messages.length - 2]?.content?.slice(0, 500) || '', stepOutput.slice(0, 500), traceTokensIn, traceTokensOut, traceCost, traceDuration, 'claude-sonnet-4-20250514')
+        .run(task.id, agent.id, step + 1, 'llm_call', messages[messages.length - 2]?.content?.slice(0, 500) || '', stepOutput.slice(0, 500), traceTokensIn, traceTokensOut, traceCost, traceDuration, agentModel)
 
       // Check for consultation requests
       const consultMatch = stepOutput.match(/\[CONSULT:(\w+)\]\s*(.+)/s)
@@ -1070,7 +1128,23 @@ Start by analyzing the task and providing your approach.`
     })
 
     if (errorMsg !== 'Stopped by user') {
-      troubleshootAndRetry(task, agent, errorMsg).catch(() => {})
+      const retries = task.retries || 0
+      const MAX_AUTO_RETRIES = 3
+      const isTransient = /rate.?limit|timeout|ECONNRESET|ENOTFOUND|503|529|overloaded|credit balance/i.test(errorMsg)
+      if (isTransient && retries < MAX_AUTO_RETRIES) {
+        db.prepare(`UPDATE tasks SET status = 'todo', retries = ?, error = '', completed_at = NULL, started_at = NULL, updated_at = datetime('now') WHERE id = ?`)
+          .run(retries + 1, task.id)
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+          .run(task.id, agent.id, `Auto-retry attempt #${retries + 1}/${MAX_AUTO_RETRIES} (transient: ${errorMsg.slice(0, 100)})`, 'warning')
+        db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+          .run('system', '🔄 Auto-Retry', '🔄', '#f59e0b', `Retrying "${task.title}" (attempt ${retries + 1}/${MAX_AUTO_RETRIES})`)
+        setTimeout(() => processAgentQueue(agent.id), 10000)
+      } else if (retries < MAX_AUTO_RETRIES) {
+        troubleshootAndRetry(task, agent, errorMsg).catch(() => {})
+      } else {
+        db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+          .run('system', '🔧 Troubleshooter', '🔧', '#ef4444', `"${task.title}" failed ${MAX_AUTO_RETRIES} times — needs manual review.`)
+      }
     }
   }
 })
@@ -1473,19 +1547,20 @@ app.post('/api/tasks/:id/ab-test', async (req, res) => {
   if (!promptA || !promptB) return res.status(400).json({ error: 'Both promptA and promptB required' })
 
   try {
+    const abModel = getAgentModel(agent.id)
     const [responseA, responseB] = await Promise.all([
       callClaude({
-        model: 'claude-sonnet-4-20250514',
+        model: abModel,
         max_tokens: 2048,
         system: agent.systemPrompt,
         messages: [{ role: 'user', content: `Task: ${task.title}\n\n${promptA}` }],
-      }, 'nexus', task.id),
+      }, agent.id, task.id),
       callClaude({
-        model: 'claude-sonnet-4-20250514',
+        model: abModel,
         max_tokens: 2048,
         system: agent.systemPrompt,
         messages: [{ role: 'user', content: `Task: ${task.title}\n\n${promptB}` }],
-      }, 'nexus', task.id)
+      }, agent.id, task.id)
     ])
 
     const outputA = responseA.content.map(b => b.type === 'text' ? b.text : '').join('')
@@ -2206,6 +2281,45 @@ Also include a brief summary paragraph at the top (before the JSON) for the week
   } catch (e) { console.error('Self-assessment heartbeat failed:', e.message) }
 })
 
+// ── Daily Project Summary (9am local) ─────────────
+const dailyProjectSummaryFn = () => {
+  try {
+    const nexus = agents.find(a => a.id === 'nexus')
+    if (!nexus) return
+    const allTasks = db.prepare('SELECT * FROM tasks ORDER BY created_at DESC').all()
+    const projectMap = {}
+    for (const task of allTasks) {
+      const match = task.title.match(/^\[([^\]]+)\]/)
+      if (!match) continue
+      const name = match[1]
+      if (!projectMap[name]) projectMap[name] = []
+      projectMap[name].push(task)
+    }
+    const projectSummaries = Object.entries(projectMap).map(([name, tasks]) => {
+      const total = tasks.length, done = tasks.filter(t => t.status === 'done').length
+      const failed = tasks.filter(t => t.status === 'failed').length
+      const inProg = tasks.filter(t => t.status === 'in_progress').length
+      return `- **${name}**: ${done}/${total} done (${total > 0 ? Math.round(done/total*100) : 0}%)${failed ? `, ${failed} failed` : ''}${inProg ? `, ${inProg} running` : ''}`
+    }).join('\n')
+    if (!projectSummaries) return
+    const todaySpend = getTodaySpend()
+    const yesterday = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'done' AND completed_at >= datetime('now', '-1 day')").get().c
+    const summaryText = `📊 **Daily Project Status**\n\n${projectSummaries}\n\n_Yesterday: ${yesterday} tasks completed | Today's spend: $${todaySpend.toFixed(2)}_`
+    db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+      .run('nexus', nexus.name, nexus.avatar, nexus.color, summaryText)
+    console.log('📊 Daily project summary posted by Nexus')
+  } catch (e) { console.error('Daily project summary failed:', e.message) }
+}
+// Schedule for 9am local time
+const _now = new Date(), _next9am = new Date(_now)
+_next9am.setHours(9, 0, 0, 0)
+if (_now >= _next9am) _next9am.setDate(_next9am.getDate() + 1)
+setTimeout(() => {
+  dailyProjectSummaryFn()
+  registerHeartbeat('daily-project-summary', 24 * 60 * 60 * 1000, dailyProjectSummaryFn)
+}, _next9am - _now)
+console.log(`📊 Daily project summary scheduled for 9am (in ${Math.round((_next9am - _now) / 60000)}min)`)
+
 // ── Stats ──────────────────────────────────────────
 app.get('/api/stats', (req, res) => {
   const total = db.prepare('SELECT COUNT(*) as count FROM tasks').get().count
@@ -2277,7 +2391,7 @@ app.post('/api/chat/standup', async (req, res) => {
 
   try {
     const response = await callClaude({
-      model: 'claude-haiku-4-5-20251001',
+      model: getAgentModel('nexus'),
       max_tokens: 2048,
       messages: [{
         role: 'user',
@@ -2394,6 +2508,60 @@ app.get('/api/spend', (req, res) => {
   })
 })
 
+// ── Projects (grouped by [ProjectName] prefix) ────
+app.get('/api/projects', (req, res) => {
+  const allTasks = db.prepare('SELECT * FROM tasks ORDER BY created_at DESC').all()
+  const projectMap = {}
+  for (const task of allTasks) {
+    const match = task.title.match(/^\[([^\]]+)\]/)
+    if (!match) continue
+    const name = match[1]
+    if (!projectMap[name]) projectMap[name] = { name, tasks: [] }
+    projectMap[name].tasks.push(task)
+  }
+  const projects = Object.values(projectMap).map(p => {
+    const total = p.tasks.length
+    const completed = p.tasks.filter(t => t.status === 'done').length
+    const failed = p.tasks.filter(t => t.status === 'failed').length
+    const inProgress = p.tasks.filter(t => t.status === 'in_progress').length
+    const pct = total > 0 ? Math.round((completed / total) * 100) : 0
+    const agentIds = [...new Set(p.tasks.map(t => t.agent_id).filter(Boolean))]
+    const totalCost = p.tasks.reduce((sum, t) => sum + (t.estimated_cost || 0), 0)
+    return { name: p.name, total, completed, failed, inProgress, completionPct: pct, agents: agentIds, totalCost, tasks: p.tasks }
+  })
+  res.json(projects.sort((a, b) => b.total - a.total))
+})
+
+// ── History / Audit Trail ─────────────────────────
+app.get('/api/history', (req, res) => {
+  const { search, agent, status, limit = 50, offset = 0 } = req.query
+  let where = "WHERE status IN ('done', 'failed')"
+  const params = []
+  if (agent) { where += ' AND agent_id = ?'; params.push(agent) }
+  if (status) { where += ' AND status = ?'; params.push(status) }
+  if (search) { where += ' AND (title LIKE ? OR description LIKE ? OR output LIKE ?)'; params.push(`%${search}%`, `%${search}%`, `%${search}%`) }
+  const total = db.prepare(`SELECT COUNT(*) as c FROM tasks ${where}`).get(...params).c
+  const tasks = db.prepare(`SELECT id, title, description, status, agent_id, priority, tokens_used, estimated_cost, nexus_score, created_at, started_at, completed_at, error, retries FROM tasks ${where} ORDER BY COALESCE(completed_at, updated_at) DESC LIMIT ? OFFSET ?`).all(...params, parseInt(limit), parseInt(offset))
+  const enriched = tasks.map(t => ({ ...t, duration_ms: t.started_at && t.completed_at ? new Date(t.completed_at) - new Date(t.started_at) : null }))
+  res.json({ tasks: enriched, total, limit: parseInt(limit), offset: parseInt(offset) })
+})
+
+// ── Global Search ─────────────────────────────────
+app.get('/api/search', (req, res) => {
+  const { q } = req.query
+  if (!q || q.length < 2) return res.json({ tasks: [], logs: [] })
+  const pattern = `%${q}%`
+  const tasks = db.prepare('SELECT id, title, description, status, agent_id, created_at FROM tasks WHERE title LIKE ? OR description LIKE ? OR output LIKE ? ORDER BY updated_at DESC LIMIT 20').all(pattern, pattern, pattern)
+  const logs = db.prepare(`SELECT tl.*, t.title as task_title FROM task_logs tl JOIN tasks t ON t.id = tl.task_id WHERE tl.message LIKE ? ORDER BY tl.created_at DESC LIMIT 20`).all(pattern)
+  res.json({ tasks, logs })
+})
+
+// ── Pipeline Status ───────────────────────────────
+app.get('/api/pipelines/:id/status', (req, res) => {
+  const tasks = db.prepare('SELECT * FROM tasks WHERE pipeline_id = ? ORDER BY pipeline_step ASC').all(req.params.id)
+  res.json(tasks)
+})
+
 // ── Health check ──────────────────────────────────
 app.get('/api/health', (req, res) => {
   res.json({
@@ -2413,6 +2581,20 @@ if (existsSync(distPath)) {
   app.get('/{*splat}', (req, res) => {
     res.sendFile(join(distPath, 'index.html'))
   })
+}
+
+// ── Seed Example Pipeline ─────────────────────────
+const pipelineCount = db.prepare('SELECT COUNT(*) as c FROM pipelines').get().c
+if (pipelineCount === 0) {
+  const pipelineId = uuid()
+  const exampleSteps = [
+    { position: 1, agent_id: 'scout', prompt_template: 'Research the best opportunity for a new income-generating digital product. Focus on micro-SaaS ideas with low competition. Output a detailed opportunity report with recommended product specification.' },
+    { position: 2, agent_id: 'forge', prompt_template: 'Based on the following market research, build a complete MVP:\n\n{{previous_output}}\n\nDeliver complete, runnable code with package.json, README, and .env.example.' },
+    { position: 3, agent_id: 'quill', prompt_template: 'Create launch content for the following product:\n\n{{previous_output}}\n\nWrite: 1) Product Hunt launch post, 2) Twitter/X thread (10 tweets), 3) Blog post (1500 words, SEO-optimized).' },
+    { position: 4, agent_id: 'dealer', prompt_template: 'Find 5 potential clients or distribution channels for this product:\n\n{{previous_output}}\n\nWrite outreach messages for each. Include freelance platforms, direct outreach, and partnership angles.' }
+  ]
+  db.prepare('INSERT INTO pipelines (id, name, description, steps) VALUES (?, ?, ?, ?)').run(pipelineId, 'Product Launch Pipeline', 'Scout researches → Forge builds MVP → Quill creates launch content → Dealer finds distribution', JSON.stringify(exampleSteps))
+  console.log('🔗 Seeded example pipeline: Product Launch Pipeline')
 }
 
 const PORT = process.env.API_PORT || process.env.PORT || 3002

@@ -52,7 +52,15 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
                 {STATUS_LABELS[task.status]}
               </span>
             </div>
-            <h2 className="text-lg font-semibold">{task.title}</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold">{task.title}</h2>
+              {task.nexus_score != null && (
+                <span className={`text-xs font-bold px-2 py-0.5 rounded ${
+                  task.nexus_score >= 7 ? 'bg-green-500/15 text-green-400' :
+                  task.nexus_score >= 4 ? 'bg-yellow-500/15 text-yellow-400' : 'bg-red-500/15 text-red-400'
+                }`}>{task.nexus_score}/10</span>
+              )}
+            </div>
           </div>
           <button onClick={onClose} className="text-hive-400 hover:text-hive-200 text-xl shrink-0">&times;</button>
         </div>
@@ -144,6 +152,36 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
               {task.pipeline_id && (
                 <div className="flex items-center gap-2 p-2 bg-hive-700/30 rounded-lg border border-hive-700 text-xs text-hive-400">
                   🔗 Pipeline step {task.pipeline_step || '?'}
+                </div>
+              )}
+
+              {/* Nexus Score */}
+              {task.nexus_score != null && (
+                <div>
+                  <h3 className="text-sm font-medium text-hive-300 mb-2">Nexus Quality Score</h3>
+                  <div className="flex items-center gap-3 p-3 bg-hive-700/30 rounded-lg border border-hive-700">
+                    <span className={`text-2xl font-bold ${
+                      task.nexus_score >= 7 ? 'text-green-400' :
+                      task.nexus_score >= 4 ? 'text-yellow-400' : 'text-red-400'
+                    }`}>{task.nexus_score}</span>
+                    <div>
+                      <div className="text-sm text-hive-200">/10 Quality Rating</div>
+                      <div className="text-xs text-hive-400">
+                        {task.nexus_score >= 7 ? 'Auto-approved by Nexus' :
+                         task.nexus_score >= 4 ? 'Held for manual review' : 'Needs attention'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Cost */}
+              {task.estimated_cost > 0 && (
+                <div>
+                  <h3 className="text-sm font-medium text-hive-300 mb-2">Cost</h3>
+                  <div className="text-sm text-hive-200">
+                    ${task.estimated_cost.toFixed(4)} · {(task.tokens_used || 0).toLocaleString()} tokens
+                  </div>
                 </div>
               )}
 
