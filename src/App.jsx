@@ -166,17 +166,15 @@ export default function App() {
 
       <main className="flex-1 overflow-hidden flex flex-col min-w-0">
         {/* Header */}
-        <header className="flex items-center justify-between px-4 md:px-6 py-3 md:py-4 border-b border-hive-700/50 bg-hive-900/80 backdrop-blur-xl safe-top">
+        <header className="flex items-center justify-between px-4 md:px-6 py-2 md:py-3 border-b border-hive-700/50 bg-hive-900/80 backdrop-blur-xl safe-top">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-honey to-honey-dim flex items-center justify-center shadow-lg shadow-honey/20">
               <span className="text-base">🐝</span>
             </div>
             <div>
-              <h1 className="text-base md:text-lg font-bold tracking-tight">Hive</h1>
+              <h1 className="text-base md:text-lg font-bold tracking-tight">Hive Command Center</h1>
               <p className="text-xs text-hive-400">
-                {filterAgent
-                  ? agents.find(a => a.id === filterAgent)?.name || filterAgent
-                  : `${tasks.length} tasks · ${activeCount} active`}
+                {`${tasks.length} tasks · ${activeCount} active`}
               </p>
             </div>
           </div>
@@ -187,9 +185,6 @@ export default function App() {
                 <span className="text-xs font-medium text-honey">{activeCount} running</span>
               </div>
             )}
-            <div className="hidden md:block flex-1 max-w-md mx-2">
-              <CommandBar agents={agents} onTaskCreated={() => refresh()} />
-            </div>
             <SearchBar agents={agents} onSelectTask={setSelectedTask} />
             <button
               onClick={() => setShowCreate(true)}
@@ -224,8 +219,59 @@ export default function App() {
           </div>
         )}
 
-        {/* Task board */}
+        {/* Desktop: Split layout — Chat left, Dashboard right */}
         <div className={`flex-1 overflow-hidden ${mobileView !== 'board' ? 'hidden md:flex' : 'flex'}`}>
+          {/* Left: Chat panel (40%) */}
+          <div className="hidden md:flex md:w-[40%] lg:w-[38%] border-r border-hive-700/50 flex-col">
+            <ChatPanel agents={agents} embedded onToast={addToast} />
+          </div>
+
+          {/* Right: Activity dashboard (60%) */}
+          <div className="flex-1 overflow-y-auto">
+            {/* Agent status strip */}
+            <div className="p-3 border-b border-hive-700/30">
+              <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+                {agents.map(agent => {
+                  const agentTask = tasks.find(t => t.agent_id === agent.id && t.status === 'in_progress')
+                  return (
+                    <div
+                      key={agent.id}
+                      className={`flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-xl border transition-all cursor-pointer ${
+                        agentTask
+                          ? 'bg-green-500/5 border-green-500/20'
+                          : 'bg-hive-800/50 border-hive-700/30'
+                      } ${filterAgent === agent.id ? 'ring-1 ring-honey' : ''}`}
+                      onClick={() => setFilterAgent(filterAgent === agent.id ? null : agent.id)}
+                    >
+                      <span className="text-base">{agent.avatar}</span>
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold truncate">{agent.name}</div>
+                        <div className="text-[10px] text-hive-400 truncate max-w-[120px]">
+                          {agentTask ? agentTask.title : 'Idle'}
+                        </div>
+                      </div>
+                      {agentTask && <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse flex-shrink-0" />}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Task board */}
+            <div className="flex-1">
+              <TaskBoard
+                tasks={filteredTasks}
+                agents={agents}
+                onSelectTask={setSelectedTask}
+                onRunTask={handleRunTask}
+                onUpdateTask={handleUpdateTask}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Mobile: Full task board (no split) */}
+        <div className={`flex-1 overflow-hidden md:hidden ${mobileView !== 'board' ? 'hidden' : 'flex'}`}>
           <TaskBoard
             tasks={filteredTasks}
             agents={agents}
@@ -253,11 +299,7 @@ export default function App() {
         />
       )}
 
-      {showChat && (
-        <div className="hidden md:block">
-          <ChatPanel agents={agents} onClose={() => setShowChat(false)} onToast={addToast} />
-        </div>
-      )}
+      {/* Chat is now embedded in main layout — modal removed */}
 
       {showSpend && (
         <SpendDashboard onClose={() => setShowSpend(false)} />
@@ -386,7 +428,7 @@ export default function App() {
         <SkillRegistryV2 onClose={() => setShowSkillsV2(false)} />
       )}
 
-      {/* Mobile CommandBar */}
+      {/* Mobile CommandBar — chat handles input on desktop */}
       <div className="md:hidden">
         <CommandBar agents={agents} onTaskCreated={() => refresh()} />
       </div>
