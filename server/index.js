@@ -303,7 +303,16 @@ async function processAgentQueue(agentId) {
 
     try {
       const PORT = process.env.API_PORT || process.env.PORT || 3002
-      await fetch(`http://localhost:${PORT}/api/tasks/${nextTask.id}/run`, { method: 'POST' })
+      const headers = { 'Content-Type': 'application/json' }
+      if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`
+      const resp = await fetch(`http://localhost:${PORT}/api/tasks/${nextTask.id}/run`, { method: 'POST', headers })
+      if (!resp.ok) {
+        // Mark task as failed to prevent infinite retry loop
+        const errText = await resp.text().catch(() => 'unknown error')
+        console.error(`Queue auto-run failed for "${nextTask.title}": ${resp.status} ${errText.slice(0, 200)}`)
+        db.prepare("UPDATE tasks SET status = 'failed', error = ?, updated_at = datetime('now') WHERE id = ? AND status = 'todo'")
+          .run(`Queue auto-run failed: ${resp.status}`, nextTask.id)
+      }
     } catch (e) {
       console.error('Queue auto-run failed:', e.message)
     }
@@ -644,7 +653,9 @@ function registerHeartbeat(name, intervalMs, fn) {
 registerHeartbeat('auto-standup', 24 * 60 * 60 * 1000, async () => {
   try {
     const PORT = process.env.API_PORT || process.env.PORT || 3002
-    await fetch(`http://localhost:${PORT}/api/chat/standup`, { method: 'POST' })
+    const headers = {}
+    if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`
+    await fetch(`http://localhost:${PORT}/api/chat/standup`, { method: 'POST', headers })
     console.log('💓 Auto-standup triggered')
   } catch (e) {
     console.error('Auto-standup failed:', e.message)
@@ -1612,7 +1623,9 @@ app.post('/api/webhooks/:triggerId', (req, res) => {
   } else if (action.type === 'run_pipeline' && action.pipeline_id) {
     // Trigger pipeline run
     const PORT = process.env.API_PORT || process.env.PORT || 3002
-    fetch(`http://localhost:${PORT}/api/pipelines/${action.pipeline_id}/run`, { method: 'POST' }).catch(() => {})
+    const pipeHeaders = {}
+    if (API_KEY) pipeHeaders['Authorization'] = `Bearer ${API_KEY}`
+    fetch(`http://localhost:${PORT}/api/pipelines/${action.pipeline_id}/run`, { method: 'POST', headers: pipeHeaders }).catch(() => {})
     res.json({ ok: true, pipeline_id: action.pipeline_id })
   } else {
     res.status(400).json({ error: 'Unknown action type' })
