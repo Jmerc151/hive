@@ -320,6 +320,8 @@ const defaults = {
   per_task_token_budget: '16384',
   max_concurrent_tasks: '2',
   pause_all_agents: 'false',
+  qa_reviews_enabled: 'true',
+  auto_tasks_enabled: 'true',
   approval_threshold_usd: '1.00',
   approval_keywords: 'deploy,publish,send,delete',
   trading_enabled: 'true',

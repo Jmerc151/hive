@@ -335,7 +335,7 @@ async function agentConsult(fromAgent, toAgentId, question, taskContext) {
 
     const response = await callClaude({
       model: getAgentModel(toAgentId),
-      max_tokens: 2048,
+      max_tokens: 1024,
       system: `${toAgent.systemPrompt}
 
 You are being consulted by ${fromAgent.name} (${fromAgent.role}) about a task they're working on. Answer their question using your expertise. Be concise and actionable.
@@ -378,7 +378,7 @@ async function generateFollowUpTasks(completedTask, agent, output) {
 
     const response = await callClaude({
       model: getAgentModel('nexus'),
-      max_tokens: 2048,
+      max_tokens: 512,
       system: `You are a strategic task planner for Hive, a personal AI agent team focused on generating income across multiple channels: digital products, content/affiliate, freelance services, and stock/crypto trading.
 
 Available agents and their specialties:
@@ -459,7 +459,7 @@ async function reviewCompletedWork(completedTask, agent, output) {
 
     const response = await callClaude({
       model: getAgentModel('nexus'),
-      max_tokens: 4096,
+      max_tokens: 2048,
       system: `You are Nexus, the meta-agent and quality reviewer for Hive — a personal AI agent team focused on income generation. You review the output of other agents to ensure quality, actionability, and alignment with income goals.
 
 Evaluate:
@@ -559,7 +559,7 @@ async function troubleshootAndRetry(failedTask, agent, errorMsg) {
 
     const response = await callClaude({
       model: getAgentModel('nexus'),
-      max_tokens: 2048,
+      max_tokens: 1024,
       system: `You are a troubleshooter for Hive, a personal AI agent team. A task just failed. Your job is to:
 1. Diagnose WHY it failed based on the error message and logs
 2. Determine if it's retryable (transient error, rate limit, timeout) vs permanent (bad logic, impossible task)
@@ -979,7 +979,7 @@ Start by analyzing the task and providing your approach.`
       const traceStart = Date.now()
       const response = await callClaude({
         model: agentModel,
-        max_tokens: 8192,
+        max_tokens: 4096,
         system: agent.systemPrompt + skillsContext,
         messages,
       }, agent.id, task.id, abortController.signal)
@@ -1129,10 +1129,16 @@ Start by analyzing the task and providing your approach.`
       } catch (e) { console.error('Pipeline continuation error:', e.message) }
     }
 
-    // Update memory → QA review → generate follow-ups → queue next
+    // Update memory → optional QA review → optional follow-ups → queue next
     updateAgentMemory(agent, task, fullOutput)
-      .then(() => reviewCompletedWork(task, agent, fullOutput))
-      .then(() => generateFollowUpTasks(task, agent, fullOutput))
+      .then(() => {
+        const qaEnabled = getSetting('qa_reviews_enabled') !== 'false'
+        return qaEnabled ? reviewCompletedWork(task, agent, fullOutput) : null
+      })
+      .then(() => {
+        const autoTasksEnabled = getSetting('auto_tasks_enabled') !== 'false'
+        return autoTasksEnabled ? generateFollowUpTasks(task, agent, fullOutput) : null
+      })
       .then(() => { setTimeout(() => processAgentQueue(agent.id), 5000) })
       .catch(() => {})
 
@@ -2440,7 +2446,7 @@ app.post('/api/chat/standup', async (req, res) => {
   try {
     const response = await callClaude({
       model: getAgentModel('nexus'),
-      max_tokens: 2048,
+      max_tokens: 1024,
       messages: [{
         role: 'user',
         content: `You are simulating a quick team standup meeting between ${agents.length} AI agents working together as Hive — a personal AI agent team focused on generating income through digital products, content/affiliate, freelance services, and trading. Each agent has a distinct personality and role.
