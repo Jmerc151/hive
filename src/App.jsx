@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from './lib/api'
+import ToastContainer, { useToast } from './components/Toast'
 import Sidebar from './components/Sidebar'
 import TaskBoard from './components/TaskBoard'
 import CreateTaskModal from './components/CreateTaskModal'
@@ -30,6 +31,7 @@ import CommandBar from './components/CommandBar'
 import SkillRegistryV2 from './components/SkillRegistryV2'
 
 export default function App() {
+  const { toasts, addToast, removeToast } = useToast()
   const [agents, setAgents] = useState([])
   const [tasks, setTasks] = useState([])
   const [showCreate, setShowCreate] = useState(false)
@@ -218,7 +220,7 @@ export default function App() {
         )}
         {mobileView === 'chat' && (
           <div className="md:hidden flex-1 overflow-hidden">
-            <ChatPanel agents={agents} embedded />
+            <ChatPanel agents={agents} embedded onToast={addToast} />
           </div>
         )}
 
@@ -253,7 +255,7 @@ export default function App() {
 
       {showChat && (
         <div className="hidden md:block">
-          <ChatPanel agents={agents} onClose={() => setShowChat(false)} />
+          <ChatPanel agents={agents} onClose={() => setShowChat(false)} onToast={addToast} />
         </div>
       )}
 
@@ -388,6 +390,9 @@ export default function App() {
       <div className="md:hidden">
         <CommandBar agents={agents} onTaskCreated={() => refresh()} />
       </div>
+
+      {/* Toasts */}
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>
   )
 }
