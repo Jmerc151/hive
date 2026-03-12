@@ -43,7 +43,7 @@ export const api = {
   getStats: () => request('/stats'),
 
   // Chat
-  getMessages: () => request('/messages'),
+  getMessages: (mode) => request(`/messages${mode ? `?mode=${mode}` : ''}`),
   sendMessage: (data) => request('/messages', { method: 'POST', body: data }),
   clearMessages: () => request('/messages', { method: 'DELETE' }),
   triggerStandup: () => request('/chat/standup', { method: 'POST' }),

@@ -91,11 +91,11 @@ export default function ChatPanel({ agents, onClose, embedded, onToast }) {
 
   useEffect(() => {
     const fetchMsgs = async () => {
-      const msgs = await api.getMessages()
+      const msgs = await api.getMessages(mode === 'assistant' ? 'assistant' : 'feed')
       setMessages(msgs)
     }
     fetchMsgs()
-    const interval = setInterval(fetchMsgs, mode === 'feed' ? 2000 : 5000)
+    const interval = setInterval(fetchMsgs, mode === 'feed' ? 2000 : 10000)
     return () => clearInterval(interval)
   }, [mode])
 
@@ -164,7 +164,7 @@ export default function ChatPanel({ agents, onClose, embedded, onToast }) {
                 onToast?.({ type: 'success', message: actionLabel })
               }
               if (data.done) {
-                const msgs = await api.getMessages()
+                const msgs = await api.getMessages('assistant')
                 setMessages(msgs)
               }
               if (data.error) {
@@ -193,7 +193,7 @@ export default function ChatPanel({ agents, onClose, embedded, onToast }) {
     if (!input.trim()) return
     await api.sendMessage({ text: input.trim() })
     setInput('')
-    const msgs = await api.getMessages()
+    const msgs = await api.getMessages('feed')
     setMessages(msgs)
   }
 

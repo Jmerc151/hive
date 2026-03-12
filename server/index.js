@@ -3009,7 +3009,17 @@ app.get('/api/heartbeat', (req, res) => {
 
 // ── Chat Messages ─────────────────────────────────
 app.get('/api/messages', (req, res) => {
-  const messages = db.prepare('SELECT * FROM messages ORDER BY created_at ASC LIMIT 200').all()
+  const { mode } = req.query
+  let messages
+  if (mode === 'assistant') {
+    // AI chat mode: only user + assistant + system messages
+    messages = db.prepare("SELECT * FROM messages WHERE sender_id IN ('user', 'hive-assistant', 'system') ORDER BY created_at ASC LIMIT 200").all()
+  } else if (mode === 'feed') {
+    // Feed mode: only agent messages (not user/assistant chat)
+    messages = db.prepare("SELECT * FROM messages WHERE sender_id NOT IN ('user', 'hive-assistant') ORDER BY created_at DESC LIMIT 200").all().reverse()
+  } else {
+    messages = db.prepare('SELECT * FROM messages ORDER BY created_at ASC LIMIT 200').all()
+  }
   res.json(messages)
 })
 
@@ -3429,7 +3439,7 @@ app.post('/api/chat/ask', async (req, res) => {
       const delta = chunk.choices?.[0]?.delta?.content
       if (delta) {
         fullText += delta
-        res.write(`event: token\ndata: ${JSON.stringify({ text: delta })}\n\n`)
+        res.write(`data: ${JSON.stringify({ token: delta })}\n\n`)
       }
       if (chunk.usage) {
         tokensIn = chunk.usage.prompt_tokens || 0
@@ -3451,9 +3461,9 @@ app.post('/api/chat/ask', async (req, res) => {
     while ((match = actionRegex.exec(fullText)) !== null) {
       try {
         const result = await executeChatAction(match[1], match[2])
-        res.write(`event: action\ndata: ${JSON.stringify(result)}\n\n`)
+        res.write(`data: ${JSON.stringify({ action: result })}\n\n`)
       } catch (e) {
-        res.write(`event: action\ndata: ${JSON.stringify({ ok: false, message: e.message })}\n\n`)
+        res.write(`data: ${JSON.stringify({ action: { ok: false, message: e.message } })}\n\n`)
       }
     }
 
@@ -3462,10 +3472,10 @@ app.post('/api/chat/ask', async (req, res) => {
     db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
       .run('hive-assistant', 'Hive', '🐝', '#f59e0b', displayText)
 
-    res.write(`event: done\ndata: ${JSON.stringify({ tokens_in: tokensIn, tokens_out: tokensOut, cost })}\n\n`)
+    res.write(`data: ${JSON.stringify({ done: true, tokens_in: tokensIn, tokens_out: tokensOut, cost })}\n\n`)
     res.end()
   } catch (err) {
-    res.write(`event: error\ndata: ${JSON.stringify({ error: err.message })}\n\n`)
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`)
     res.end()
   }
 })

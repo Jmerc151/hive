@@ -4,7 +4,7 @@
     {
       "name": "hive-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": ["run", "dev:client"],
       "port": 3333
     }
   ]
