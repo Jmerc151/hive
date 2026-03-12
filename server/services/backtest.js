@@ -213,6 +213,121 @@ export async function runBacktest(strategyId, symbol = 'SPY', period = '1y', ini
   return { id: backtestId, ...result }
 }
 
+// ── Walk-Forward Backtest ─────────────────────────
+export async function runWalkForwardBacktest(strategyId, symbol = 'SPY', period = '2y', initialCapital = 10000) {
+  const strategy = db.prepare('SELECT * FROM strategies WHERE id = ?').get(strategyId)
+  if (!strategy) throw new Error('Strategy not found')
+
+  const logic = JSON.parse(strategy.logic)
+  const bars = await getHistory(symbol, period, '1d')
+  if (bars.length < 100) throw new Error('Not enough data for walk-forward (need 100+ bars)')
+
+  const enrichedBars = computeIndicators(bars)
+
+  // Split: 70% training, 30% validation
+  const splitIdx = Math.floor(enrichedBars.length * 0.7)
+  const trainingBars = enrichedBars.slice(0, splitIdx)
+  const validationBars = enrichedBars.slice(splitIdx)
+
+  function simulatePeriod(periodBars, capital) {
+    let cash = capital
+    let position = 0
+    let entryPrice = 0
+    const trades = []
+    const equityCurve = []
+    let wins = 0, losses = 0
+    const positionAmount = logic.position_amount || 1000
+
+    const startIdx = Math.min(50, Math.floor(periodBars.length * 0.2))
+    for (let i = startIdx; i < periodBars.length; i++) {
+      const bar = periodBars[i]
+      const equity = cash + (position * bar.price)
+      equityCurve.push({ date: bar.date, equity: Math.round(equity * 100) / 100 })
+
+      if (position === 0 && logic.entry_conditions) {
+        if (allConditionsMet(logic.entry_conditions, bar)) {
+          const shares = Math.floor(Math.min(positionAmount, cash) / bar.price)
+          if (shares > 0) { position = shares; entryPrice = bar.price; cash -= shares * bar.price; trades.push({ date: bar.date, side: 'buy', price: bar.price, qty: shares }) }
+        }
+      }
+
+      if (position > 0 && logic.exit_conditions) {
+        if (allConditionsMet(logic.exit_conditions, bar)) {
+          cash += position * bar.price
+          const pnl = (bar.price - entryPrice) * position
+          trades.push({ date: bar.date, side: 'sell', price: bar.price, qty: position, pnl: Math.round(pnl * 100) / 100 })
+          if (pnl > 0) wins++; else losses++
+          position = 0; entryPrice = 0
+        }
+      }
+
+      if (position > 0 && entryPrice > 0) {
+        const slPercent = logic.stop_loss_percent || 5
+        if (bar.price <= entryPrice * (1 - slPercent / 100)) {
+          cash += position * bar.price
+          const pnl = (bar.price - entryPrice) * position
+          trades.push({ date: bar.date, side: 'sell (stop)', price: bar.price, qty: position, pnl: Math.round(pnl * 100) / 100 })
+          losses++; position = 0; entryPrice = 0
+        }
+      }
+    }
+
+    // Close remaining
+    if (position > 0) {
+      const lastPrice = periodBars[periodBars.length - 1].price
+      cash += position * lastPrice
+      const pnl = (lastPrice - entryPrice) * position
+      trades.push({ date: periodBars[periodBars.length - 1].date, side: 'sell (close)', price: lastPrice, qty: position, pnl: Math.round(pnl * 100) / 100 })
+      if (pnl > 0) wins++; else losses++
+    }
+
+    const finalEquity = cash
+    const totalTrades = trades.filter(t => t.side.startsWith('sell')).length
+    const winRate = totalTrades > 0 ? (wins / totalTrades * 100) : 0
+    const dailyReturns = []
+    for (let i = 1; i < equityCurve.length; i++) {
+      dailyReturns.push((equityCurve[i].equity - equityCurve[i - 1].equity) / equityCurve[i - 1].equity)
+    }
+    const avgReturn = dailyReturns.reduce((a, b) => a + b, 0) / (dailyReturns.length || 1)
+    const stdDev = Math.sqrt(dailyReturns.reduce((sum, r) => sum + (r - avgReturn) ** 2, 0) / (dailyReturns.length || 1))
+    const sharpeRatio = stdDev > 0 ? (avgReturn / stdDev * Math.sqrt(252)) : 0
+    let peak = capital, maxDrawdown = 0
+    for (const point of equityCurve) {
+      if (point.equity > peak) peak = point.equity
+      const dd = (peak - point.equity) / peak * 100
+      if (dd > maxDrawdown) maxDrawdown = dd
+    }
+
+    return {
+      final_equity: Math.round(finalEquity * 100) / 100,
+      total_return: Math.round(((finalEquity - capital) / capital * 100) * 100) / 100,
+      sharpe_ratio: Math.round(sharpeRatio * 100) / 100,
+      max_drawdown: Math.round(maxDrawdown * 100) / 100,
+      win_rate: Math.round(winRate * 100) / 100,
+      total_trades: totalTrades,
+      wins, losses
+    }
+  }
+
+  const training = simulatePeriod(trainingBars, initialCapital)
+  const validation = simulatePeriod(validationBars, initialCapital)
+
+  // Overfitting score: ratio of in-sample vs out-of-sample Sharpe
+  const overfittingScore = validation.sharpe_ratio > 0
+    ? Math.round((training.sharpe_ratio / validation.sharpe_ratio) * 100) / 100
+    : 99 // If validation Sharpe is 0 or negative, it's extremely overfit
+
+  return {
+    strategy_id: strategyId,
+    symbol,
+    period,
+    training,
+    validation,
+    overfitting_score: overfittingScore,
+    passed: validation.sharpe_ratio > 0 && overfittingScore < 1.5
+  }
+}
+
 // ── Evaluate Live Signals for a Deployment ────────
 export async function evaluateDeploymentSignals(deployment) {
   const strategy = db.prepare('SELECT * FROM strategies WHERE id = ?').get(deployment.strategy_id)

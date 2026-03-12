@@ -312,6 +312,22 @@ try { db.exec(`ALTER TABLE tasks ADD COLUMN requires_approval INTEGER DEFAULT 0`
 try { db.exec(`ALTER TABLE tasks ADD COLUMN pipeline_id TEXT`) } catch (e) { /* already exists */ }
 try { db.exec(`ALTER TABLE tasks ADD COLUMN pipeline_step INTEGER DEFAULT 0`) } catch (e) { /* already exists */ }
 try { db.exec(`ALTER TABLE tasks ADD COLUMN nexus_score INTEGER`) } catch (e) { /* already exists */ }
+try { db.exec(`ALTER TABLE strategies ADD COLUMN paper_start_date TEXT`) } catch (e) { /* already exists */ }
+
+// Strategy meta table for learning loop
+db.exec(`
+  CREATE TABLE IF NOT EXISTS strategy_meta (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    indicator_combo TEXT NOT NULL,
+    strategy_type TEXT DEFAULT '',
+    pass_count INTEGER DEFAULT 0,
+    fail_count INTEGER DEFAULT 0,
+    avg_sharpe REAL DEFAULT 0,
+    avg_win_rate REAL DEFAULT 0,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_combo ON strategy_meta(indicator_combo);
+`)
 
 // Default settings
 const defaults = {

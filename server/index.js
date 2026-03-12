@@ -2188,24 +2188,74 @@ registerHeartbeat('market-cache-cleanup', 30 * 60 * 1000, () => {
   if (cleaned > 0) console.log(`🧹 Cleaned ${cleaned} expired cache entries`)
 })
 
-// Strategy discovery — every 24 hours
-registerHeartbeat('strategy-discovery', 24 * 60 * 60 * 1000, async () => {
+// Strategy discovery — every 12 hours (rotating targeted queries)
+const STRATEGY_SEARCH_QUERIES = [
+  'RSI divergence trading strategy backtested results sharpe ratio',
+  'mean reversion pairs trading algorithm python github',
+  'momentum breakout strategy backtested sharpe greater than 1.5',
+  'quantitative trading strategies walk-forward validation github',
+  'MACD histogram reversal strategy backtest win rate',
+  'Bollinger Band squeeze breakout trading algorithm',
+  'SMA crossover strategy 50 200 golden cross backtest',
+  'volume weighted momentum strategy algorithmic trading',
+  'swing trading algorithm RSI MACD combination backtest',
+  'EMA crossover scalping strategy automated backtest results',
+  'contrarian RSI overbought oversold mean reversion bot',
+  'dual momentum strategy backtested equities ETF',
+  'trend following moving average crossover strategy github',
+  'statistical arbitrage pairs trading algorithm python',
+  'turtle trading system automated implementation backtest',
+  'Keltner Channel breakout strategy automated trading',
+  'volatility breakout strategy ATR-based entry exit rules',
+  'sector rotation momentum strategy backtested results',
+  'overnight gap trading strategy algorithm backtest',
+  'relative strength index divergence automated strategy github',
+]
+let strategySearchIndex = 0
+
+registerHeartbeat('strategy-discovery', 12 * 60 * 60 * 1000, async () => {
   try {
     const scout = agents.find(a => a.id === 'scout')
     if (!scout) return
+
+    // Rotate through search queries
+    const query = STRATEGY_SEARCH_QUERIES[strategySearchIndex % STRATEGY_SEARCH_QUERIES.length]
+    strategySearchIndex++
+
+    // Get existing strategy names to avoid duplicates
+    const existing = db.prepare('SELECT name FROM strategies').all().map(s => s.name.toLowerCase())
+    const existingList = existing.length > 0 ? `\n\nAlready discovered strategies (DO NOT duplicate): ${existing.slice(-20).join(', ')}` : ''
+
+    // Get learning feedback from strategy_meta
+    let learningFeedback = ''
+    try {
+      const meta = db.prepare('SELECT indicator_combo, pass_count, fail_count FROM strategy_meta ORDER BY pass_count DESC LIMIT 10').all()
+      if (meta.length > 0) {
+        const insights = meta.map(m => {
+          const total = m.pass_count + m.fail_count
+          const rate = total > 0 ? Math.round(m.pass_count / total * 100) : 0
+          return `${m.indicator_combo}: ${rate}% pass rate (${total} tested)`
+        })
+        learningFeedback = `\n\n## Historical Strategy Performance\nThese indicator combinations have been backtested. Focus on high pass-rate combos:\n${insights.join('\n')}`
+      }
+    } catch (e) { /* strategy_meta may not exist yet */ }
+
     const taskId = uuid()
     db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, 'high', 'scout', 'todo')`)
-      .run(taskId, 'Trading Strategy Discovery', `Search GitHub, Reddit r/algotrading, and X/Twitter for profitable algorithmic trading strategies. Look for:
+      .run(taskId, 'Trading Strategy Discovery', `Search GitHub, Reddit r/algotrading, and X/Twitter for profitable algorithmic trading strategies.
 
-1. **GitHub repos** with specific entry/exit rules (not just frameworks)
-2. **Reddit r/algotrading** discussions about strategies with verified backtests
-3. **X/Twitter** posts about algo trading bots, backtested results, and new techniques
+**Focused search query**: "${query}"
 
-Search terms: "algo trading bot", "RSI strategy backtest", "MACD crossover strategy", "mean reversion bot", "momentum strategy results", "trading bot github"
+Look for:
+1. **GitHub repos** with specific entry/exit rules, backtest code (Qlib, Zipline, Backtrader, custom Python)
+2. **Reddit r/algotrading, r/quantfinance** — strategies with verified backtest results and Sharpe ratios > 1.0
+3. **X/Twitter** — quant traders sharing algo trading strategies with performance data
 
 For each strategy found, extract:
-- Clear entry and exit conditions using these indicators: rsi14, macd, sma20, sma50, sma200, ema12, ema26, bollinger_upper, bollinger_lower, price, volume
+- Clear entry and exit conditions using these indicators: rsi14, macd_histogram, macd_signal, macd_macd, sma20, sma50, sma200, ema12, ema26, bollinger_upper, bollinger_lower, price, volume
 - Use operators: >, <, >=, <=
+- Value can be a number OR another indicator name (e.g., "sma50" crosses above "sma200")
+${existingList}${learningFeedback}
 
 Return ONLY a JSON array:
 [
@@ -2224,44 +2274,110 @@ Return ONLY a JSON array:
   }
 ]
 
-Find 3-5 promising strategies with specific, testable rules.`)
+Find 3-5 promising strategies with specific, testable rules. Prefer strategies with reported Sharpe > 1.0 and documented backtest results.`)
     setTimeout(() => processAgentQueue('scout'), 3000)
-    console.log('💓 Strategy discovery queued for Scout')
+    console.log(`💓 Strategy discovery queued — search: "${query.slice(0, 50)}..."`)
   } catch (e) {
     console.error('Strategy discovery heartbeat failed:', e.message)
   }
 })
 
-// Auto-backtest newly discovered strategies — every 6 hours
-registerHeartbeat('auto-backtest', 6 * 60 * 60 * 1000, async () => {
+// ── Strategy Learning Loop Helper ─────────────────
+function logStrategyMeta(strategy, passed) {
+  try {
+    const logic = JSON.parse(strategy.logic)
+    const indicators = (logic.indicators || []).sort().join('+') || 'unknown'
+    const existing = db.prepare('SELECT * FROM strategy_meta WHERE indicator_combo = ?').get(indicators)
+    if (existing) {
+      if (passed) {
+        db.prepare("UPDATE strategy_meta SET pass_count = pass_count + 1, updated_at = datetime('now') WHERE indicator_combo = ?").run(indicators)
+      } else {
+        db.prepare("UPDATE strategy_meta SET fail_count = fail_count + 1, updated_at = datetime('now') WHERE indicator_combo = ?").run(indicators)
+      }
+    } else {
+      db.prepare('INSERT INTO strategy_meta (indicator_combo, strategy_type, pass_count, fail_count) VALUES (?, ?, ?, ?)').run(
+        indicators, strategy.type || 'technical', passed ? 1 : 0, passed ? 0 : 1
+      )
+    }
+  } catch (e) { /* silently skip meta logging errors */ }
+}
+
+// Auto-backtest newly discovered strategies — every 2 hours
+// Multi-symbol testing + walk-forward validation + strict thresholds
+const BACKTEST_SYMBOLS = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'AMZN']
+registerHeartbeat('auto-backtest', 2 * 60 * 60 * 1000, async () => {
   try {
     const discovered = db.prepare("SELECT * FROM strategies WHERE status = 'discovered' LIMIT 5").all()
     if (discovered.length === 0) return
 
-    const minSharpe = parseFloat(getSetting('min_backtest_sharpe') || '1.0')
+    const minSharpe = parseFloat(getSetting('min_backtest_sharpe') || '1.5')
     const minWinRate = parseFloat(getSetting('min_backtest_win_rate') || '55')
+    const maxDrawdown = 15
+    const minTrades = 10 // per symbol
 
     for (const strategy of discovered) {
       try {
         db.prepare("UPDATE strategies SET status = 'backtesting', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
-        const result = await backtest.runBacktest(strategy.id, 'SPY', '1y', 10000)
+        let passCount = 0
+        let totalSharpe = 0
+        let totalWinRate = 0
+        let totalDrawdown = 0
+        let symbolsTested = 0
 
-        if (result.sharpe_ratio >= minSharpe && result.win_rate >= minWinRate) {
-          db.prepare("UPDATE strategies SET status = 'approved', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
-          console.log(`✅ Strategy "${strategy.name}" APPROVED — Sharpe: ${result.sharpe_ratio}, Win: ${result.win_rate}%`)
-
-          // Auto-deploy if enabled
-          const autoDeploy = getSetting('strategy_auto_deploy')
-          if (autoDeploy === 'true') {
-            const depId = uuid()
-            db.prepare('INSERT INTO bot_deployments (id, strategy_id, symbols, status) VALUES (?, ?, ?, ?)').run(depId, strategy.id, '["SPY"]', 'active')
-            db.prepare("UPDATE strategies SET status = 'deployed', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
-            console.log(`🚀 Auto-deployed strategy "${strategy.name}"`)
-          }
-        } else {
-          db.prepare("UPDATE strategies SET status = 'retired', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
-          console.log(`❌ Strategy "${strategy.name}" RETIRED — Sharpe: ${result.sharpe_ratio}, Win: ${result.win_rate}%`)
+        // Phase 1: Multi-symbol basic backtest
+        for (const sym of BACKTEST_SYMBOLS) {
+          try {
+            const result = await backtest.runBacktest(strategy.id, sym, '1y', 10000)
+            symbolsTested++
+            if (result.sharpe_ratio >= minSharpe && result.win_rate >= minWinRate && result.max_drawdown <= maxDrawdown && result.total_trades >= minTrades) {
+              passCount++
+              totalSharpe += result.sharpe_ratio
+              totalWinRate += result.win_rate
+              totalDrawdown += result.max_drawdown
+            }
+          } catch (e) { /* symbol failed, skip */ }
         }
+
+        if (passCount < 3) {
+          db.prepare("UPDATE strategies SET status = 'retired', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+          console.log(`❌ Strategy "${strategy.name}" RETIRED — passed ${passCount}/${symbolsTested} symbols`)
+          logStrategyMeta(strategy, false)
+          continue
+        }
+
+        // Phase 2: Walk-forward validation on SPY
+        try {
+          const wfResult = await backtest.runWalkForwardBacktest(strategy.id, 'SPY', '2y', 10000)
+          if (!wfResult.passed) {
+            db.prepare("UPDATE strategies SET status = 'retired', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+            console.log(`❌ Strategy "${strategy.name}" RETIRED — walk-forward failed (overfit: ${wfResult.overfitting_score})`)
+            logStrategyMeta(strategy, false)
+            continue
+          }
+        } catch (e) {
+          console.log(`⚠️ Walk-forward skipped for "${strategy.name}": ${e.message}`)
+          // Don't fail strategy if walk-forward data unavailable, just proceed
+        }
+
+        // Passed both phases — approve (goes to paper_testing first if column exists)
+        const avgSharpe = Math.round(totalSharpe / passCount * 100) / 100
+        const avgWinRate = Math.round(totalWinRate / passCount * 100) / 100
+
+        // Check if paper_start_date column exists
+        let hasPaperCol = false
+        try { db.prepare("SELECT paper_start_date FROM strategies LIMIT 0").get(); hasPaperCol = true } catch (e) {}
+
+        if (hasPaperCol) {
+          db.prepare("UPDATE strategies SET status = 'paper_testing', paper_start_date = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+          // Auto-deploy to paper
+          const depId = uuid()
+          db.prepare('INSERT INTO bot_deployments (id, strategy_id, symbols, status) VALUES (?, ?, ?, ?)').run(depId, strategy.id, JSON.stringify(BACKTEST_SYMBOLS.slice(0, 3)), 'active')
+          console.log(`📋 Strategy "${strategy.name}" → PAPER TESTING — Avg Sharpe: ${avgSharpe}, Win: ${avgWinRate}%, passed ${passCount}/${symbolsTested}`)
+        } else {
+          db.prepare("UPDATE strategies SET status = 'approved', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+          console.log(`✅ Strategy "${strategy.name}" APPROVED — Avg Sharpe: ${avgSharpe}, Win: ${avgWinRate}%, passed ${passCount}/${symbolsTested}`)
+        }
+        logStrategyMeta(strategy, true)
       } catch (e) {
         db.prepare("UPDATE strategies SET status = 'discovered', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
         console.error(`Backtest failed for "${strategy.name}":`, e.message)
@@ -2269,6 +2385,69 @@ registerHeartbeat('auto-backtest', 6 * 60 * 60 * 1000, async () => {
     }
   } catch (e) {
     console.error('Auto-backtest heartbeat failed:', e.message)
+  }
+})
+
+// Paper trading graduation check — every 6 hours
+registerHeartbeat('paper-graduation', 6 * 60 * 60 * 1000, async () => {
+  try {
+    const paperStrategies = db.prepare("SELECT * FROM strategies WHERE status = 'paper_testing' AND paper_start_date IS NOT NULL").all()
+    if (paperStrategies.length === 0) return
+
+    for (const strategy of paperStrategies) {
+      const startDate = new Date(strategy.paper_start_date)
+      const daysSincePaper = (Date.now() - startDate.getTime()) / (1000 * 60 * 60 * 24)
+
+      // Need 30 days of paper trading
+      if (daysSincePaper < 30) continue
+
+      // Check paper trading performance
+      const deployment = db.prepare("SELECT * FROM bot_deployments WHERE strategy_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1").get(strategy.id)
+      if (!deployment) {
+        // No deployment found, auto-deploy for paper testing
+        const depId = uuid()
+        db.prepare('INSERT INTO bot_deployments (id, strategy_id, symbols, status) VALUES (?, ?, ?, ?)').run(depId, strategy.id, '["SPY","QQQ","AAPL"]', 'active')
+        continue
+      }
+
+      // Check if paper performance is acceptable
+      const perf = db.prepare("SELECT COALESCE(SUM(pnl), 0) as total_pnl, COUNT(*) as trade_count, COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) as wins FROM trades WHERE strategy_id = ? AND created_at >= ?").get(strategy.id, strategy.paper_start_date)
+
+      const backtestResult = db.prepare("SELECT * FROM strategy_backtests WHERE strategy_id = ? ORDER BY created_at DESC LIMIT 1").get(strategy.id)
+
+      if (perf.trade_count < 5) {
+        console.log(`📋 Strategy "${strategy.name}" paper testing: only ${perf.trade_count} trades in ${Math.round(daysSincePaper)} days, waiting...`)
+        continue
+      }
+
+      const paperWinRate = perf.trade_count > 0 ? (perf.wins / perf.trade_count * 100) : 0
+
+      // If performance is acceptable (win rate within 30% of backtest), graduate
+      const backtestWinRate = backtestResult?.win_rate || 50
+      const deviation = Math.abs(paperWinRate - backtestWinRate) / backtestWinRate
+
+      if (deviation <= 0.3 && perf.total_pnl >= 0) {
+        db.prepare("UPDATE strategies SET status = 'approved', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+        // Create proposal for user
+        const proposalId = uuid()
+        db.prepare('INSERT INTO proposals (id, type, title, description, proposed_by, priority) VALUES (?, ?, ?, ?, ?, ?)').run(
+          proposalId, 'workflow',
+          `Deploy Strategy: ${strategy.name}`,
+          `Strategy "${strategy.name}" has completed 30 days of paper trading.\n\nPaper results: ${perf.trade_count} trades, ${perf.wins} wins (${Math.round(paperWinRate)}%), P&L: $${perf.total_pnl.toFixed(2)}\nBacktest win rate: ${backtestWinRate}%\n\nApprove to deploy with real capital.`,
+          'oracle', 'high'
+        )
+        console.log(`✅ Strategy "${strategy.name}" GRADUATED paper testing → approved (${perf.trade_count} trades, ${Math.round(paperWinRate)}% win, $${perf.total_pnl.toFixed(2)} P&L)`)
+      } else if (daysSincePaper > 60) {
+        // 60 days and still not performing — retire
+        db.prepare("UPDATE strategies SET status = 'retired', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+        if (deployment) {
+          db.prepare("UPDATE bot_deployments SET status = 'stopped', stopped_at = datetime('now') WHERE id = ?").run(deployment.id)
+        }
+        console.log(`❌ Strategy "${strategy.name}" RETIRED after 60 days paper testing — underperforming`)
+      }
+    }
+  } catch (e) {
+    console.error('Paper graduation heartbeat failed:', e.message)
   }
 })
 
@@ -2610,6 +2789,22 @@ function buildChatSnapshot() {
     sections.push('## Skills\nNo skills installed yet. Use create_skill or discover_skills to add them.')
   }
 
+  // Trading pipeline status
+  const stratCounts = db.prepare("SELECT status, COUNT(*) as c FROM strategies GROUP BY status").all()
+  const stratMap = {}
+  for (const row of stratCounts) stratMap[row.status] = row.c
+  const activeDeployments = db.prepare("SELECT bd.id, s.name, bd.total_pnl FROM bot_deployments bd JOIN strategies s ON s.id = bd.strategy_id WHERE bd.status = 'active'").all()
+  const recentBacktests = db.prepare("SELECT sb.sharpe_ratio, sb.win_rate, sb.max_drawdown, sb.total_trades, s.name FROM strategy_backtests sb JOIN strategies s ON s.id = sb.strategy_id ORDER BY sb.created_at DESC LIMIT 3").all()
+
+  let tradingSection = `## Trading Pipeline\nStrategies: ${stratMap.discovered || 0} discovered, ${stratMap.backtesting || 0} backtesting, ${stratMap.approved || 0} approved, ${stratMap.deployed || 0} deployed, ${stratMap.retired || 0} retired`
+  if (activeDeployments.length) {
+    tradingSection += '\nActive: ' + activeDeployments.map(d => `${d.name} ($${(d.total_pnl || 0).toFixed(2)} P&L)`).join(', ')
+  }
+  if (recentBacktests.length) {
+    tradingSection += '\nRecent backtests: ' + recentBacktests.map(b => `${b.name} (Sharpe: ${b.sharpe_ratio}, Win: ${b.win_rate}%, DD: ${b.max_drawdown}%)`).join(', ')
+  }
+  sections.push(tradingSection)
+
   return sections.join('\n\n')
 }
 
@@ -2696,6 +2891,98 @@ Focus on actionable techniques that can be injected as agent instructions. Look 
         .run(id, `Discover skills: ${query || 'AI agent techniques'}`, desc, 'scout', 'medium', 'todo')
       return { ok: true, message: `Scout searching for skills: "${query || 'AI agent techniques'}"`, task_id: id }
     }
+    case 'find_strategies': {
+      const { query, sources } = payload
+      const sourceList = (sources || ['github', 'reddit', 'x']).join(', ')
+      const id = uuid()
+      db.prepare('INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(id, `Trading Strategy Discovery: ${query || 'find profitable strategies'}`,
+          `Search ${sourceList} specifically for algorithmic trading strategies. Query: "${query || 'profitable algo trading strategies'}"
+
+Look for:
+1. **GitHub repos** with backtested strategy code (Qlib, Zipline, Backtrader, custom)
+2. **Reddit r/algotrading** — strategies with verified backtest results and Sharpe ratios
+3. **X/Twitter** — quant traders sharing entry/exit rules with performance data
+
+For each strategy found, extract clear entry/exit conditions using these indicators: rsi14, macd_histogram, macd_signal, macd_macd, sma20, sma50, sma200, ema12, ema26, bollinger_upper, bollinger_lower, price, volume
+Operators: >, <, >=, <=
+
+Return ONLY a JSON array:
+[{"name":"Strategy Name","type":"technical|momentum|mean_reversion|custom","description":"What it does","source":"github|reddit|x","source_url":"URL","logic":{"entry_conditions":[{"indicator":"rsi14","operator":"<","value":30}],"exit_conditions":[{"indicator":"rsi14","operator":">","value":70}],"indicators":["rsi14"],"stop_loss_percent":5}}]
+
+Find 3-5 strategies with specific, testable rules.`, 'high', 'scout', 'todo')
+      setTimeout(() => processAgentQueue('scout'), 3000)
+      return { ok: true, message: `Scout searching for trading strategies: "${query || 'profitable algo strategies'}"`, task_id: id }
+    }
+    case 'backtest_all': {
+      const discovered = db.prepare("SELECT * FROM strategies WHERE status = 'discovered' LIMIT 10").all()
+      if (discovered.length === 0) return { ok: true, message: 'No discovered strategies to backtest' }
+
+      const minSharpe = parseFloat(getSetting('min_backtest_sharpe') || '1.5')
+      const minWinRate = parseFloat(getSetting('min_backtest_win_rate') || '55')
+      const TEST_SYMBOLS = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'AMZN']
+      let approved = 0, retired = 0
+
+      for (const strategy of discovered) {
+        try {
+          db.prepare("UPDATE strategies SET status = 'backtesting', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+          let passCount = 0
+          for (const sym of TEST_SYMBOLS) {
+            try {
+              const result = await backtest.runBacktest(strategy.id, sym, '1y', 10000)
+              if (result.sharpe_ratio >= minSharpe && result.win_rate >= minWinRate && result.max_drawdown <= 15 && result.total_trades >= 10) passCount++
+            } catch (e) { /* symbol failed, skip */ }
+          }
+          if (passCount >= 3) {
+            db.prepare("UPDATE strategies SET status = 'approved', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+            approved++
+          } else {
+            db.prepare("UPDATE strategies SET status = 'retired', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+            retired++
+          }
+        } catch (e) {
+          db.prepare("UPDATE strategies SET status = 'discovered', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+        }
+      }
+      return { ok: true, message: `Backtested ${discovered.length} strategies: ${approved} approved, ${retired} retired` }
+    }
+    case 'deploy_strategy': {
+      const strategy = db.prepare('SELECT * FROM strategies WHERE id = ?').get(payload.strategy_id)
+      if (!strategy) return { ok: false, message: 'Strategy not found' }
+      if (strategy.status !== 'approved') return { ok: false, message: `Strategy status is "${strategy.status}", must be "approved"` }
+      const depId = uuid()
+      const symbols = payload.symbols || '["SPY"]'
+      db.prepare('INSERT INTO bot_deployments (id, strategy_id, symbols, status) VALUES (?, ?, ?, ?)').run(depId, strategy.id, typeof symbols === 'string' ? symbols : JSON.stringify(symbols), 'active')
+      db.prepare("UPDATE strategies SET status = 'deployed', updated_at = datetime('now') WHERE id = ?").run(strategy.id)
+      return { ok: true, message: `Strategy "${strategy.name}" deployed to paper trading` }
+    }
+    case 'trading_report': {
+      const stratCounts = db.prepare("SELECT status, COUNT(*) as c FROM strategies GROUP BY status").all()
+      const pipeline = {}
+      for (const row of stratCounts) pipeline[row.status] = row.c
+
+      const activeDeployments = db.prepare("SELECT bd.*, s.name as strategy_name FROM bot_deployments bd JOIN strategies s ON s.id = bd.strategy_id WHERE bd.status = 'active'").all()
+      const recentTrades = db.prepare("SELECT * FROM trades ORDER BY created_at DESC LIMIT 10").all()
+      const totalPnl = db.prepare("SELECT COALESCE(SUM(pnl), 0) as total FROM trades WHERE pnl IS NOT NULL").get().total
+
+      let positions = []
+      try { positions = await broker.getPositions() } catch (e) { /* no broker */ }
+
+      let account = null
+      try { account = await broker.getAccount() } catch (e) { /* no broker */ }
+
+      const report = {
+        pipeline_summary: pipeline,
+        active_deployments: activeDeployments.length,
+        deployment_names: activeDeployments.map(d => d.strategy_name),
+        total_pnl: Math.round(totalPnl * 100) / 100,
+        recent_trades: recentTrades.length,
+        open_positions: positions.length,
+        account_equity: account?.equity || 'N/A',
+        buying_power: account?.buying_power || 'N/A'
+      }
+      return { ok: true, message: `**Trading Report**\n- Pipeline: ${JSON.stringify(pipeline)}\n- Active deployments: ${activeDeployments.length} (${activeDeployments.map(d => d.strategy_name).join(', ') || 'none'})\n- Total P&L: $${report.total_pnl}\n- Open positions: ${positions.length}\n- Account equity: $${report.account_equity}`, data: report }
+    }
     default:
       return { ok: false, message: `Unknown action: ${type}` }
   }
@@ -2715,6 +3002,10 @@ When the user asks you to DO something, output an action block:
 [ACTION:create_skill]{"name":"Skill Name","description":"What it does","skill_md":"# Skill Name\\n\\nInstructions the agent follows...","tags":["research"],"agents":["scout"]}[/ACTION]
 [ACTION:assign_skill]{"slug":"skill-slug","agent_id":"scout"}[/ACTION]
 [ACTION:discover_skills]{"query":"prompt engineering techniques","sources":["github","reddit","x"]}[/ACTION]
+[ACTION:find_strategies]{"query":"momentum breakout strategies","sources":["github","reddit","x"]}[/ACTION]
+[ACTION:backtest_all]{}[/ACTION]
+[ACTION:deploy_strategy]{"strategy_id":"uuid-here"}[/ACTION]
+[ACTION:trading_report]{}[/ACTION]
 
 Rules: One action per response. Confirm what you'll do before the action block. Never invent task IDs.
 
@@ -2724,6 +3015,13 @@ Skills are SKILL.md instruction packages that inject into agent prompts at runti
 - **discover_skills**: When the user wants to find NEW skills from the web. This sends Scout to search GitHub, Reddit, X, and AI forums. Results appear as proposals for user approval.
 - **assign_skill**: Assign an existing skill to another agent by slug.
 When asked about improving agents or finding new techniques, prefer discover_skills to search the web.
+
+## Trading Pipeline
+- **find_strategies**: Send Scout to search GitHub, Reddit, X for algo trading strategies. Returns structured strategies that get auto-backtested.
+- **backtest_all**: Immediately backtest all discovered strategies on 5 symbols (SPY, QQQ, AAPL, MSFT, AMZN) with strict thresholds.
+- **deploy_strategy**: Deploy an approved strategy to paper trading.
+- **trading_report**: Get full trading pipeline status — strategy counts, deployments, P&L, positions.
+When asked about trading, strategies, or making money with stocks, use these actions.
 
 ## Current System State
 `
@@ -3253,6 +3551,324 @@ registerHeartbeat('trace-prune', 6 * 60 * 60 * 1000, () => {
   const deleted = db.prepare("DELETE FROM task_traces WHERE created_at < datetime('now', '-7 days')").run()
   if (deleted.changes > 0) console.log(`🧹 Pruned ${deleted.changes} old trace rows`)
 })
+
+// ── Seed Core Trading Skills ─────────────────────
+function seedTradingSkills() {
+  const existingCount = db.prepare('SELECT COUNT(*) as c FROM skills').get().c
+  if (existingCount >= 3) return // Already seeded
+
+  const TRADING_SKILLS = [
+    {
+      slug: 'alpaca-trading-pro',
+      name: 'Alpaca Trading Pro',
+      description: 'Advanced Alpaca order execution, position sizing, risk management, and trailing stops',
+      tags: ['trading', 'alpaca', 'execution'],
+      agents: ['oracle', 'dealer'],
+      skill_md: `# Alpaca Trading Pro
+
+## Order Execution
+When executing trades through Alpaca:
+1. **Market orders** for high-liquidity symbols (SPY, QQQ, AAPL) — fast fills, minimal slippage
+2. **Limit orders** for mid/low-cap stocks — set limit 0.1-0.5% above/below current price
+3. **Stop-loss orders** — always set on entry. Default 5%, tighten to 3% for volatile stocks
+4. **Trailing stops** — use 2-3% trail for momentum plays, 5% for swing trades
+
+## Position Sizing (Fixed Fractional)
+- Never risk more than 2% of portfolio on a single trade
+- Position size = (Portfolio * 0.02) / (Entry - StopLoss)
+- Maximum single position: 10% of portfolio
+- Scale in: enter 50% at signal, add 50% on confirmation
+
+## Risk Rules
+- Maximum 5 concurrent positions
+- Maximum 3 trades per day to avoid overtrading
+- No trading in first 15min or last 15min of session (volatile)
+- If portfolio drops 3% in a day, stop all new entries
+- Check correlation — don't hold 3+ tech stocks simultaneously
+
+## Order Flow
+1. Check market status (must be open)
+2. Verify buying power
+3. Calculate position size
+4. Place order with stop-loss
+5. Log trade with strategy reference
+6. Monitor for exit signals`
+    },
+    {
+      slug: 'technical-analysis-master',
+      name: 'Technical Analysis Master',
+      description: 'RSI, MACD, Bollinger, SMA/EMA crossovers, volume analysis, chart pattern recognition',
+      tags: ['trading', 'analysis', 'indicators'],
+      agents: ['oracle'],
+      skill_md: `# Technical Analysis Master
+
+## Indicator Signals
+
+### RSI (14-period)
+- **Oversold**: RSI < 30 → potential buy (confirm with price action)
+- **Overbought**: RSI > 70 → potential sell or tighten stops
+- **RSI Divergence**: Price makes new low but RSI makes higher low → strong reversal signal
+- **Hidden divergence**: Price makes higher low, RSI makes lower low → trend continuation
+
+### MACD (12/26/9)
+- **Bullish crossover**: MACD line crosses above signal line → buy signal
+- **Bearish crossover**: MACD line crosses below signal line → sell signal
+- **Histogram expansion**: Increasing momentum in current direction
+- **Zero-line cross**: MACD crossing zero confirms trend change
+
+### Moving Averages
+- **Golden Cross**: SMA50 crosses above SMA200 → long-term bullish
+- **Death Cross**: SMA50 crosses below SMA200 → long-term bearish
+- **Price vs SMA20**: Above = short-term bullish, below = bearish
+- **EMA12/26 crossover**: Fast trend signals (use with RSI confirmation)
+
+### Bollinger Bands (20, 2σ)
+- **Squeeze**: Bands narrowing → breakout imminent (direction unknown)
+- **Walk the band**: Price riding upper band = strong uptrend
+- **Mean reversion**: Price at lower band + RSI < 35 → buy signal
+- **Band width**: Use as volatility filter — skip trades when width < 2%
+
+## Multi-Indicator Confirmation
+Strong buy: RSI < 35 + MACD bullish crossover + price near SMA support
+Strong sell: RSI > 70 + MACD bearish crossover + price at resistance
+Never trade on a single indicator alone. Require 2+ confirmations.`
+    },
+    {
+      slug: 'strategy-backtesting',
+      name: 'Strategy Backtesting',
+      description: 'Designing testable strategies, walk-forward validation, avoiding overfitting, performance metrics',
+      tags: ['trading', 'backtesting', 'validation'],
+      agents: ['oracle'],
+      skill_md: `# Strategy Backtesting
+
+## Designing Testable Strategies
+Every strategy MUST have:
+1. **Clear entry conditions** — specific indicator values (e.g., RSI < 30 AND price > SMA200)
+2. **Clear exit conditions** — profit target OR indicator signal (e.g., RSI > 70)
+3. **Stop-loss** — always include, typically 3-7%
+4. **Position sizing** — fixed dollar amount or percentage of portfolio
+
+## Avoiding Overfitting
+- **Minimum 100 trades** in backtest period — fewer = unreliable statistics
+- **Walk-forward validation** — train on 70%, validate on 30%. If validation Sharpe is less than 60% of training Sharpe, strategy is overfit
+- **Multi-symbol testing** — strategy must work on 3+ different symbols
+- **Parameter sensitivity** — vary each parameter ±20%. If results collapse, it's curve-fitted
+- **Avoid too many conditions** — max 3 entry conditions, 2 exit conditions. More = overfitting
+
+## Key Metrics
+- **Sharpe Ratio** > 1.5 = good, > 2.0 = excellent (below 1.0 = reject)
+- **Win Rate** > 55% for trend strategies, > 45% acceptable if reward:risk > 2:1
+- **Max Drawdown** < 15% = acceptable, > 25% = too risky
+- **Profit Factor** > 1.5 (total profits / total losses)
+- **Total Trades** > 100 for statistical significance
+
+## Walk-Forward Process
+1. Split historical data: 70% training, 30% validation
+2. Optimize on training period
+3. Run UNCHANGED strategy on validation period
+4. Compare metrics — validation should be within 40% of training
+5. If validated, run on paper for 30 days before live capital`
+    },
+    {
+      slug: 'crypto-defi-trading',
+      name: 'Crypto & DeFi Trading',
+      description: 'DEX trading, yield farming, liquidity provision, token safety analysis',
+      tags: ['crypto', 'defi', 'trading'],
+      agents: ['scout', 'oracle'],
+      skill_md: `# Crypto & DeFi Trading
+
+## Token Safety Checks (ALWAYS before trading)
+1. Contract verified on block explorer
+2. Liquidity locked (check lock period)
+3. No mint function / renounced ownership
+4. Token age > 7 days minimum
+5. Minimum $500K liquidity pool
+6. No suspicious holder concentration (top wallet < 10%)
+
+## DEX Trading
+- Use limit orders on DEX aggregators (1inch, Jupiter) when possible
+- Set slippage tolerance: 0.5% for stables, 1-2% for majors, 3-5% for small caps
+- Check gas fees — don't trade if fees > 2% of position size
+- Use MEV protection (Flashbots on ETH, Jito on SOL)
+
+## Yield Farming
+- Only farm on audited protocols (TVL > $10M)
+- Impermanent loss calculation: always model worst-case 50% price divergence
+- Compound frequency: daily for high APR, weekly for moderate
+- Monitor pool TVL — exit if dropping > 20% in 24h
+
+## Research Signals
+- Track whale wallets (>$1M movements)
+- Monitor new token listings on major CEXs
+- Watch DeFi TVL trends across chains
+- Follow governance proposals that affect tokenomics`
+    },
+    {
+      slug: 'prediction-markets',
+      name: 'Prediction Markets',
+      description: 'Polymarket/Kalshi strategies, event-driven trading, weather arbitrage',
+      tags: ['prediction', 'polymarket', 'kalshi'],
+      agents: ['scout', 'dealer'],
+      skill_md: `# Prediction Markets
+
+## Platform Overview
+- **Polymarket**: Crypto-native, wide range of events, higher liquidity
+- **Kalshi**: CFTC-regulated, US-focused, economic events, Fed decisions
+
+## Core Strategies
+
+### Information Edge
+1. Identify events where you have faster/better information than the market
+2. Weather events: NOAA updates every 6 hours — market reacts slowly
+3. Economic data: Fed meeting minutes, CPI releases — trade the "expected vs actual" gap
+4. Political events: poll aggregators update faster than prediction markets
+
+### Market Making
+1. Place both YES and NO orders with 3-5% spread
+2. Only on high-volume markets (>$100K daily volume)
+3. Manage inventory — don't get stuck on one side
+4. Exit all positions 24h before resolution (avoid settlement risk)
+
+### Arbitrage Detection
+1. Compare same event across Polymarket vs Kalshi
+2. If YES on Platform A + NO on Platform B < $1.00 → guaranteed profit
+3. Account for fees (2% on Polymarket, varies on Kalshi)
+4. Speed matters — automate detection, manual execution
+
+## Risk Management
+- Maximum 10% of bankroll on single event
+- Diversify across 5+ uncorrelated events
+- Never hold to resolution if you can lock in profit early
+- Track resolution accuracy of each market type`
+    },
+    {
+      slug: 'whale-tracking',
+      name: 'Whale Tracking',
+      description: 'On-chain whale monitoring, smart money following, large wallet alerts',
+      tags: ['crypto', 'whales', 'on-chain'],
+      agents: ['scout'],
+      skill_md: `# Whale Tracking
+
+## What to Monitor
+1. **Large transfers** — wallets moving >$1M in tokens to/from exchanges
+2. **Exchange inflows** — large deposits to exchanges signal potential selling
+3. **Exchange outflows** — large withdrawals signal accumulation
+4. **Smart money wallets** — track wallets with >70% historical win rate
+5. **New wallet creation** — large new wallets on a token = institutional interest
+
+## Signal Interpretation
+- **Whale buys on DEX**: Bullish — especially if multiple whales in 24h
+- **Whale moves to exchange**: Bearish — likely preparing to sell
+- **Whale moves from exchange to cold storage**: Very bullish — long-term hold
+- **Cluster buying**: 3+ whales buying same token in 48h = strong signal
+
+## Data Sources
+- Etherscan/block explorers for transaction monitoring
+- Whale Alert / Arkham Intelligence for labeled wallets
+- DEX Screener for large swap monitoring
+- Nansen for smart money tracking
+
+## Research Workflow
+1. Identify unusual large transactions (>$500K)
+2. Check wallet history — is this a known smart money wallet?
+3. Check the token fundamentals — why might whales be accumulating?
+4. Cross-reference with technical analysis
+5. Report findings with confidence score (low/medium/high)
+6. Include source URLs and wallet addresses`
+    },
+    {
+      slug: 'market-sentiment',
+      name: 'Market Sentiment Analysis',
+      description: 'Social media sentiment, fear/greed index, news impact analysis',
+      tags: ['sentiment', 'analysis', 'social'],
+      agents: ['scout', 'oracle'],
+      skill_md: `# Market Sentiment Analysis
+
+## Sentiment Sources
+1. **Fear & Greed Index**: <25 = extreme fear (contrarian buy), >75 = extreme greed (contrarian sell)
+2. **Twitter/X volume**: Unusual spike in mentions = potential move incoming
+3. **Reddit sentiment**: r/wallstreetbets, r/stocks, r/cryptocurrency — track bullish/bearish ratio
+4. **News headlines**: Major financial outlets (Bloomberg, Reuters, CNBC)
+5. **Options flow**: Put/call ratio >1.2 = bearish sentiment, <0.7 = bullish
+
+## Analysis Framework
+1. **Quantify sentiment**: Rate each source -1 (bearish) to +1 (bullish)
+2. **Weight by reliability**: News (0.3) + Options flow (0.3) + Social (0.2) + Fear/Greed (0.2)
+3. **Contrarian signals**: When composite > +0.8, consider reducing exposure (everyone's bullish)
+4. **Confirmation**: Sentiment should CONFIRM technical signals, not override them
+
+## News Impact Categories
+- **High impact**: Fed decisions, earnings beats/misses, regulatory actions → trade within 1 hour
+- **Medium impact**: Analyst upgrades/downgrades, sector rotation → trade within 24 hours
+- **Low impact**: General market commentary → no immediate action
+
+## Research Workflow
+1. Check Fear & Greed Index daily
+2. Scan top trending tickers on social platforms
+3. Monitor breaking financial news
+4. Calculate composite sentiment score
+5. Flag divergences (bullish technicals + bearish sentiment = caution)
+6. Report with supporting evidence and URLs`
+    },
+    {
+      slug: 'risk-management',
+      name: 'Risk Management',
+      description: 'Position sizing (Kelly criterion), portfolio correlation, drawdown rules, stop-loss strategies',
+      tags: ['trading', 'risk', 'portfolio'],
+      agents: ['oracle', 'dealer'],
+      skill_md: `# Risk Management
+
+## Position Sizing
+
+### Kelly Criterion (Modified)
+- Kelly % = (Win Rate × Avg Win / Avg Loss - (1 - Win Rate)) / (Avg Win / Avg Loss)
+- **Use Half-Kelly**: divide result by 2 for safety margin
+- Example: 60% win rate, 2:1 reward:risk → Kelly = 20%, Half-Kelly = 10%
+- Maximum single position: 10% of portfolio regardless of Kelly
+
+### Fixed Fractional
+- Risk 1-2% of portfolio per trade
+- Position size = (Portfolio × Risk%) / (Entry - StopLoss)
+- Reduce to 0.5% during high-volatility periods (VIX > 25)
+
+## Portfolio Rules
+1. **Correlation check**: Max 3 highly correlated positions (same sector/asset class)
+2. **Sector exposure**: No more than 30% in any single sector
+3. **Cash reserve**: Always maintain 20% cash for opportunities
+4. **Drawdown circuit breaker**: If portfolio drops 10% from peak, reduce all positions by 50%
+5. **Daily loss limit**: Stop trading if daily loss exceeds 3% of portfolio
+
+## Stop-Loss Strategies
+- **Fixed percentage**: 5% for swing trades, 3% for day trades
+- **ATR-based**: 2× ATR(14) below entry — adapts to volatility
+- **Support-based**: Place stop just below nearest support level
+- **Trailing**: Move stop to breakeven after 3% gain, trail by 3% thereafter
+- **Time-based**: Exit if no profit after 5 trading days (momentum died)
+
+## Review Cadence
+- Daily: check all open positions and stop levels
+- Weekly: portfolio correlation and sector exposure review
+- Monthly: strategy performance metrics and risk-adjusted returns`
+    }
+  ]
+
+  const insertSkill = db.prepare('INSERT OR IGNORE INTO skills (id, slug, name, description, skill_md, tags, source) VALUES (?, ?, ?, ?, ?, ?, ?)')
+  const assignSkill = db.prepare('INSERT OR IGNORE INTO agent_skills_v2 (agent_id, skill_id) VALUES (?, ?)')
+
+  for (const skill of TRADING_SKILLS) {
+    const id = uuid()
+    insertSkill.run(id, skill.slug, skill.name, skill.description, skill.skill_md, JSON.stringify(skill.tags), 'custom')
+    const savedSkill = db.prepare('SELECT id FROM skills WHERE slug = ?').get(skill.slug)
+    if (savedSkill) {
+      for (const agentId of skill.agents) {
+        assignSkill.run(agentId, savedSkill.id)
+      }
+    }
+  }
+  console.log('🧩 Seeded 8 core trading skills')
+}
+
+seedTradingSkills()
 
 const PORT = process.env.API_PORT || process.env.PORT || 3002
 app.listen(PORT, '0.0.0.0', () => {
