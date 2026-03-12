@@ -1,5 +1,5 @@
 node_modules/
-dist/
+# dist/ — temporarily included for VM deployment
 *.db
 .env
 .DS_Store
