@@ -510,26 +510,34 @@ ${output.slice(0, 4000)}`
     if (score !== null) {
       db.prepare('UPDATE tasks SET nexus_score = ? WHERE id = ?').run(score, completedTask.id)
     }
-    // Auto-hold low-scoring tasks for human review
+
+    // Auto-fix loop: if score < 7 and not PASS, auto-create fix task (no human approval needed)
+    // Count how many "Fix issues:" retries have already been attempted for this task chain
+    const originalTitle = completedTask.title.replace(/^Fix issues: /g, '')
+    const fixAttempts = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE title LIKE ? AND agent_id = ? AND status IN ('done', 'failed')").get(`Fix issues: %${originalTitle}%`, agent.id).c
+
     if (score !== null && score < 7 && verdict !== 'PASS') {
-      db.prepare("UPDATE tasks SET status = 'awaiting_approval', updated_at = datetime('now') WHERE id = ?").run(completedTask.id)
-      db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)').run(completedTask.id, 'nexus', `Score ${score}/10 — moved to approval queue for human review`, 'warning')
-      sendPushToAll({ title: '⏸️ Review Needed', body: `${completedTask.title} scored ${score}/10`, tag: `review-${completedTask.id}` })
-      email.sendApprovalEmail(completedTask, agent).catch(() => {})
-    }
+      if (fixAttempts >= 2) {
+        // Max retries reached — notify user, don't create another fix task
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)').run(completedTask.id, 'nexus', `Score ${score}/10 after ${fixAttempts} fix attempts — giving up. Needs human review.`, 'warning')
+        sendPushToAll({ title: '⛔ Fix Failed', body: `${originalTitle} scored ${score}/10 after ${fixAttempts} retries`, tag: `review-${completedTask.id}` })
+        db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+          .run('nexus', nexus.name, nexus.avatar, nexus.color,
+            `⛔ **"${originalTitle}"** scored ${score}/10 after ${fixAttempts} fix attempts — needs your attention`)
+      } else {
+        // Auto-create fix task — agent fixes its own work
+        const fixId = uuid()
+        const fixDesc = `Nexus review scored this ${score}/10 (${verdict}). Fix the issues and try again.\n\n**Review:**\n${review.slice(0, 2000)}\n\n**Original output to improve:**\n${output.slice(0, 3000)}`
+        db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, 'high', ?, 'todo')`)
+          .run(fixId, `Fix issues: ${originalTitle}`, fixDesc, agent.id)
 
-    if (verdict === 'FAIL' || (score !== null && score <= 4)) {
-      const fixId = uuid()
-      db.prepare(`
-        INSERT INTO tasks (id, title, description, priority, agent_id, status)
-        VALUES (?, ?, ?, 'high', ?, 'todo')
-      `).run(fixId, `Fix issues: ${completedTask.title}`, `Nexus review found critical issues:\n\n${review.slice(0, 2000)}`, agent.id)
+        db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+          .run('nexus', nexus.name, nexus.avatar, nexus.color,
+            `🔁 Auto-fixing: "${originalTitle}" scored ${score}/10 — ${agent.name} retrying (attempt ${fixAttempts + 1}/2)`)
 
-      db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
-        .run('nexus', nexus.name, nexus.avatar, nexus.color,
-          `🔁 Created fix task for ${agent.name}: issues found in "${completedTask.title}"`)
-
-      setTimeout(() => processAgentQueue(agent.id), 5000)
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)').run(completedTask.id, 'nexus', `Score ${score}/10 — auto-created fix task (attempt ${fixAttempts + 1}/2)`, 'info')
+        setTimeout(() => processAgentQueue(agent.id), 5000)
+      }
     }
 
     console.log(`🛡️ Nexus reviewed "${completedTask.title}": ${verdict} ${score ? `(${score}/10)` : ''}`)
@@ -907,11 +915,15 @@ app.post('/api/tasks/:id/run', async (req, res) => {
   }
 
   // ── Approval Gates ──────────────────────────────
+  // Auto-fix tasks bypass approval — they're self-healing retries
+  const isAutoFix = task.title.startsWith('Fix issues:')
   const approvalThreshold = parseFloat(getSetting('approval_threshold_usd') || '999')
   const approvalKeywords = (getSetting('approval_keywords') || '').split(',').map(k => k.trim().toLowerCase()).filter(Boolean)
-  const needsApproval = task.requires_approval === 1 ||
+  const needsApproval = !isAutoFix && (
+    task.requires_approval === 1 ||
     (approvalThreshold < 999 && task.estimated_cost >= approvalThreshold) ||
     approvalKeywords.some(kw => (task.title + ' ' + task.description).toLowerCase().includes(kw))
+  )
 
   if (needsApproval && task.status !== 'awaiting_approval') {
     db.prepare("UPDATE tasks SET status = 'awaiting_approval', updated_at = datetime('now') WHERE id = ?").run(task.id)
