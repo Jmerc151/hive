@@ -238,6 +238,55 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS agent_interactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_agent_id TEXT NOT NULL,
+    target_agent_id TEXT NOT NULL,
+    interaction_type TEXT NOT NULL CHECK(interaction_type IN ('consult','delegate','tool_call')),
+    task_id TEXT,
+    payload TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_interactions_time ON agent_interactions(created_at);
+
+  CREATE TABLE IF NOT EXISTS intel_items (
+    id TEXT PRIMARY KEY,
+    task_id TEXT REFERENCES tasks(id),
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    source_url TEXT DEFAULT '',
+    confidence REAL DEFAULT 0.5,
+    tags TEXT DEFAULT '[]',
+    status TEXT DEFAULT 'new' CHECK(status IN ('new','bookmarked','sent_to_forge','dismissed')),
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS skills (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    version TEXT DEFAULT '1.0.0',
+    author TEXT DEFAULT 'john',
+    skill_md TEXT NOT NULL,
+    tags TEXT DEFAULT '[]',
+    source TEXT DEFAULT 'custom' CHECK(source IN ('custom','clawhub','marketplace')),
+    requires_tools TEXT DEFAULT '[]',
+    downloads INTEGER DEFAULT 0,
+    is_published INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_skills_v2 (
+    agent_id TEXT NOT NULL,
+    skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    enabled INTEGER DEFAULT 1,
+    priority INTEGER DEFAULT 0,
+    installed_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (agent_id, skill_id)
+  );
+
   CREATE TABLE IF NOT EXISTS proposals (
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL CHECK(type IN ('feature','design','code','prompt','workflow')),

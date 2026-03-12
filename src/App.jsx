@@ -23,6 +23,11 @@ import ProjectsPanel from './components/ProjectsPanel'
 import HistoryPanel from './components/HistoryPanel'
 import SearchBar from './components/SearchBar'
 import LiveTraceStream from './components/LiveTraceStream'
+import AgentGraph from './components/AgentGraph'
+import CostTimeline from './components/CostTimeline'
+import IntelFeed from './components/IntelFeed'
+import CommandBar from './components/CommandBar'
+import SkillRegistryV2 from './components/SkillRegistryV2'
 
 export default function App() {
   const [agents, setAgents] = useState([])
@@ -46,6 +51,10 @@ export default function App() {
   const [showProjects, setShowProjects] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [showTrace, setShowTrace] = useState(false)
+  const [showGraph, setShowGraph] = useState(false)
+  const [showCostTimeline, setShowCostTimeline] = useState(false)
+  const [showIntel, setShowIntel] = useState(false)
+  const [showSkillsV2, setShowSkillsV2] = useState(false)
 
   const refresh = useCallback(async () => {
     const [a, t] = await Promise.all([api.getAgents(), api.getTasks()])
@@ -156,7 +165,34 @@ export default function App() {
                 <span className="text-xs font-medium text-honey">{activeCount} running</span>
               </div>
             )}
+            <div className="hidden md:block flex-1 max-w-md mx-2">
+              <CommandBar agents={agents} onTaskCreated={() => refresh()} />
+            </div>
             <SearchBar agents={agents} onSelectTask={setSelectedTask} />
+            <button
+              onClick={() => setShowGraph(true)}
+              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
+            >
+              🕸️ <span className="hidden xl:inline">Graph</span>
+            </button>
+            <button
+              onClick={() => setShowCostTimeline(true)}
+              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
+            >
+              📊 <span className="hidden xl:inline">Analytics</span>
+            </button>
+            <button
+              onClick={() => setShowIntel(true)}
+              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
+            >
+              🔍 <span className="hidden xl:inline">Intel</span>
+            </button>
+            <button
+              onClick={() => setShowSkillsV2(true)}
+              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
+            >
+              🧩 <span className="hidden xl:inline">Skills</span>
+            </button>
             <button
               onClick={() => setShowProjects(true)}
               className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
@@ -401,6 +437,27 @@ export default function App() {
       {showTrace && (
         <LiveTraceStream onClose={() => setShowTrace(false)} />
       )}
+
+      {showGraph && (
+        <AgentGraph onClose={() => setShowGraph(false)} />
+      )}
+
+      {showCostTimeline && (
+        <CostTimeline onClose={() => setShowCostTimeline(false)} />
+      )}
+
+      {showIntel && (
+        <IntelFeed onClose={() => setShowIntel(false)} />
+      )}
+
+      {showSkillsV2 && (
+        <SkillRegistryV2 onClose={() => setShowSkillsV2(false)} />
+      )}
+
+      {/* Mobile CommandBar */}
+      <div className="md:hidden">
+        <CommandBar agents={agents} onTaskCreated={() => refresh()} />
+      </div>
     </div>
   )
 }

@@ -357,6 +357,11 @@ ${toMemory.slice(-1500) || '(no prior knowledge)'}`,
       .run(toAgent.id, toAgent.name, toAgent.avatar, toAgent.color,
         `↩️ Re: ${fromAgent.name}'s question:\n${answer.slice(0, 500)}`)
 
+    // Record interaction for network graph
+    try {
+      db.prepare('INSERT INTO agent_interactions (source_agent_id, target_agent_id, interaction_type, task_id) VALUES (?, ?, ?, ?)').run(fromAgent.id, toAgentId, 'consult', null)
+    } catch (e) { /* table may not exist yet */ }
+
     return answer
   } catch (err) {
     console.error(`Consultation ${fromAgent.id} → ${toAgentId} failed:`, err.message)
@@ -2638,6 +2643,260 @@ app.get('/api/search', (req, res) => {
 app.get('/api/pipelines/:id/status', (req, res) => {
   const tasks = db.prepare('SELECT * FROM tasks WHERE pipeline_id = ? ORDER BY pipeline_step ASC').all(req.params.id)
   res.json(tasks)
+})
+
+// ══════════════════════════════════════════════════════
+// ██ BUILD 2: AGENT NETWORK GRAPH                     ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/graph/nodes', (req, res) => {
+  const nodes = agents.map(a => ({
+    id: a.id, name: a.name, avatar: a.avatar, color: a.color, role: a.role,
+    isRunning: activeRuns.has(a.id)
+  }))
+  res.json(nodes)
+})
+
+app.get('/api/graph/edges', (req, res) => {
+  const range = req.query.range || '24h'
+  const rangeMap = { '1h': '-1 hour', '24h': '-1 day', '7d': '-7 days' }
+  const since = rangeMap[range] || '-1 day'
+  const edges = db.prepare(`
+    SELECT source_agent_id, target_agent_id, interaction_type, COUNT(*) as count
+    FROM agent_interactions WHERE created_at > datetime('now', ?)
+    GROUP BY source_agent_id, target_agent_id, interaction_type
+  `).all(since)
+  res.json(edges)
+})
+
+// ══════════════════════════════════════════════════════
+// ██ BUILD 3: ANALYTICS / COST TIMELINE               ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/analytics/spend', (req, res) => {
+  const range = req.query.range || '7d'
+  const agent = req.query.agent
+  const rangeMap = { '24h': { since: '-1 day', bucket: '%Y-%m-%d %H:00' }, '7d': { since: '-7 days', bucket: '%Y-%m-%d' }, '30d': { since: '-30 days', bucket: '%Y-%m-%d' } }
+  const { since, bucket } = rangeMap[range] || rangeMap['7d']
+
+  let query = `SELECT strftime('${bucket}', created_at) as time_bucket, agent_id, SUM(cost) as total_cost, SUM(tokens_in + tokens_out) as total_tokens, COUNT(*) as calls
+    FROM spend_log WHERE created_at > datetime('now', ?)`
+  const params = [since]
+  if (agent) { query += ' AND agent_id = ?'; params.push(agent) }
+  query += ` GROUP BY time_bucket, agent_id ORDER BY time_bucket`
+
+  res.json(db.prepare(query).all(...params))
+})
+
+app.get('/api/analytics/spend/by-task', (req, res) => {
+  const limit = parseInt(req.query.limit) || 50
+  const rows = db.prepare(`
+    SELECT t.id, t.title, t.agent_id, t.status, t.estimated_cost, t.tokens_used, t.completed_at
+    FROM tasks t WHERE t.estimated_cost > 0 ORDER BY t.estimated_cost DESC LIMIT ?
+  `).all(limit)
+  res.json(rows)
+})
+
+app.get('/api/analytics/agents/summary', (req, res) => {
+  const range = req.query.range || '30d'
+  const rangeMap = { '24h': '-1 day', '7d': '-7 days', '30d': '-30 days' }
+  const since = rangeMap[range] || '-30 days'
+  const rows = db.prepare(`
+    SELECT agent_id, SUM(cost) as total_cost, SUM(tokens_in + tokens_out) as total_tokens, COUNT(*) as total_calls,
+    AVG(cost) as avg_cost_per_call FROM spend_log WHERE created_at > datetime('now', ?) GROUP BY agent_id
+  `).all(since)
+  const taskCounts = db.prepare(`
+    SELECT agent_id, COUNT(*) as task_count, AVG(CASE WHEN estimated_cost > 0 THEN estimated_cost END) as avg_task_cost
+    FROM tasks WHERE updated_at > datetime('now', ?) GROUP BY agent_id
+  `).all(since)
+  const tcMap = Object.fromEntries(taskCounts.map(t => [t.agent_id, t]))
+  res.json(rows.map(r => ({ ...r, ...(tcMap[r.agent_id] || {}) })))
+})
+
+// ══════════════════════════════════════════════════════
+// ██ BUILD 4: SCOUT INTELLIGENCE FEED                 ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/intel', (req, res) => {
+  const { status, tag, limit } = req.query
+  let query = 'SELECT * FROM intel_items WHERE 1=1'
+  const params = []
+  if (status && status !== 'all') { query += ' AND status = ?'; params.push(status) }
+  if (tag) { query += ' AND tags LIKE ?'; params.push(`%${tag}%`) }
+  query += ' ORDER BY created_at DESC LIMIT ?'
+  params.push(parseInt(limit) || 50)
+  res.json(db.prepare(query).all(...params))
+})
+
+app.patch('/api/intel/:id/status', async (req, res) => {
+  const { status } = req.body
+  if (!['new', 'bookmarked', 'sent_to_forge', 'dismissed'].includes(status)) return res.status(400).json({ error: 'Invalid status' })
+  db.prepare('UPDATE intel_items SET status = ? WHERE id = ?').run(status, req.params.id)
+
+  if (status === 'sent_to_forge') {
+    const item = db.prepare('SELECT * FROM intel_items WHERE id = ?').get(req.params.id)
+    if (item) {
+      const taskId = uuid()
+      db.prepare('INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, ?, ?, ?)').run(
+        taskId, `Build: ${item.title}`, `${item.summary}\n\nSource: ${item.source_url}`, 'high', 'forge', 'todo'
+      )
+    }
+  }
+  res.json({ ok: true })
+})
+
+// ══════════════════════════════════════════════════════
+// ██ BUILD 5: NATURAL LANGUAGE COMMAND BAR             ██
+// ══════════════════════════════════════════════════════
+
+app.post('/api/commands/parse', async (req, res) => {
+  const { text } = req.body
+  if (!text || text.trim().length < 3) return res.status(400).json({ error: 'Command too short' })
+
+  try {
+    const agentList = agents.map(a => `${a.id}: ${a.name} (${a.role})`).join('\n')
+    const response = await callClaude({
+      model: getAgentModel('quill'),
+      max_tokens: 512,
+      system: `You parse natural language commands into structured task data for an AI agent team.
+
+Available agents:
+${agentList}
+
+Return ONLY valid JSON (no markdown):
+{
+  "agent_id": "scout|forge|quill|dealer|oracle|nexus",
+  "task_type": "research|build|write|sell|analyze|review",
+  "title": "Clean task title",
+  "description": "Expanded description",
+  "priority": "low|medium|high",
+  "is_query": false
+}
+
+Set is_query=true for read-only questions like "how much did we spend" or "show me...".
+For queries, add a "query_type" field: "spend"|"tasks"|"intel"|"general".`,
+      messages: [{ role: 'user', content: text }]
+    }, 'nexus', null)
+
+    const raw = response.content.map(b => b.type === 'text' ? b.text : '').join('')
+    const jsonMatch = raw.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) return res.status(400).json({ error: 'Could not parse command' })
+    const parsed = JSON.parse(jsonMatch[0])
+
+    if (parsed.is_query) {
+      let answer = ''
+      if (parsed.query_type === 'spend') {
+        const spend = db.prepare("SELECT SUM(cost) as total FROM spend_log WHERE date = date('now')").get()
+        answer = `Today's spend: $${(spend?.total || 0).toFixed(4)}`
+      } else if (parsed.query_type === 'tasks') {
+        const recent = db.prepare("SELECT title, status, agent_id FROM tasks ORDER BY updated_at DESC LIMIT 5").all()
+        answer = recent.map(t => `[${t.status}] ${t.title}`).join('\n')
+      } else {
+        answer = 'Query type not supported inline. Try creating a task instead.'
+      }
+      return res.json({ is_query: true, answer, parsed })
+    }
+
+    const taskId = uuid()
+    db.prepare('INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, ?, ?, ?)').run(
+      taskId, parsed.title, parsed.description || '', parsed.priority || 'medium', parsed.agent_id, 'todo'
+    )
+    res.json({ is_query: false, task: { id: taskId, ...parsed } })
+  } catch (err) {
+    console.error('Command parse error:', err.message)
+    res.status(500).json({ error: 'Failed to parse command' })
+  }
+})
+
+// ══════════════════════════════════════════════════════
+// ██ BUILD 6: SKILL REGISTRY V2                       ██
+// ══════════════════════════════════════════════════════
+
+function slugify(str) { return str.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }
+
+app.get('/api/skills', (req, res) => {
+  const { search, tags, agent } = req.query
+  let query = 'SELECT s.*, GROUP_CONCAT(DISTINCT asv.agent_id) as assigned_agents FROM skills s LEFT JOIN agent_skills_v2 asv ON asv.skill_id = s.id WHERE 1=1'
+  const params = []
+  if (search) { query += ' AND (s.name LIKE ? OR s.description LIKE ?)'; params.push(`%${search}%`, `%${search}%`) }
+  if (tags) { query += ' AND s.tags LIKE ?'; params.push(`%${tags}%`) }
+  if (agent) { query += ' AND asv.agent_id = ?' ; params.push(agent) }
+  query += ' GROUP BY s.id ORDER BY s.updated_at DESC'
+  res.json(db.prepare(query).all(...params))
+})
+
+app.get('/api/skills/:slug', (req, res) => {
+  const skill = db.prepare('SELECT * FROM skills WHERE slug = ?').get(req.params.slug)
+  if (!skill) return res.status(404).json({ error: 'Skill not found' })
+  const assigned = db.prepare('SELECT * FROM agent_skills_v2 WHERE skill_id = ?').all(skill.id)
+  res.json({ ...skill, assignments: assigned })
+})
+
+app.post('/api/skills', (req, res) => {
+  const { name, description, skill_md, tags, requires_tools } = req.body
+  if (!name || !skill_md) return res.status(400).json({ error: 'name and skill_md required' })
+  const id = uuid()
+  const slug = slugify(name)
+  try {
+    db.prepare('INSERT INTO skills (id, slug, name, description, skill_md, tags, requires_tools) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+      id, slug, name, description || '', skill_md, JSON.stringify(tags || []), JSON.stringify(requires_tools || [])
+    )
+    res.json({ id, slug })
+  } catch (e) {
+    if (e.message.includes('UNIQUE')) return res.status(409).json({ error: 'Slug already exists' })
+    throw e
+  }
+})
+
+app.put('/api/skills/:slug', (req, res) => {
+  const skill = db.prepare('SELECT * FROM skills WHERE slug = ?').get(req.params.slug)
+  if (!skill) return res.status(404).json({ error: 'Skill not found' })
+  const { name, description, skill_md, tags, requires_tools } = req.body
+  const parts = (skill.version || '1.0.0').split('.')
+  parts[2] = parseInt(parts[2] || 0) + 1
+  const newVersion = parts.join('.')
+  db.prepare('UPDATE skills SET name = COALESCE(?, name), description = COALESCE(?, description), skill_md = COALESCE(?, skill_md), tags = COALESCE(?, tags), requires_tools = COALESCE(?, requires_tools), version = ?, updated_at = datetime(\'now\') WHERE slug = ?').run(
+    name || null, description || null, skill_md || null, tags ? JSON.stringify(tags) : null, requires_tools ? JSON.stringify(requires_tools) : null, newVersion, req.params.slug
+  )
+  res.json({ ok: true, version: newVersion })
+})
+
+app.delete('/api/skills/:slug', (req, res) => {
+  const skill = db.prepare('SELECT id FROM skills WHERE slug = ?').get(req.params.slug)
+  if (!skill) return res.status(404).json({ error: 'Skill not found' })
+  db.prepare('DELETE FROM skills WHERE id = ?').run(skill.id)
+  res.json({ ok: true })
+})
+
+// Agent skill assignments (V2)
+app.get('/api/agents/:agentId/skills-v2', (req, res) => {
+  const rows = db.prepare('SELECT s.*, asv.enabled, asv.priority FROM agent_skills_v2 asv JOIN skills s ON s.id = asv.skill_id WHERE asv.agent_id = ? ORDER BY asv.priority').all(req.params.agentId)
+  res.json(rows)
+})
+
+app.post('/api/agents/:agentId/skills-v2/:skillSlug', (req, res) => {
+  const skill = db.prepare('SELECT id FROM skills WHERE slug = ?').get(req.params.skillSlug)
+  if (!skill) return res.status(404).json({ error: 'Skill not found' })
+  try {
+    db.prepare('INSERT OR REPLACE INTO agent_skills_v2 (agent_id, skill_id) VALUES (?, ?)').run(req.params.agentId, skill.id)
+    res.json({ ok: true })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+app.delete('/api/agents/:agentId/skills-v2/:skillSlug', (req, res) => {
+  const skill = db.prepare('SELECT id FROM skills WHERE slug = ?').get(req.params.skillSlug)
+  if (!skill) return res.status(404).json({ error: 'Skill not found' })
+  db.prepare('DELETE FROM agent_skills_v2 WHERE agent_id = ? AND skill_id = ?').run(req.params.agentId, skill.id)
+  res.json({ ok: true })
+})
+
+app.patch('/api/agents/:agentId/skills-v2/:skillSlug', (req, res) => {
+  const skill = db.prepare('SELECT id FROM skills WHERE slug = ?').get(req.params.skillSlug)
+  if (!skill) return res.status(404).json({ error: 'Skill not found' })
+  const { enabled, priority } = req.body
+  if (enabled !== undefined) db.prepare('UPDATE agent_skills_v2 SET enabled = ? WHERE agent_id = ? AND skill_id = ?').run(enabled ? 1 : 0, req.params.agentId, skill.id)
+  if (priority !== undefined) db.prepare('UPDATE agent_skills_v2 SET priority = ? WHERE agent_id = ? AND skill_id = ?').run(priority, req.params.agentId, skill.id)
+  res.json({ ok: true })
 })
 
 // ── Health check ──────────────────────────────────

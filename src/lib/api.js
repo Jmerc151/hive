@@ -87,6 +87,33 @@ export const api = {
   // Task Files
   getTaskFiles: (id) => request(`/tasks/${id}/files`),
 
+  // Network Graph (BUILD 2)
+  getGraphNodes: () => request('/graph/nodes'),
+  getGraphEdges: (range) => request(`/graph/edges?range=${range || '24h'}`),
+
+  // Analytics (BUILD 3)
+  getAnalyticsSpend: (range, agent) => request(`/analytics/spend?range=${range || '7d'}${agent ? '&agent=' + agent : ''}`),
+  getSpendByTask: (limit) => request(`/analytics/spend/by-task?limit=${limit || 50}`),
+  getAgentsSummary: (range) => request(`/analytics/agents/summary?range=${range || '30d'}`),
+
+  // Intel Feed (BUILD 4)
+  getIntel: (params) => request(`/intel${params ? '?' + new URLSearchParams(params) : ''}`),
+  updateIntelStatus: (id, status) => request(`/intel/${id}/status`, { method: 'PATCH', body: { status } }),
+
+  // Command Bar (BUILD 5)
+  parseCommand: (text) => request('/commands/parse', { method: 'POST', body: { text } }),
+
+  // Skills V2 (BUILD 6)
+  getSkillsV2: (params) => request(`/skills${params ? '?' + new URLSearchParams(params) : ''}`),
+  getSkillDetail: (slug) => request(`/skills/${slug}`),
+  createSkillV2: (data) => request('/skills', { method: 'POST', body: data }),
+  updateSkillV2: (slug, data) => request(`/skills/${slug}`, { method: 'PUT', body: data }),
+  deleteSkillV2: (slug) => request(`/skills/${slug}`, { method: 'DELETE' }),
+  getAgentSkillsV2: (agentId) => request(`/agents/${agentId}/skills-v2`),
+  assignSkill: (agentId, slug) => request(`/agents/${agentId}/skills-v2/${slug}`, { method: 'POST' }),
+  unassignSkill: (agentId, slug) => request(`/agents/${agentId}/skills-v2/${slug}`, { method: 'DELETE' }),
+  toggleSkillV2: (agentId, slug, data) => request(`/agents/${agentId}/skills-v2/${slug}`, { method: 'PATCH', body: data }),
+
   // Scorecards
   getScorecard: (agentId) => request(`/agents/${agentId}/scorecard`),
   getScoreboards: () => request('/scorecards'),

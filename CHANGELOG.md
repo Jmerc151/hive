@@ -1,5 +1,46 @@
 # Hive Changelog
 
+## 2026-03-11 — BUILD 2-6: Full Feature Suite
+
+### BUILD 2: Agent Network Graph
+- `AgentGraph.jsx` — Force-directed graph visualization of agent interactions using react-force-graph-2d
+- Custom canvas-rendered nodes with agent colors, avatars, and name labels
+- Directional edges with thickness scaling by interaction frequency, animated particles
+- Time range filter (1h, 24h, 7d), auto-refresh every 10s
+- Mobile fallback: simple list view below 500px
+- `agent_interactions` table tracks consult/delegate/tool_call events
+- `GET /api/graph/nodes` + `GET /api/graph/edges?range=` endpoints
+
+### BUILD 3: Stacked Cost Timeline
+- `CostTimeline.jsx` — Recharts stacked area chart showing cost by agent over time
+- Date range selector (24h, 7d, 30d), custom dark-themed tooltip
+- Agent summary cards row (cost, tokens, tasks per agent), horizontally scrollable
+- Cost-per-task table with desktop table / mobile list views
+- `GET /api/analytics/spend`, `GET /api/analytics/spend/by-task`, `GET /api/analytics/agents/summary` endpoints
+
+### BUILD 4: Scout Intelligence Feed
+- `IntelFeed.jsx` — Right-side slide-in panel showing Scout-discovered opportunities
+- Card list with title, summary, tags, confidence badges (green/yellow/red)
+- Expand cards for full details + action buttons: Send to Forge, Bookmark, Dismiss
+- Status filter tabs (All, New, Bookmarked)
+- `intel_items` table, `GET /api/intel` + `PATCH /api/intel/:id/status` endpoints
+- Auto-creates Forge task when intel sent to forge
+
+### BUILD 5: Natural Language Command Bar
+- `CommandBar.jsx` — ⌘K-activated command input for creating tasks via natural language
+- Agent name autocomplete, command history (up/down arrows), tab completion
+- Desktop: inline bar in header. Mobile: floating button → bottom sheet
+- Color-coded toasts for success/info/error feedback
+- `POST /api/commands/parse` endpoint using Claude haiku for fast NL parsing
+
+### BUILD 6: Skill Registry V2
+- `SkillRegistryV2.jsx` — SKILL.md-based instruction packages that inject into agent prompts
+- Skill list with search, card grid (1/2/3 col responsive), create/edit/delete
+- SKILL.md editor with YAML frontmatter, template dropdown (research/builder/analyzer)
+- Per-agent skill assignment with toggle and priority
+- `skills` + `agent_skills_v2` tables, full CRUD endpoints
+- Skill content appended to agent system prompts at runtime
+
 ## 2026-03-11 — 10-Feature Mega Build (Session 3b)
 
 ### 1. Agent Scorecards
