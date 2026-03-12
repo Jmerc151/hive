@@ -1249,6 +1249,22 @@ app.get('/api/tasks/:id/download', (req, res) => {
   archive.finalize()
 })
 
+// ── Task Files API ────────────────────────────────
+const EXT_LANG = { js: 'javascript', jsx: 'jsx', ts: 'typescript', tsx: 'tsx', json: 'json', css: 'css', html: 'html', md: 'markdown', py: 'python', sh: 'bash', yml: 'yaml', yaml: 'yaml', toml: 'toml', sql: 'sql', env: 'bash', txt: 'text' }
+
+app.get('/api/tasks/:id/files', (req, res) => {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
+  if (!task) return res.status(404).json({ error: 'Task not found' })
+  if (!task.output) return res.json({ files: [], projectName: '' })
+
+  const files = parseForgeOutput(task.output).map(f => {
+    const ext = f.filename.split('.').pop().toLowerCase()
+    return { ...f, language: EXT_LANG[ext] || 'text' }
+  })
+  const projectName = task.title.replace(/^Build\s+\w+:\s*/i, '').replace(/[^a-zA-Z0-9\-_ ]/g, '').trim().replace(/\s+/g, '-').toLowerCase() || 'project'
+  res.json({ files, projectName })
+})
+
 // ── Bot Suggestions API ───────────────────────────
 app.get('/api/bot-suggestions', (req, res) => {
   const suggestions = db.prepare('SELECT * FROM bot_suggestions WHERE used = 0 ORDER BY created_at DESC LIMIT 20').all()

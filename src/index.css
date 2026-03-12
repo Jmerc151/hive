@@ -66,3 +66,8 @@ button { -webkit-tap-highlight-color: transparent; }
 @media all and (display-mode: standalone) {
   body { padding-top: env(safe-area-inset-top); }
 }
+
+/* Markdown rendering */
+.markdown-output pre { border-radius: 0.5rem; margin: 0.75rem 0; }
+.markdown-output ul, .markdown-output ol { padding-left: 1.5rem; }
+.markdown-output a { color: var(--color-honey); }

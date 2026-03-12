@@ -1,17 +1,49 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { api } from '../lib/api'
 import TraceView from './TraceView'
+import MarkdownRenderer from './MarkdownRenderer'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 
 const STATUS_OPTIONS = ['backlog', 'todo', 'awaiting_approval', 'in_progress', 'in_review', 'done']
 const STATUS_LABELS = { backlog: 'Backlog', todo: 'To Do', awaiting_approval: 'Awaiting Approval', in_progress: 'In Progress', in_review: 'Review', done: 'Done', failed: 'Failed' }
 const STATUS_COLORS = { backlog: 'text-hive-400', todo: 'text-blue-400', awaiting_approval: 'text-amber-400', in_progress: 'text-honey', in_review: 'text-prism', done: 'text-honey', failed: 'text-red-400' }
 const LOG_COLORS = { info: 'text-blue-400', success: 'text-green-400', error: 'text-red-400', warning: 'text-yellow-400', output: 'text-hive-300' }
 
+function formatDuration(start, end) {
+  if (!start || !end) return null
+  const ms = new Date(end) - new Date(start)
+  if (ms < 0) return null
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  const rem = s % 60
+  return `${m}m ${rem}s`
+}
+
+function countFiles(output) {
+  if (!output) return 0
+  const regex = /(?:^#{1,3}\s+`?[a-zA-Z0-9_\-/.]+\.[a-zA-Z0-9]+`?\s*$|^\*\*[a-zA-Z0-9_\-/.]+\.[a-zA-Z0-9]+\*\*\s*$)\s*```/gm
+  const matches = output.match(regex)
+  return matches ? matches.length : 0
+}
+
+function stripMarkdown(text) {
+  return text.replace(/```[\s\S]*?```/g, '').replace(/#{1,3}\s+/g, '').replace(/\*\*/g, '').replace(/`/g, '').replace(/---/g, '').trim()
+}
+
 export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpdate, onDelete, onAbTest }) {
   const [logs, setLogs] = useState([])
   const [tab, setTab] = useState('details')
   const [downloading, setDownloading] = useState(false)
+  const [files, setFiles] = useState([])
+  const [selectedFile, setSelectedFile] = useState(null)
+  const [filesLoading, setFilesLoading] = useState(false)
+  const [copied, setCopied] = useState(false)
   const logsEndRef = useRef(null)
+
+  const fileCount = useMemo(() => countFiles(task?.output), [task?.output])
+  const hasFiles = fileCount > 0
 
   const handleDownload = async () => {
     setDownloading(true)
@@ -21,6 +53,14 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
       alert(err.message)
     }
     setDownloading(false)
+  }
+
+  const handleCopy = async (content) => {
+    try {
+      await navigator.clipboard.writeText(content)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {}
   }
 
   useEffect(() => {
@@ -38,7 +78,30 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [logs])
 
+  // Fetch files when Files tab selected
+  useEffect(() => {
+    if (tab !== 'files' || !task?.id) return
+    setFilesLoading(true)
+    api.getTaskFiles(task.id).then(data => {
+      setFiles(data.files || [])
+      if (data.files?.length > 0 && !selectedFile) setSelectedFile(data.files[0])
+    }).catch(() => {}).finally(() => setFilesLoading(false))
+  }, [tab, task?.id])
+
   if (!task) return null
+
+  const processedOutput = useMemo(() => {
+    if (!task.output) return ''
+    return task.output.replace(/^--- Step (\d+) ---$/gm, '\n---\n**Step $1**\n')
+  }, [task.output])
+
+  const isComplete = task.status === 'done' || task.status === 'failed'
+  const duration = formatDuration(task.started_at, task.completed_at)
+  const summaryText = task.output ? stripMarkdown(task.output).slice(0, 200) : ''
+
+  const tabs = ['details', 'logs', 'output']
+  if (hasFiles) tabs.push('files')
+  tabs.push('trace')
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex justify-end" onClick={onClose}>
@@ -66,16 +129,16 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-hive-700">
-          {['details', 'logs', 'output', 'trace'].map(t => (
+        <div className="flex border-b border-hive-700 overflow-x-auto scrollbar-none">
+          {tabs.map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`px-4 py-2.5 text-sm font-medium capitalize transition-colors ${
+              className={`px-4 py-2.5 text-sm font-medium capitalize transition-colors shrink-0 ${
                 tab === t ? 'text-honey border-b-2 border-honey' : 'text-hive-400 hover:text-hive-200'
               }`}
             >
-              {t}
+              {t === 'files' ? `Files (${fileCount})` : t}
               {t === 'logs' && logs.length > 0 && (
                 <span className="ml-1.5 text-xs bg-hive-700 rounded-full px-1.5">{logs.length}</span>
               )}
@@ -87,6 +150,49 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
         <div className="flex-1 overflow-y-auto p-5">
           {tab === 'details' && (
             <div className="space-y-5">
+              {/* Completion Summary Card */}
+              {isComplete && (
+                <div className={`rounded-lg border p-4 ${task.status === 'failed' ? 'bg-red-500/5 border-red-500/20' : 'bg-honey/5 border-honey/20'}`}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className={`text-sm font-semibold ${task.status === 'failed' ? 'text-red-400' : 'text-honey'}`}>
+                      {task.status === 'failed' ? '❌ Failed' : '✅ Completed'}
+                    </span>
+                    <div className="flex items-center gap-3 text-xs text-hive-400">
+                      {duration && <span>{duration}</span>}
+                      {(task.tokens_used || 0) > 0 && <span>{(task.tokens_used).toLocaleString()} tokens</span>}
+                      {(task.estimated_cost || 0) > 0 && <span>${task.estimated_cost.toFixed(4)}</span>}
+                      {hasFiles && <span>{fileCount} files</span>}
+                    </div>
+                  </div>
+
+                  {task.status === 'failed' && task.error && (
+                    <p className="text-xs text-red-300 mb-2">{task.error}</p>
+                  )}
+
+                  {summaryText && (
+                    <p className="text-xs text-hive-300 leading-relaxed mb-3">
+                      {summaryText}{task.output && task.output.length > 200 ? '...' : ''}
+                    </p>
+                  )}
+
+                  <div className="flex gap-2 flex-wrap">
+                    <button onClick={() => setTab('output')} className="text-xs px-3 py-1.5 rounded-lg border border-hive-600 text-hive-300 hover:text-hive-100 hover:border-hive-500 transition-colors">
+                      View Output
+                    </button>
+                    {hasFiles && (
+                      <button onClick={() => setTab('files')} className="text-xs px-3 py-1.5 rounded-lg border border-honey/30 text-honey hover:bg-honey/10 transition-colors">
+                        View Files
+                      </button>
+                    )}
+                    {hasFiles && (
+                      <button onClick={handleDownload} disabled={downloading} className="text-xs px-3 py-1.5 rounded-lg bg-honey/10 border border-honey/30 text-honey hover:bg-honey/20 transition-colors disabled:opacity-50">
+                        {downloading ? 'Preparing...' : '📦 Download ZIP'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Description */}
               <div>
                 <h3 className="text-sm font-medium text-hive-300 mb-2">Description</h3>
@@ -215,8 +321,102 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
           )}
 
           {tab === 'output' && (
-            <div className="font-mono text-xs text-hive-200 whitespace-pre-wrap bg-hive-900 rounded-lg p-4 border border-hive-700">
-              {task.output || 'No output yet.'}
+            <div className="bg-hive-900 rounded-lg p-4 border border-hive-700 overflow-x-auto">
+              {task.output ? (
+                <MarkdownRenderer content={processedOutput} />
+              ) : (
+                <div className="text-center text-hive-500 py-8">No output yet. Run the task to see results.</div>
+              )}
+            </div>
+          )}
+
+          {tab === 'files' && (
+            <div>
+              {filesLoading ? (
+                <div className="text-center text-hive-500 py-8">Loading files...</div>
+              ) : files.length === 0 ? (
+                <div className="text-center text-hive-500 py-8">No individual files detected in output.</div>
+              ) : (
+                <>
+                  {/* Files header */}
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2 text-sm text-hive-300">
+                      <span>📦</span>
+                      <span className="font-medium">{files.length} files</span>
+                    </div>
+                    <button
+                      onClick={handleDownload}
+                      disabled={downloading}
+                      className="text-xs px-3 py-1.5 rounded-lg bg-honey/10 border border-honey/30 text-honey hover:bg-honey/20 transition-colors disabled:opacity-50"
+                    >
+                      {downloading ? 'Preparing...' : '📦 Download ZIP'}
+                    </button>
+                  </div>
+
+                  {/* Two-panel file viewer */}
+                  <div className="flex flex-col md:flex-row border border-hive-700 rounded-lg overflow-hidden bg-hive-900" style={{ minHeight: '400px' }}>
+                    {/* File tree */}
+                    <div className="md:w-1/3 border-b md:border-b-0 md:border-r border-hive-700 overflow-y-auto max-h-48 md:max-h-none">
+                      {files.map((file, i) => {
+                        const parts = file.filename.split('/')
+                        const name = parts[parts.length - 1]
+                        const dir = parts.length > 1 ? parts.slice(0, -1).join('/') + '/' : ''
+                        return (
+                          <button
+                            key={i}
+                            onClick={() => setSelectedFile(file)}
+                            className={`w-full text-left px-3 py-2 text-xs transition-colors flex items-center gap-2 ${
+                              selectedFile === file
+                                ? 'bg-hive-700 text-honey'
+                                : 'text-hive-300 hover:bg-hive-800 hover:text-hive-100'
+                            }`}
+                          >
+                            <span className="text-hive-500 text-[10px]">{file.language}</span>
+                            <span className="truncate">
+                              {dir && <span className="text-hive-500">{dir}</span>}
+                              {name}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+
+                    {/* Code viewer */}
+                    <div className="flex-1 overflow-auto relative">
+                      {selectedFile ? (
+                        <>
+                          <div className="sticky top-0 flex items-center justify-between px-3 py-2 bg-hive-800/90 backdrop-blur border-b border-hive-700 z-10">
+                            <span className="text-xs text-hive-300 font-mono">{selectedFile.filename}</span>
+                            <button
+                              onClick={() => handleCopy(selectedFile.content)}
+                              className="text-[10px] px-2 py-1 rounded border border-hive-600 text-hive-400 hover:text-hive-200 hover:border-hive-500 transition-colors"
+                            >
+                              {copied ? '✓ Copied' : '📋 Copy'}
+                            </button>
+                          </div>
+                          <SyntaxHighlighter
+                            language={selectedFile.language}
+                            style={vscDarkPlus}
+                            customStyle={{
+                              margin: 0,
+                              padding: '1rem',
+                              background: 'transparent',
+                              fontSize: '0.7rem',
+                              lineHeight: '1.5',
+                            }}
+                            showLineNumbers
+                            lineNumberStyle={{ color: '#2A3A5C', fontSize: '0.65rem' }}
+                          >
+                            {selectedFile.content}
+                          </SyntaxHighlighter>
+                        </>
+                      ) : (
+                        <div className="text-center text-hive-500 py-8 text-sm">Select a file to view</div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -250,7 +450,7 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
                 </button>
               </>
             )}
-            {task.status === 'done' && task.agent_id === 'forge' && task.output && (
+            {task.status === 'done' && hasFiles && (
               <button
                 onClick={handleDownload}
                 disabled={downloading}

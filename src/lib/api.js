@@ -84,6 +84,9 @@ export const api = {
     URL.revokeObjectURL(url)
   },
 
+  // Task Files
+  getTaskFiles: (id) => request(`/tasks/${id}/files`),
+
   // Scorecards
   getScorecard: (agentId) => request(`/agents/${agentId}/scorecard`),
   getScoreboards: () => request('/scorecards'),
