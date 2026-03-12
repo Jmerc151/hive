@@ -2508,26 +2508,61 @@ app.get('/api/spend', (req, res) => {
   })
 })
 
-// ── Projects (grouped by [ProjectName] prefix) ────
+// ── Projects (auto-categorized by theme + [Prefix] support) ────
 app.get('/api/projects', (req, res) => {
   const allTasks = db.prepare('SELECT * FROM tasks ORDER BY created_at DESC').all()
+
+  // Theme definitions: name, icon, keywords (matched against lowercase title)
+  const THEMES = [
+    { name: 'Trading & Strategies', icon: '📈', keywords: ['trad', 'alpaca', 'backtest', 'strategy', 'swing', 'stock', 'market data', 'p&l', 'portfolio', 'ticker', 'position', 'broker', 'paper trad'] },
+    { name: 'Content & Marketing', icon: '✍️', keywords: ['content', 'blog', 'seo', 'newsletter', 'write', 'article', 'copy', 'thread', 'editorial', 'keyword'] },
+    { name: 'Freelance & Outreach', icon: '🤝', keywords: ['freelance', 'upwork', 'fiverr', 'proposal', 'outreach', 'client', 'gig', 'sales', 'linkedin', 'pipeline', 'cold email', 'prospect'] },
+    { name: 'Products & Engineering', icon: '🛠️', keywords: ['build', 'chrome', 'extension', 'saas', 'bot', 'tool', 'dashboard', 'api', 'code', 'implement', 'deploy', 'database', 'integrate'] },
+    { name: 'Revenue & Monetization', icon: '💰', keywords: ['affiliate', 'revenue', 'monetiz', 'income', 'pricing', 'stripe', 'payment', 'earnings', 'profit'] },
+    { name: 'Research & Analysis', icon: '🔍', keywords: ['research', 'competi', 'landscape', 'analyz', 'document', 'benchmark', 'case study', 'survey'] },
+    { name: 'Reviews & QA', icon: '🔬', keywords: ['review', 'nexus', 'score', 'prompt', 'improve', 'retro', 'standup', 'self-', 'reconcil', 'audit', 'capability', 'verification', 'quality'] },
+  ]
+
   const projectMap = {}
+
   for (const task of allTasks) {
-    const match = task.title.match(/^\[([^\]]+)\]/)
-    if (!match) continue
-    const name = match[1]
-    if (!projectMap[name]) projectMap[name] = { name, tasks: [] }
-    projectMap[name].tasks.push(task)
+    const lower = task.title.toLowerCase()
+
+    // First check for explicit [ProjectName] prefix
+    const prefixMatch = task.title.match(/^\[([^\]]+)\]/)
+    if (prefixMatch) {
+      const name = prefixMatch[1]
+      if (!projectMap[name]) projectMap[name] = { name, icon: '📁', tasks: [] }
+      projectMap[name].tasks.push(task)
+      continue
+    }
+
+    // Auto-categorize by keyword theme
+    let matched = false
+    for (const theme of THEMES) {
+      if (theme.keywords.some(kw => lower.includes(kw))) {
+        if (!projectMap[theme.name]) projectMap[theme.name] = { name: theme.name, icon: theme.icon, tasks: [] }
+        projectMap[theme.name].tasks.push(task)
+        matched = true
+        break
+      }
+    }
+    if (!matched) {
+      if (!projectMap['Other']) projectMap['Other'] = { name: 'Other', icon: '📋', tasks: [] }
+      projectMap['Other'].tasks.push(task)
+    }
   }
+
   const projects = Object.values(projectMap).map(p => {
     const total = p.tasks.length
     const completed = p.tasks.filter(t => t.status === 'done').length
     const failed = p.tasks.filter(t => t.status === 'failed').length
     const inProgress = p.tasks.filter(t => t.status === 'in_progress').length
+    const awaiting = p.tasks.filter(t => t.status === 'awaiting_approval').length
     const pct = total > 0 ? Math.round((completed / total) * 100) : 0
     const agentIds = [...new Set(p.tasks.map(t => t.agent_id).filter(Boolean))]
     const totalCost = p.tasks.reduce((sum, t) => sum + (t.estimated_cost || 0), 0)
-    return { name: p.name, total, completed, failed, inProgress, completionPct: pct, agents: agentIds, totalCost, tasks: p.tasks }
+    return { name: p.name, icon: p.icon, total, completed, failed, inProgress, awaiting, completionPct: pct, agents: agentIds, totalCost, tasks: p.tasks }
   })
   res.json(projects.sort((a, b) => b.total - a.total))
 })
