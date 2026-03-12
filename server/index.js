@@ -915,20 +915,19 @@ app.post('/api/tasks/:id/run', async (req, res) => {
   }
 
   // ── Approval Gates ──────────────────────────────
-  // Auto-fix tasks bypass approval — they're self-healing retries
+  // Agents are autonomous — only gate real-money actions (live trading, real capital deployment)
+  // Auto-fix tasks, research, building, writing, analysis all run without approval
   const isAutoFix = task.title.startsWith('Fix issues:')
-  const approvalThreshold = parseFloat(getSetting('approval_threshold_usd') || '999')
   const approvalKeywords = (getSetting('approval_keywords') || '').split(',').map(k => k.trim().toLowerCase()).filter(Boolean)
   const needsApproval = !isAutoFix && (
     task.requires_approval === 1 ||
-    (approvalThreshold < 999 && task.estimated_cost >= approvalThreshold) ||
     approvalKeywords.some(kw => (task.title + ' ' + task.description).toLowerCase().includes(kw))
   )
 
   if (needsApproval && task.status !== 'awaiting_approval') {
     db.prepare("UPDATE tasks SET status = 'awaiting_approval', updated_at = datetime('now') WHERE id = ?").run(task.id)
     db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
-      .run(task.id, agent.id, 'Requires approval before running', 'warning')
+      .run(task.id, agent.id, 'Requires approval before running (real-money action detected)', 'warning')
     sendPushToAll({ title: '⏸️ Approval Required', body: task.title, tag: `approval-${task.id}`, taskId: task.id })
     email.sendApprovalEmail(task, agent).catch(() => {})
     return res.json({ ok: true, message: 'Task requires approval', awaiting_approval: true })
