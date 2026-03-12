@@ -3020,8 +3020,8 @@ app.get('/api/messages', (req, res) => {
   const { mode } = req.query
   let messages
   if (mode === 'assistant') {
-    // AI chat mode: only user + assistant + system messages
-    messages = db.prepare("SELECT * FROM messages WHERE sender_id IN ('user', 'hive-assistant', 'system') ORDER BY created_at ASC LIMIT 200").all()
+    // AI chat mode: only user + assistant messages (no system/feed noise)
+    messages = db.prepare("SELECT * FROM messages WHERE sender_id IN ('user', 'hive-assistant') ORDER BY created_at ASC LIMIT 200").all()
   } else if (mode === 'feed') {
     // Feed mode: only agent messages (not user/assistant chat)
     messages = db.prepare("SELECT * FROM messages WHERE sender_id NOT IN ('user', 'hive-assistant') ORDER BY created_at DESC LIMIT 200").all().reverse()
