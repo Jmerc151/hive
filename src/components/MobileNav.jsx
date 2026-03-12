@@ -2,6 +2,7 @@ export default function MobileNav({ view, onChangeView, activeCount, onNewTask }
   const tabs = [
     { id: 'board', label: 'Tasks', icon: '📋' },
     { id: 'agents', label: 'Agents', icon: '🤖', badge: activeCount > 0 ? activeCount : null },
+    { id: 'trace', label: 'Trace', icon: '📡' },
     { id: 'chat', label: 'Chat', icon: '💬' },
   ]
 

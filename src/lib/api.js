@@ -1,5 +1,5 @@
-const BASE = import.meta.env.VITE_API_URL || '/api'
-const API_KEY = import.meta.env.VITE_API_KEY || localStorage.getItem('hive_api_key') || ''
+export const BASE = import.meta.env.VITE_API_URL || '/api'
+export const API_KEY = import.meta.env.VITE_API_KEY || localStorage.getItem('hive_api_key') || ''
 
 async function request(path, options = {}) {
   const headers = { 'Content-Type': 'application/json' }

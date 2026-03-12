@@ -15,6 +15,8 @@ import * as broker from './services/broker.js'
 import * as backtest from './services/backtest.js'
 import * as analysis from './services/analysis.js'
 import * as email from './services/email.js'
+import { traceBus } from './traceBus.js'
+import sseRoutes from './routes/sse.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -35,7 +37,7 @@ const API_KEY = process.env.HIVE_API_KEY
 if (API_KEY) {
   app.use('/api', (req, res, next) => {
     if (req.path.startsWith('/webhooks/') && req.method === 'POST') return next()
-    const token = req.headers.authorization?.replace('Bearer ', '')
+    const token = req.headers.authorization?.replace('Bearer ', '') || req.query.token
     if (token !== API_KEY) {
       return res.status(401).json({ error: 'Unauthorized' })
     }
@@ -45,6 +47,9 @@ if (API_KEY) {
 } else {
   console.log('🔓 No HIVE_API_KEY set — API is open (protected by helmet + rate limiting)')
 }
+
+// ── SSE trace routes ─────────────────────────────
+app.use('/api', sseRoutes)
 
 // OpenRouter client — routes to multiple model providers via one API
 const openai = new OpenAI({
@@ -988,6 +993,12 @@ Start by analyzing the task and providing your approach.`
       db.prepare('INSERT INTO task_traces (task_id, agent_id, step, type, input_summary, output_summary, tokens_in, tokens_out, cost, duration_ms, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .run(task.id, agent.id, step + 1, 'llm_call', messages[messages.length - 2]?.content?.slice(0, 500) || '', stepOutput.slice(0, 500), traceTokensIn, traceTokensOut, traceCost, traceDuration, agentModel)
 
+      // Emit SSE trace event
+      traceBus.emitTrace({
+        agent_id: agent.id, task_id: task.id, event_type: 'THOUGHT',
+        payload: { content: stepOutput.slice(0, 500), step: step + 1, latency_ms: traceDuration, token_count: traceTokensIn + traceTokensOut, cost: traceCost, model: agentModel }
+      })
+
       // Check for consultation requests
       const consultMatch = stepOutput.match(/\[CONSULT:(\w+)\]\s*(.+)/s)
       if (consultMatch && step < MAX_STEPS - 1) {
@@ -1001,6 +1012,12 @@ Start by analyzing the task and providing your approach.`
         if (consultResponse) {
           db.prepare('INSERT INTO task_traces (task_id, agent_id, step, type, input_summary, output_summary, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)')
             .run(task.id, targetAgentId, step + 1, 'consult', question.slice(0, 500), consultResponse.slice(0, 500), Date.now() - consultStart)
+
+          traceBus.emitTrace({
+            agent_id: agent.id, task_id: task.id, event_type: 'CONSULT',
+            payload: { target: targetAgentId, content: question.slice(0, 300), result: consultResponse.slice(0, 300), latency_ms: Date.now() - consultStart, step: step + 1 }
+          })
+
           messages.push({
             role: 'user',
             content: `Response from ${targetAgentId}:\n${consultResponse}\n\nNow continue with your task, incorporating this input.`
@@ -1019,6 +1036,11 @@ Start by analyzing the task and providing your approach.`
       .run(fullOutput.slice(0, 50000), task.id)
     db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
       .run(task.id, agent.id, 'Task completed successfully', 'success')
+
+    traceBus.emitTrace({
+      agent_id: agent.id, task_id: task.id, event_type: 'DECISION',
+      payload: { content: 'Task completed', step: 'final' }
+    })
 
     const summary = fullOutput.length > 300 ? fullOutput.slice(0, 300) + '…' : fullOutput
     db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
@@ -1116,6 +1138,11 @@ Start by analyzing the task and providing your approach.`
       .run(errorMsg, task.id)
     db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
       .run(task.id, agent.id, `Task failed: ${errorMsg}`, 'error')
+
+    traceBus.emitTrace({
+      agent_id: agent.id, task_id: task.id, event_type: 'ERROR',
+      payload: { error: errorMsg }
+    })
 
     db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
       .run(agent.id, agent.name, agent.avatar, agent.color, `❌ Failed: "${task.title}" — ${errorMsg}`)
@@ -2631,6 +2658,12 @@ if (pipelineCount === 0) {
   db.prepare('INSERT INTO pipelines (id, name, description, steps) VALUES (?, ?, ?, ?)').run(pipelineId, 'Product Launch Pipeline', 'Scout researches → Forge builds MVP → Quill creates launch content → Dealer finds distribution', JSON.stringify(exampleSteps))
   console.log('🔗 Seeded example pipeline: Product Launch Pipeline')
 }
+
+// ── Auto-prune old trace events (every 6 hours) ───
+registerHeartbeat('trace-prune', 6 * 60 * 60 * 1000, () => {
+  const deleted = db.prepare("DELETE FROM task_traces WHERE created_at < datetime('now', '-7 days')").run()
+  if (deleted.changes > 0) console.log(`🧹 Pruned ${deleted.changes} old trace rows`)
+})
 
 const PORT = process.env.API_PORT || process.env.PORT || 3002
 app.listen(PORT, '0.0.0.0', () => {

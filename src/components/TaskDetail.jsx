@@ -221,7 +221,7 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
           )}
 
           {tab === 'trace' && (
-            <TraceView taskId={task.id} agents={agents} />
+            <TraceView task={task} agents={agents} />
           )}
         </div>
 

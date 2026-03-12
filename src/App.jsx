@@ -22,6 +22,7 @@ import ProposalsPanel from './components/ProposalsPanel'
 import ProjectsPanel from './components/ProjectsPanel'
 import HistoryPanel from './components/HistoryPanel'
 import SearchBar from './components/SearchBar'
+import LiveTraceStream from './components/LiveTraceStream'
 
 export default function App() {
   const [agents, setAgents] = useState([])
@@ -44,6 +45,7 @@ export default function App() {
   const [showProposals, setShowProposals] = useState(false)
   const [showProjects, setShowProjects] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
+  const [showTrace, setShowTrace] = useState(false)
 
   const refresh = useCallback(async () => {
     const [a, t] = await Promise.all([api.getAgents(), api.getTasks()])
@@ -168,6 +170,12 @@ export default function App() {
               📜 <span className="hidden xl:inline">History</span>
             </button>
             <button
+              onClick={() => setShowTrace(true)}
+              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
+            >
+              📡 <span className="hidden xl:inline">Trace</span>
+            </button>
+            <button
               onClick={() => setShowTriggers(true)}
               className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
             >
@@ -235,6 +243,11 @@ export default function App() {
               onFilterAgent={setFilterAgent}
               onStopAgent={handleStopAgent}
             />
+          </div>
+        )}
+        {mobileView === 'trace' && (
+          <div className="md:hidden flex-1 overflow-hidden">
+            <LiveTraceStream onClose={() => setMobileView('board')} embedded />
           </div>
         )}
         {mobileView === 'chat' && (
@@ -383,6 +396,10 @@ export default function App() {
           onSelectTask={(id) => { setSelectedTask(id); setShowHistory(false) }}
           onClose={() => setShowHistory(false)}
         />
+      )}
+
+      {showTrace && (
+        <LiveTraceStream onClose={() => setShowTrace(false)} />
       )}
     </div>
   )

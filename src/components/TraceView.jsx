@@ -1,21 +1,62 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { api } from '../lib/api'
+import { useTraceStream } from '../hooks/useTraceStream'
 
-const TYPE_ICONS = { llm_call: '🧠', consult: '💬', tool: '🔧', decision: '🎯' }
-const TYPE_COLORS = { llm_call: 'border-blue-500/30', consult: 'border-cyan-500/30', tool: 'border-green-500/30', decision: 'border-honey/30' }
+const TYPE_ICONS = { llm_call: '🧠', consult: '💬', tool: '🔧', decision: '🎯', THOUGHT: '💭', CONSULT: '💬', TOOL_CALL: '🔧', TOOL_RESULT: '📦', DECISION: '🎯', ERROR: '❌' }
+const TYPE_COLORS = { llm_call: 'border-blue-500/30', consult: 'border-cyan-500/30', tool: 'border-green-500/30', decision: 'border-honey/30', THOUGHT: 'border-emerald-500/30', CONSULT: 'border-cyan-500/30', TOOL_CALL: 'border-orange-500/30', TOOL_RESULT: 'border-amber-500/30', DECISION: 'border-honey/30', ERROR: 'border-red-500/30' }
 
-export default function TraceView({ taskId }) {
-  const [traces, setTraces] = useState([])
+export default function TraceView({ task, agents }) {
+  const taskId = task?.id
+  const isRunning = task?.status === 'in_progress'
+  const [dbTraces, setDbTraces] = useState([])
   const [expanded, setExpanded] = useState(null)
+  const scrollRef = useRef(null)
 
+  // Live SSE stream when task is running
+  const { events: liveEvents, connected } = useTraceStream({
+    agentId: task?.agent_id || 'all',
+    taskId,
+    enabled: isRunning,
+  })
+
+  // Fetch historical traces from DB
   useEffect(() => {
     if (!taskId) return
-    api.getTraces(taskId).then(setTraces).catch(() => {})
-    const interval = setInterval(() => {
-      api.getTraces(taskId).then(setTraces).catch(() => {})
-    }, 3000)
-    return () => clearInterval(interval)
-  }, [taskId])
+    api.getTraces(taskId).then(setDbTraces).catch(() => {})
+    if (!isRunning) {
+      const interval = setInterval(() => {
+        api.getTraces(taskId).then(setDbTraces).catch(() => {})
+      }, 3000)
+      return () => clearInterval(interval)
+    }
+  }, [taskId, isRunning])
+
+  // Auto-scroll when live events arrive
+  useEffect(() => {
+    if (isRunning && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [liveEvents.length, isRunning])
+
+  // Merge DB traces with live SSE events (live events supplement DB data)
+  const traces = isRunning && liveEvents.length > 0
+    ? [...dbTraces, ...liveEvents.map(e => ({
+        id: `live-${e.id}`,
+        task_id: e.task_id,
+        agent_id: e.agent_id,
+        step: e.payload?.step || 0,
+        type: e.event_type,
+        input_summary: '',
+        output_summary: e.payload?.content || e.payload?.error || e.event_type,
+        tokens_in: 0,
+        tokens_out: e.payload?.token_count || 0,
+        cost: e.payload?.cost || 0,
+        duration_ms: e.payload?.latency_ms || 0,
+        model: e.payload?.model || '',
+        created_at: e.timestamp,
+        _live: true,
+      }))]
+    : dbTraces
 
   if (traces.length === 0) {
     return <div className="text-center text-hive-500 py-8">No trace data yet. Run the task to see execution trace.</div>
@@ -28,7 +69,13 @@ export default function TraceView({ taskId }) {
   return (
     <div className="space-y-3">
       {/* Summary bar */}
-      <div className="flex gap-3 text-xs text-hive-400 bg-hive-700/30 rounded-lg p-2.5">
+      <div className="flex gap-3 text-xs text-hive-400 bg-hive-700/30 rounded-lg p-2.5 items-center">
+        {isRunning && connected && (
+          <span className="flex items-center gap-1.5 text-green-400 font-semibold">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+            LIVE
+          </span>
+        )}
         <span>{traces.length} steps</span>
         <span>·</span>
         <span>{totalTokens.toLocaleString()} tokens</span>
@@ -39,14 +86,14 @@ export default function TraceView({ taskId }) {
       </div>
 
       {/* Timeline */}
-      <div className="relative">
+      <div className="relative" ref={scrollRef}>
         {/* Vertical line */}
         <div className="absolute left-4 top-2 bottom-2 w-px bg-hive-600" />
 
         {traces.map((trace, i) => (
-          <div key={trace.id} className="relative pl-10 pb-3">
+          <div key={trace.id || i} className="relative pl-10 pb-3">
             {/* Node dot */}
-            <div className={`absolute left-2.5 top-2 w-3 h-3 rounded-full border-2 ${TYPE_COLORS[trace.type] || 'border-hive-500'} bg-hive-800`} />
+            <div className={`absolute left-2.5 top-2 w-3 h-3 rounded-full border-2 ${TYPE_COLORS[trace.type] || 'border-hive-500'} bg-hive-800 ${trace._live ? 'animate-pulse' : ''}`} />
 
             <button
               onClick={() => setExpanded(expanded === i ? null : i)}
@@ -60,10 +107,11 @@ export default function TraceView({ taskId }) {
                   <span className="text-xs font-medium text-hive-200">Step {trace.step}</span>
                   <span className="text-[10px] text-hive-500 capitalize">{trace.type.replace('_', ' ')}</span>
                   {trace.agent_id && <span className="text-[10px] text-hive-500">({trace.agent_id})</span>}
+                  {trace._live && <span className="text-[9px] text-green-400 font-semibold">LIVE</span>}
                 </div>
                 <div className="flex items-center gap-2 text-[10px] text-hive-500 shrink-0">
-                  {trace.tokens_in + trace.tokens_out > 0 && (
-                    <span>{(trace.tokens_in + trace.tokens_out).toLocaleString()} tok</span>
+                  {(trace.tokens_in || 0) + (trace.tokens_out || 0) > 0 && (
+                    <span>{((trace.tokens_in || 0) + (trace.tokens_out || 0)).toLocaleString()} tok</span>
                   )}
                   {trace.cost > 0 && <span>${trace.cost.toFixed(4)}</span>}
                   {trace.duration_ms > 0 && <span>{(trace.duration_ms / 1000).toFixed(1)}s</span>}
