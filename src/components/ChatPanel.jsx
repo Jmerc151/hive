@@ -15,9 +15,9 @@ function renderMarkdown(text) {
 const SUGGESTIONS = [
   { label: 'Agent status', text: 'What are my agents doing right now?' },
   { label: "Today's spend", text: 'How much have I spent today?' },
-  { label: 'Recent tasks', text: 'Show me the latest completed tasks' },
+  { label: 'Find new skills', text: 'Search GitHub and Reddit for new AI agent skills' },
+  { label: 'My skills', text: 'What skills do my agents have?' },
   { label: 'Scout research', text: 'Have Scout research trending AI tools' },
-  { label: 'Pause agents', text: 'Pause all agents' },
   { label: 'System health', text: 'Give me a full system health check' },
 ]
 

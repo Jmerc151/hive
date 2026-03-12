@@ -971,9 +971,13 @@ Start by analyzing the task and providing your approach.`
         }
       }
 
-      // Inject agent skills into prompt
-      const skills = db.prepare('SELECT name, description FROM agent_skills WHERE agent_id = ? AND enabled = 1').all(agent.id)
-      const skillsContext = skills.length > 0 ? `\n\nYour available skills: ${skills.map(s => `${s.name} (${s.description})`).join(', ')}` : ''
+      // Inject V2 skills (full SKILL.md content) into prompt
+      const skillsV2 = db.prepare(
+        'SELECT s.name, s.skill_md FROM agent_skills_v2 asv JOIN skills s ON s.id = asv.skill_id WHERE asv.agent_id = ? AND asv.enabled = 1 ORDER BY asv.priority'
+      ).all(agent.id)
+      const skillsContext = skillsV2.length > 0
+        ? '\n\n## Skills\n' + skillsV2.map(s => s.skill_md).join('\n\n---\n\n')
+        : ''
 
       const agentModel = getAgentModel(agent.id)
       const traceStart = Date.now()
@@ -1129,7 +1133,7 @@ Start by analyzing the task and providing your approach.`
       } catch (e) { console.error('Pipeline continuation error:', e.message) }
     }
 
-    // Update memory → optional QA review → optional follow-ups → queue next
+    // Update memory → optional QA review → optional follow-ups → skill extraction → queue next
     updateAgentMemory(agent, task, fullOutput)
       .then(() => {
         const qaEnabled = getSetting('qa_reviews_enabled') !== 'false'
@@ -1138,6 +1142,25 @@ Start by analyzing the task and providing your approach.`
       .then(() => {
         const autoTasksEnabled = getSetting('auto_tasks_enabled') !== 'false'
         return autoTasksEnabled ? generateFollowUpTasks(task, agent, fullOutput) : null
+      })
+      .then(() => {
+        // Extract discovered skills from Scout discovery tasks → create proposals
+        if (task.agent_id === 'scout' && task.title.startsWith('Discover skills:')) {
+          try {
+            const jsonMatch = fullOutput.match(/\[[\s\S]*\]/)?.[0]
+            if (jsonMatch) {
+              const discovered = JSON.parse(jsonMatch)
+              if (Array.isArray(discovered)) {
+                for (const skill of discovered.slice(0, 10)) {
+                  if (!skill.name || !skill.skill_md) continue
+                  db.prepare('INSERT INTO proposals (id, type, title, description, code_diff, proposed_by, priority) VALUES (?, ?, ?, ?, ?, ?, ?)')
+                    .run(uuid(), 'prompt', `New Skill: ${skill.name}`, skill.description || '', JSON.stringify({ skill_md: skill.skill_md, tags: skill.tags || [], agents: skill.suggested_agents || [] }), 'scout', 'medium')
+                }
+                console.log(`[skill-discovery] Extracted ${discovered.length} skill proposals from task ${task.id}`)
+              }
+            }
+          } catch (e) { console.error('[skill-discovery] Parse error:', e.message) }
+        }
       })
       .then(() => { setTimeout(() => processAgentQueue(agent.id), 5000) })
       .catch(() => {})
@@ -1815,6 +1838,26 @@ app.patch('/api/proposals/:id', (req, res) => {
     console.log(`🔨 Created Forge task for approved proposal: ${proposal.title}`)
   }
 
+  // When a skill proposal is approved → auto-create and assign the skill
+  if (status === 'approved' && proposal && proposal.type === 'prompt' && proposal.title.startsWith('New Skill:')) {
+    try {
+      const skillData = JSON.parse(proposal.code_diff)
+      const skillId = uuid()
+      const skillName = proposal.title.replace('New Skill: ', '')
+      const slug = slugify(skillName)
+      db.prepare('INSERT OR IGNORE INTO skills (id, slug, name, description, skill_md, tags, source) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+        skillId, slug, skillName, proposal.description || '', skillData.skill_md, JSON.stringify(skillData.tags || []), 'custom'
+      )
+      for (const agentId of (skillData.agents || [])) {
+        if (agents.find(a => a.id === agentId)) {
+          db.prepare('INSERT OR IGNORE INTO agent_skills_v2 (agent_id, skill_id) VALUES (?, ?)').run(agentId, skillId)
+        }
+      }
+      db.prepare("UPDATE proposals SET status = 'implemented' WHERE id = ?").run(proposal.id)
+      console.log(`🧩 Skill "${skillName}" created and assigned from approved proposal`)
+    } catch (e) { console.error('Skill auto-install error:', e.message) }
+  }
+
   res.json(proposal)
 })
 
@@ -2374,6 +2417,31 @@ setTimeout(() => {
 }, _next9am - _now)
 console.log(`📊 Daily project summary scheduled for 9am (in ${Math.round((_next9am - _now) / 60000)}min)`)
 
+// ── Skill Discovery Heartbeat ──────────────────────
+registerHeartbeat('skill-discovery', 7 * 24 * 60 * 60 * 1000, async () => {
+  if (!canAffordSelfImprovement()) return
+
+  const existing = db.prepare('SELECT name FROM skills').all().map(s => s.name.toLowerCase())
+  const id = uuid()
+  const description = `Search GitHub, Reddit, X, and AI forums for new agent skills and techniques.
+
+Currently installed skills: ${existing.join(', ') || 'none'}
+DO NOT suggest skills that duplicate the above.
+
+Search for:
+- GitHub repos with prompt engineering techniques or agent frameworks
+- Reddit r/ChatGPT, r/LocalLLaMA, r/artificial for new prompting patterns
+- X/Twitter threads about AI agent optimization
+- New research methodologies, content frameworks, sales templates
+
+Output a JSON array of up to 5 skills:
+[{"name":"Skill Name","description":"What it does","skill_md":"# Skill Name\\n\\nDetailed step-by-step instructions...","tags":["tag1"],"suggested_agents":["scout"]}]`
+
+  db.prepare('INSERT INTO tasks (id, title, description, agent_id, priority, status) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, 'Discover skills: weekly web scan', description, 'scout', 'low', 'todo')
+  console.log('🧩 Skill discovery heartbeat: created Scout task')
+})
+
 // ── Stats ──────────────────────────────────────────
 app.get('/api/stats', (req, res) => {
   const total = db.prepare('SELECT COUNT(*) as count FROM tasks').get().count
@@ -2534,6 +2602,14 @@ function buildChatSnapshot() {
   const trading = getSetting('trading_enabled') || 'false'
   sections.push(`## Settings\nPaused: ${paused} | QA reviews: ${qa} | Auto-tasks: ${autoTasks} | Trading: ${trading}`)
 
+  // Skills inventory
+  const allSkills = db.prepare('SELECT s.slug, s.name, s.description, GROUP_CONCAT(asv.agent_id) as assigned FROM skills s LEFT JOIN agent_skills_v2 asv ON asv.skill_id = s.id GROUP BY s.id ORDER BY s.updated_at DESC LIMIT 15').all()
+  if (allSkills.length) {
+    sections.push('## Skills (' + allSkills.length + ')\n' + allSkills.map(s => `- ${s.name} (${s.slug}): ${s.description || 'no desc'} [${s.assigned || 'unassigned'}]`).join('\n'))
+  } else {
+    sections.push('## Skills\nNo skills installed yet. Use create_skill or discover_skills to add them.')
+  }
+
   return sections.join('\n\n')
 }
 
@@ -2571,6 +2647,55 @@ async function executeChatAction(type, payloadStr) {
       db.prepare("UPDATE tasks SET status = 'todo' WHERE id = ?").run(payload.task_id)
       return { ok: true, message: `Task "${task.title}" queued` }
     }
+    case 'create_skill': {
+      const { name, description, skill_md, tags, agents: assignTo } = payload
+      if (!name || !skill_md) return { ok: false, message: 'name and skill_md required' }
+      const id = uuid()
+      const slug = slugify(name)
+      try {
+        db.prepare('INSERT INTO skills (id, slug, name, description, skill_md, tags, source) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+          id, slug, name, description || '', skill_md, JSON.stringify(tags || []), 'custom'
+        )
+        if (assignTo?.length) {
+          for (const agentId of assignTo) {
+            if (VALID_AGENTS.has(agentId)) {
+              db.prepare('INSERT OR IGNORE INTO agent_skills_v2 (agent_id, skill_id) VALUES (?, ?)').run(agentId, id)
+            }
+          }
+        }
+        return { ok: true, message: `Skill "${name}" created${assignTo?.length ? ` → assigned to ${assignTo.join(', ')}` : ''}`, title: name, slug }
+      } catch (e) {
+        if (e.message.includes('UNIQUE')) return { ok: false, message: `Skill "${slug}" already exists` }
+        return { ok: false, message: e.message }
+      }
+    }
+    case 'assign_skill': {
+      const skill = db.prepare('SELECT id FROM skills WHERE slug = ?').get(payload.slug)
+      if (!skill) return { ok: false, message: `Skill "${payload.slug}" not found` }
+      if (!VALID_AGENTS.has(payload.agent_id)) return { ok: false, message: `Unknown agent: ${payload.agent_id}` }
+      db.prepare('INSERT OR IGNORE INTO agent_skills_v2 (agent_id, skill_id) VALUES (?, ?)').run(payload.agent_id, skill.id)
+      return { ok: true, message: `Skill "${payload.slug}" assigned to ${payload.agent_id}` }
+    }
+    case 'discover_skills': {
+      const { query, sources } = payload
+      const sourceList = (sources || ['github', 'reddit', 'x']).join(', ')
+      const id = uuid()
+      const desc = `Search ${sourceList} for: ${query || 'new AI agent skills and techniques'}.
+
+For each skill found, output a JSON array:
+[{"name":"Skill Name","description":"What it does","skill_md":"# Skill Name\\n\\nInstructions...","tags":["tag1"],"suggested_agents":["scout"]}]
+
+Focus on actionable techniques that can be injected as agent instructions. Look for:
+- Prompt engineering patterns and frameworks
+- Research methodologies
+- Content creation frameworks
+- Sales/outreach templates
+- Trading analysis techniques
+- Automation workflows`
+      db.prepare('INSERT INTO tasks (id, title, description, agent_id, priority, status) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(id, `Discover skills: ${query || 'AI agent techniques'}`, desc, 'scout', 'medium', 'todo')
+      return { ok: true, message: `Scout searching for skills: "${query || 'AI agent techniques'}"`, task_id: id }
+    }
     default:
       return { ok: false, message: `Unknown action: ${type}` }
   }
@@ -2581,14 +2706,24 @@ You help the user monitor, control, and direct their 6 agents: Scout (research),
 Be concise and direct. Use markdown: **bold**, bullet lists. No fluff.
 
 ## Actions
-When the user asks you to DO something (create task, change settings, pause agents), output an action block:
+When the user asks you to DO something, output an action block:
 [ACTION:create_task]{"agent_id":"scout","title":"Research X","description":"Details...","priority":"medium"}[/ACTION]
 [ACTION:pause_agents][/ACTION]
 [ACTION:resume_agents][/ACTION]
 [ACTION:update_setting]{"key":"daily_limit_usd","value":"10"}[/ACTION]
 [ACTION:run_task]{"task_id":"uuid-here"}[/ACTION]
+[ACTION:create_skill]{"name":"Skill Name","description":"What it does","skill_md":"# Skill Name\\n\\nInstructions the agent follows...","tags":["research"],"agents":["scout"]}[/ACTION]
+[ACTION:assign_skill]{"slug":"skill-slug","agent_id":"scout"}[/ACTION]
+[ACTION:discover_skills]{"query":"prompt engineering techniques","sources":["github","reddit","x"]}[/ACTION]
 
 Rules: One action per response. Confirm what you'll do before the action block. Never invent task IDs.
+
+## Skill Management
+Skills are SKILL.md instruction packages that inject into agent prompts at runtime — they make agents better at specific tasks.
+- **create_skill**: When you know specific instructions (e.g., a research framework, writing template). The skill_md field should contain detailed step-by-step instructions.
+- **discover_skills**: When the user wants to find NEW skills from the web. This sends Scout to search GitHub, Reddit, X, and AI forums. Results appear as proposals for user approval.
+- **assign_skill**: Assign an existing skill to another agent by slug.
+When asked about improving agents or finding new techniques, prefer discover_skills to search the web.
 
 ## Current System State
 `
