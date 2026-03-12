@@ -12,7 +12,25 @@ const MODEL_SHORT = {
   'anthropic/claude-sonnet-4-5': 'Sonnet',
 }
 
-export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgent, onNewTask, taskCount, onScorecard, onSkills }) {
+const NAV_ITEMS = [
+  { key: 'graph', icon: '🕸️', label: 'Agent Graph' },
+  { key: 'analytics', icon: '📊', label: 'Analytics' },
+  { key: 'intel', icon: '🔍', label: 'Intel Feed' },
+  { key: 'trading', icon: '📈', label: 'Trading' },
+  { key: 'skillsV2', icon: '🧩', label: 'Skills' },
+  { key: 'projects', icon: '📁', label: 'Projects' },
+  { key: 'pipelines', icon: '🔗', label: 'Pipelines' },
+  { key: 'proposals', icon: '💡', label: 'Proposals' },
+  { key: 'revenue', icon: '💵', label: 'Revenue' },
+  { key: 'history', icon: '📜', label: 'History' },
+  { key: 'trace', icon: '📡', label: 'Live Trace' },
+  { key: 'triggers', icon: '⚡', label: 'Triggers' },
+  { key: 'botGen', icon: '⚒️', label: 'Bot Generator' },
+  { key: 'spend', icon: '💰', label: 'Spend Limits' },
+  { key: 'chat', icon: '💬', label: 'Chat' },
+]
+
+export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgent, onNewTask, taskCount, onScorecard, onSkills, onNav }) {
   const [collapsed, setCollapsed] = useState(false)
 
   if (collapsed) {
@@ -30,6 +48,23 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
             title={`${agent.name} — ${agent.role}`}
           >
             {agent.avatar}
+          </button>
+        ))}
+        <div className="w-8 h-px bg-hive-700 my-1" />
+        {[
+          { key: 'graph', icon: '🕸️', label: 'Graph' },
+          { key: 'analytics', icon: '📊', label: 'Analytics' },
+          { key: 'trading', icon: '📈', label: 'Trading' },
+          { key: 'intel', icon: '🔍', label: 'Intel' },
+          { key: 'proposals', icon: '💡', label: 'Proposals' },
+        ].map(item => (
+          <button
+            key={item.key}
+            onClick={() => onNav?.(item.key)}
+            className="w-10 h-10 rounded-lg flex items-center justify-center text-lg hover:bg-hive-700 transition-all"
+            title={item.label}
+          >
+            {item.icon}
           </button>
         ))}
         <div className="flex-1" />
@@ -129,6 +164,23 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
                 </div>
               )}
             </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Navigation */}
+      <div className="border-t border-hive-700 p-3 overflow-y-auto" style={{ maxHeight: '40%' }}>
+        <div className="text-xs font-medium text-hive-400 uppercase tracking-wider mb-2 px-1">Panels</div>
+        <div className="grid grid-cols-2 gap-1">
+          {NAV_ITEMS.map(item => (
+            <button
+              key={item.key}
+              onClick={() => onNav?.(item.key)}
+              className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs text-hive-300 hover:bg-hive-700/50 hover:text-hive-100 transition-colors text-left"
+            >
+              <span>{item.icon}</span>
+              <span className="truncate">{item.label}</span>
+            </button>
           ))}
         </div>
       </div>

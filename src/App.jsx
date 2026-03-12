@@ -139,6 +139,26 @@ export default function App() {
           taskCount={tasks.length}
           onScorecard={(agent) => setShowScorecard(agent)}
           onSkills={(agent) => setShowSkills(agent)}
+          onNav={(key) => {
+            const navMap = {
+              graph: () => setShowGraph(true),
+              analytics: () => setShowCostTimeline(true),
+              intel: () => setShowIntel(true),
+              skillsV2: () => setShowSkillsV2(true),
+              projects: () => setShowProjects(true),
+              history: () => setShowHistory(true),
+              trace: () => setShowTrace(true),
+              triggers: () => setShowTriggers(true),
+              pipelines: () => setShowPipelines(true),
+              revenue: () => setShowRevenue(true),
+              trading: () => setShowTrading(true),
+              proposals: () => setShowProposals(true),
+              botGen: () => setShowBotGen(true),
+              spend: () => setShowSpend(true),
+              chat: () => setShowChat(true),
+            }
+            navMap[key]?.()
+          }}
         />
       </div>
 
@@ -169,96 +189,6 @@ export default function App() {
               <CommandBar agents={agents} onTaskCreated={() => refresh()} />
             </div>
             <SearchBar agents={agents} onSelectTask={setSelectedTask} />
-            <button
-              onClick={() => setShowGraph(true)}
-              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
-            >
-              🕸️ <span className="hidden xl:inline">Graph</span>
-            </button>
-            <button
-              onClick={() => setShowCostTimeline(true)}
-              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
-            >
-              📊 <span className="hidden xl:inline">Analytics</span>
-            </button>
-            <button
-              onClick={() => setShowIntel(true)}
-              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
-            >
-              🔍 <span className="hidden xl:inline">Intel</span>
-            </button>
-            <button
-              onClick={() => setShowSkillsV2(true)}
-              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
-            >
-              🧩 <span className="hidden xl:inline">Skills</span>
-            </button>
-            <button
-              onClick={() => setShowProjects(true)}
-              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
-            >
-              📁 <span className="hidden xl:inline">Projects</span>
-            </button>
-            <button
-              onClick={() => setShowHistory(true)}
-              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
-            >
-              📜 <span className="hidden xl:inline">History</span>
-            </button>
-            <button
-              onClick={() => setShowTrace(true)}
-              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
-            >
-              📡 <span className="hidden xl:inline">Trace</span>
-            </button>
-            <button
-              onClick={() => setShowTriggers(true)}
-              className="hidden lg:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
-            >
-              ⚡ <span className="hidden xl:inline">Triggers</span>
-            </button>
-            <button
-              onClick={() => setShowPipelines(true)}
-              className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
-            >
-              🔗 <span className="hidden lg:inline">Pipelines</span>
-            </button>
-            <button
-              onClick={() => setShowRevenue(true)}
-              className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
-            >
-              💵 <span className="hidden lg:inline">Revenue</span>
-            </button>
-            <button
-              onClick={() => setShowTrading(true)}
-              className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
-            >
-              📈 <span className="hidden lg:inline">Trading</span>
-            </button>
-            <button
-              onClick={() => setShowProposals(true)}
-              className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-yellow-500/10 text-yellow-400 rounded-xl text-sm hover:bg-yellow-500/20 transition-colors border border-yellow-500/20"
-            >
-              💡 <span className="hidden lg:inline">Proposals</span>
-            </button>
-            <button
-              onClick={() => setShowBotGen(true)}
-              className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-forge/15 text-forge border border-forge/30 rounded-xl text-sm hover:bg-forge/25 transition-colors"
-            >
-              ⚒️ <span className="hidden lg:inline">Generate Bot</span>
-            </button>
-            <button
-              onClick={() => setShowSpend(true)}
-              className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
-            >
-              💰 <span className="hidden lg:inline">Spend</span>
-            </button>
-            <button
-              onClick={() => setShowChat(true)}
-              className="hidden md:flex items-center gap-1.5 px-3 py-2 bg-hive-800 text-hive-200 rounded-xl text-sm hover:bg-hive-700 transition-colors border border-hive-700"
-            >
-              💬 <span className="hidden lg:inline">Chat</span>
-            </button>
             <button
               onClick={() => setShowCreate(true)}
               className="flex items-center gap-1 px-3 py-2 bg-gradient-to-r from-honey to-honey-dim text-white rounded-xl font-medium text-sm shadow-lg shadow-honey/20 hover:shadow-honey/30 transition-all active:scale-95"
