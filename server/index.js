@@ -2504,6 +2504,179 @@ Keep it to 8-12 messages total. Be conversational and specific.`
   }
 })
 
+// ── Hive Assistant (Conversational AI) ───────────
+function buildChatSnapshot() {
+  const sections = []
+
+  const agentStatuses = agents.map(a => {
+    const run = activeRuns.get(a.id)
+    const spend = getTodaySpend(a.id)
+    const done = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status = 'done'").get(a.id).c
+    const taskTitle = run ? db.prepare('SELECT title FROM tasks WHERE id = ?').get(run.taskId)?.title : null
+    return `- ${a.name}: ${run ? `RUNNING "${taskTitle}"` : 'idle'} | $${spend.toFixed(4)} today | ${done} done`
+  })
+  sections.push('## Agents\n' + agentStatuses.join('\n'))
+
+  const todayTotal = getTodaySpend()
+  const monthTotal = getMonthSpend()
+  const dailyLimit = getSetting('daily_limit_usd') || '5'
+  const monthlyLimit = getSetting('monthly_limit_usd') || '100'
+  sections.push(`## Spend\nToday: $${todayTotal.toFixed(4)} / $${dailyLimit} | Month: $${monthTotal.toFixed(4)} / $${monthlyLimit}`)
+
+  const recent = db.prepare("SELECT title, status, agent_id, priority FROM tasks ORDER BY updated_at DESC LIMIT 10").all()
+  if (recent.length) {
+    sections.push('## Recent Tasks\n' + recent.map(t => `- [${t.status}] "${t.title}" (${t.agent_id})`).join('\n'))
+  }
+
+  const paused = getSetting('pause_all_agents') || 'false'
+  const qa = getSetting('qa_reviews_enabled') || 'true'
+  const autoTasks = getSetting('auto_tasks_enabled') || 'true'
+  const trading = getSetting('trading_enabled') || 'false'
+  sections.push(`## Settings\nPaused: ${paused} | QA reviews: ${qa} | Auto-tasks: ${autoTasks} | Trading: ${trading}`)
+
+  return sections.join('\n\n')
+}
+
+const ALLOWED_SETTINGS = new Set([
+  'daily_limit_usd', 'monthly_limit_usd', 'pause_all_agents', 'qa_reviews_enabled',
+  'auto_tasks_enabled', 'trading_enabled', 'max_position_size_usd', 'max_daily_trades',
+  'per_task_token_budget', 'max_concurrent_tasks'
+])
+const VALID_AGENTS = new Set(agents.map(a => a.id))
+
+async function executeChatAction(type, payloadStr) {
+  const payload = payloadStr.trim() ? JSON.parse(payloadStr) : {}
+  switch (type) {
+    case 'create_task': {
+      if (!VALID_AGENTS.has(payload.agent_id)) return { ok: false, message: `Unknown agent: ${payload.agent_id}` }
+      const id = uuid()
+      db.prepare('INSERT INTO tasks (id, title, description, agent_id, priority, status) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(id, payload.title || 'Untitled', payload.description || '', payload.agent_id, payload.priority || 'medium', 'todo')
+      return { ok: true, message: `Task created: "${payload.title}" → ${payload.agent_id}` }
+    }
+    case 'pause_agents':
+      setSetting('pause_all_agents', 'true')
+      return { ok: true, message: 'All agents paused' }
+    case 'resume_agents':
+      setSetting('pause_all_agents', 'false')
+      return { ok: true, message: 'All agents resumed' }
+    case 'update_setting': {
+      if (!ALLOWED_SETTINGS.has(payload.key)) return { ok: false, message: `Setting not allowed: ${payload.key}` }
+      setSetting(payload.key, String(payload.value))
+      return { ok: true, message: `${payload.key} → ${payload.value}` }
+    }
+    case 'run_task': {
+      const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(payload.task_id)
+      if (!task) return { ok: false, message: 'Task not found' }
+      db.prepare("UPDATE tasks SET status = 'todo' WHERE id = ?").run(payload.task_id)
+      return { ok: true, message: `Task "${task.title}" queued` }
+    }
+    default:
+      return { ok: false, message: `Unknown action: ${type}` }
+  }
+}
+
+const CHAT_SYSTEM_PROMPT = `You are Hive Assistant — the command center for an autonomous AI income agent team.
+You help the user monitor, control, and direct their 6 agents: Scout (research), Forge (building), Quill (writing), Dealer (sales), Oracle (trading), Nexus (optimization).
+Be concise and direct. Use markdown: **bold**, bullet lists. No fluff.
+
+## Actions
+When the user asks you to DO something (create task, change settings, pause agents), output an action block:
+[ACTION:create_task]{"agent_id":"scout","title":"Research X","description":"Details...","priority":"medium"}[/ACTION]
+[ACTION:pause_agents][/ACTION]
+[ACTION:resume_agents][/ACTION]
+[ACTION:update_setting]{"key":"daily_limit_usd","value":"10"}[/ACTION]
+[ACTION:run_task]{"task_id":"uuid-here"}[/ACTION]
+
+Rules: One action per response. Confirm what you'll do before the action block. Never invent task IDs.
+
+## Current System State
+`
+
+app.post('/api/chat/ask', async (req, res) => {
+  const { message } = req.body
+  if (!message?.trim()) return res.status(400).json({ error: 'Message required' })
+
+  // SSE headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  })
+
+  try {
+    // Store user message
+    db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+      .run('user', 'You', '👤', '#a8a29e', message.trim())
+
+    // Load conversation history (last 20 user/assistant messages)
+    const history = db.prepare("SELECT sender_id, text FROM messages WHERE sender_id IN ('user', 'hive-assistant') ORDER BY id DESC LIMIT 20").all().reverse()
+    const messages = history.map(m => ({
+      role: m.sender_id === 'user' ? 'user' : 'assistant',
+      content: m.text.replace(/\[ACTION:\w+\].*?\[\/ACTION\]/gs, '').trim()
+    })).filter(m => m.content)
+
+    // Build system prompt with snapshot
+    const snapshot = buildChatSnapshot()
+    const systemPrompt = CHAT_SYSTEM_PROMPT + snapshot
+
+    // Stream from OpenRouter
+    const stream = await openai.chat.completions.create({
+      model: 'anthropic/claude-haiku-4-5',
+      max_tokens: 1024,
+      stream: true,
+      messages: [{ role: 'system', content: systemPrompt }, ...messages],
+    })
+
+    let fullText = ''
+    let tokensIn = 0, tokensOut = 0
+
+    for await (const chunk of stream) {
+      const delta = chunk.choices?.[0]?.delta?.content
+      if (delta) {
+        fullText += delta
+        res.write(`event: token\ndata: ${JSON.stringify({ text: delta })}\n\n`)
+      }
+      if (chunk.usage) {
+        tokensIn = chunk.usage.prompt_tokens || 0
+        tokensOut = chunk.usage.completion_tokens || 0
+      }
+    }
+
+    // Estimate tokens if not provided
+    if (!tokensIn) tokensIn = Math.ceil((systemPrompt.length + messages.reduce((s, m) => s + m.content.length, 0)) / 4)
+    if (!tokensOut) tokensOut = Math.ceil(fullText.length / 4)
+
+    const pricing = MODEL_COSTS['anthropic/claude-haiku-4-5'] || DEFAULT_COST
+    const cost = (tokensIn * pricing.input) + (tokensOut * pricing.output)
+    logSpend('hive-assistant', tokensIn, tokensOut, cost, null)
+
+    // Parse and execute actions
+    const actionRegex = /\[ACTION:(\w+)\](.*?)\[\/ACTION\]/gs
+    let match
+    while ((match = actionRegex.exec(fullText)) !== null) {
+      try {
+        const result = await executeChatAction(match[1], match[2])
+        res.write(`event: action\ndata: ${JSON.stringify(result)}\n\n`)
+      } catch (e) {
+        res.write(`event: action\ndata: ${JSON.stringify({ ok: false, message: e.message })}\n\n`)
+      }
+    }
+
+    // Store assistant response (strip action blocks for display)
+    const displayText = fullText.replace(/\[ACTION:\w+\].*?\[\/ACTION\]/gs, '').trim()
+    db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+      .run('hive-assistant', 'Hive', '🐝', '#f59e0b', displayText)
+
+    res.write(`event: done\ndata: ${JSON.stringify({ tokens_in: tokensIn, tokens_out: tokensOut, cost })}\n\n`)
+    res.end()
+  } catch (err) {
+    res.write(`event: error\ndata: ${JSON.stringify({ error: err.message })}\n\n`)
+    res.end()
+  }
+})
+
 // ── Push Notifications ───────────────────────────
 app.get('/api/push/vapid-key', (req, res) => {
   res.json({ key: VAPID_PUBLIC })

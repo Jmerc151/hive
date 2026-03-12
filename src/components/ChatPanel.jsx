@@ -1,12 +1,34 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { api } from '../lib/api'
+
+function renderMarkdown(text) {
+  if (!text) return text
+  // Strip action blocks from display
+  let clean = text.replace(/\[ACTION:\w+\][\s\S]*?\[\/ACTION\]/g, '').trim()
+  // Bold
+  clean = clean.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+  // Inline code
+  clean = clean.replace(/`([^`]+)`/g, '<code class="bg-hive-700 px-1 rounded text-xs">$1</code>')
+  // Bullet lists
+  clean = clean.replace(/^[-•] (.+)$/gm, '<li class="ml-4 list-disc">$1</li>')
+  // Wrap consecutive <li> in <ul>
+  clean = clean.replace(/((?:<li[^>]*>.*?<\/li>\n?)+)/g, '<ul class="space-y-0.5 my-1">$1</ul>')
+  // Line breaks
+  clean = clean.replace(/\n/g, '<br/>')
+  return clean
+}
 
 export default function ChatPanel({ agents, onClose, embedded }) {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [standupLoading, setStandupLoading] = useState(false)
+  const [streaming, setStreaming] = useState(false)
+  const [streamingText, setStreamingText] = useState('')
+  const [actions, setActions] = useState([])
+  const [mode, setMode] = useState('assistant') // 'assistant' | 'feed'
   const bottomRef = useRef(null)
   const prevCountRef = useRef(0)
+  const abortRef = useRef(null)
 
   useEffect(() => {
     const fetchMsgs = async () => {
@@ -14,9 +36,9 @@ export default function ChatPanel({ agents, onClose, embedded }) {
       setMessages(msgs)
     }
     fetchMsgs()
-    const interval = setInterval(fetchMsgs, 2000)
+    const interval = setInterval(fetchMsgs, mode === 'feed' ? 2000 : 5000)
     return () => clearInterval(interval)
-  }, [])
+  }, [mode])
 
   useEffect(() => {
     if (messages.length !== prevCountRef.current) {
@@ -25,7 +47,83 @@ export default function ChatPanel({ agents, onClose, embedded }) {
     }
   }, [messages])
 
+  useEffect(() => {
+    if (streaming) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [streamingText, streaming])
+
+  const handleAsk = useCallback(async () => {
+    if (!input.trim() || streaming) return
+    const userText = input.trim()
+    setInput('')
+    setStreaming(true)
+    setStreamingText('')
+    setActions([])
+
+    // Optimistically add user message
+    const tempUserMsg = {
+      id: `temp-${Date.now()}`,
+      sender_id: 'user',
+      sender_name: 'You',
+      sender_avatar: '👤',
+      text: userText,
+      created_at: new Date().toISOString()
+    }
+    setMessages(prev => [...prev, tempUserMsg])
+
+    try {
+      const res = await api.askChat(userText)
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let fullText = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6))
+              if (data.token) {
+                fullText += data.token
+                setStreamingText(fullText)
+              }
+              if (data.action) {
+                setActions(prev => [...prev, data.action])
+              }
+              if (data.done) {
+                // Refresh messages to get the stored version
+                const msgs = await api.getMessages()
+                setMessages(msgs)
+              }
+              if (data.error) {
+                fullText += `\n\nError: ${data.error}`
+                setStreamingText(fullText)
+              }
+            } catch {}
+          }
+        }
+      }
+    } catch (err) {
+      setStreamingText(`Connection error: ${err.message}`)
+    } finally {
+      setStreaming(false)
+      setStreamingText('')
+    }
+  }, [input, streaming])
+
   const handleSend = async () => {
+    if (mode === 'assistant') {
+      handleAsk()
+      return
+    }
     if (!input.trim()) return
     await api.sendMessage({ text: input.trim() })
     setInput('')
@@ -64,14 +162,29 @@ export default function ChatPanel({ agents, onClose, embedded }) {
       <div className="px-4 py-3 border-b border-hive-700/50 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-xl bg-honey/10 flex items-center justify-center">
-            <span className="text-sm">💬</span>
+            <span className="text-sm">{mode === 'assistant' ? '🐝' : '💬'}</span>
           </div>
           <div>
-            <h2 className="font-semibold text-sm">Team Chat</h2>
-            <p className="text-xs text-hive-500">{agents.length} agents</p>
+            <h2 className="font-semibold text-sm">{mode === 'assistant' ? 'Hive Assistant' : 'Team Feed'}</h2>
+            <p className="text-xs text-hive-500">{mode === 'assistant' ? 'AI-powered control' : `${agents.length} agents`}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/* Mode toggle */}
+          <div className="flex bg-hive-800 rounded-lg p-0.5 border border-hive-700/50">
+            <button
+              onClick={() => setMode('assistant')}
+              className={`text-[10px] px-2 py-1 rounded-md transition-all ${mode === 'assistant' ? 'bg-honey/20 text-honey' : 'text-hive-400 hover:text-hive-200'}`}
+            >
+              AI
+            </button>
+            <button
+              onClick={() => setMode('feed')}
+              className={`text-[10px] px-2 py-1 rounded-md transition-all ${mode === 'feed' ? 'bg-honey/20 text-honey' : 'text-hive-400 hover:text-hive-200'}`}
+            >
+              Feed
+            </button>
+          </div>
           <button
             onClick={handleClear}
             className="text-xs text-hive-500 hover:text-hive-300 px-2 py-1 rounded-lg active:bg-hive-700"
@@ -84,31 +197,40 @@ export default function ChatPanel({ agents, onClose, embedded }) {
         </div>
       </div>
 
-      {/* Standup banner */}
-      <div className="px-4 py-2 border-b border-hive-700/30">
-        <button
-          onClick={handleStandup}
-          disabled={standupLoading}
-          className="w-full py-2.5 rounded-xl text-sm font-medium transition-all bg-gradient-to-r from-honey/10 to-honey/5 text-honey border border-honey/20 hover:from-honey/20 hover:to-honey/10 disabled:opacity-50 active:scale-[0.98]"
-        >
-          {standupLoading ? 'Standup in progress...' : '📋 Start Team Standup'}
-        </button>
-      </div>
+      {/* Standup banner — feed mode only */}
+      {mode === 'feed' && (
+        <div className="px-4 py-2 border-b border-hive-700/30">
+          <button
+            onClick={handleStandup}
+            disabled={standupLoading}
+            className="w-full py-2.5 rounded-xl text-sm font-medium transition-all bg-gradient-to-r from-honey/10 to-honey/5 text-honey border border-honey/20 hover:from-honey/20 hover:to-honey/10 disabled:opacity-50 active:scale-[0.98]"
+          >
+            {standupLoading ? 'Standup in progress...' : '📋 Start Team Standup'}
+          </button>
+        </div>
+      )}
 
       {/* Messages */}
       <div className={`flex-1 overflow-y-auto p-4 space-y-3 ${embedded ? 'pb-20' : ''}`}>
-        {messages.length === 0 ? (
+        {messages.length === 0 && !streaming ? (
           <div className="text-center text-hive-500 py-16">
             <div className="w-16 h-16 rounded-2xl bg-hive-800 flex items-center justify-center mx-auto mb-4">
-              <span className="text-3xl">💬</span>
+              <span className="text-3xl">{mode === 'assistant' ? '🐝' : '💬'}</span>
             </div>
-            <p className="text-sm font-medium text-hive-300">No messages yet</p>
-            <p className="text-xs mt-1">Start a team standup or send a message</p>
+            <p className="text-sm font-medium text-hive-300">
+              {mode === 'assistant' ? 'Ask me anything about your hive' : 'No messages yet'}
+            </p>
+            <p className="text-xs mt-1">
+              {mode === 'assistant'
+                ? '"What are my agents doing?" or "Have Scout research X"'
+                : 'Start a team standup or send a message'}
+            </p>
           </div>
         ) : (
           messages.map((msg) => {
             const isUser = msg.sender_id === 'user'
             const isSystem = msg.sender_id === 'system'
+            const isAssistant = msg.sender_id === 'hive-assistant'
 
             if (isSystem) {
               return (
@@ -122,14 +244,16 @@ export default function ChatPanel({ agents, onClose, embedded }) {
 
             return (
               <div key={msg.id} className={`flex gap-2.5 ${isUser ? 'flex-row-reverse' : ''}`}>
-                <div className="shrink-0 w-8 h-8 rounded-xl bg-hive-700/80 flex items-center justify-center text-sm">
-                  {msg.sender_avatar || '👤'}
+                <div className={`shrink-0 w-8 h-8 rounded-xl flex items-center justify-center text-sm ${
+                  isAssistant ? 'bg-honey/10' : 'bg-hive-700/80'
+                }`}>
+                  {isAssistant ? '🐝' : msg.sender_avatar || '👤'}
                 </div>
                 <div className={`max-w-[80%] ${isUser ? 'text-right' : ''}`}>
                   <div className={`flex items-center gap-2 mb-0.5 ${isUser ? 'justify-end' : ''}`}>
                     {!isUser && (
-                      <span className="text-xs font-semibold" style={{ color: msg.sender_color || '#a8a29e' }}>
-                        {msg.sender_name}
+                      <span className={`text-xs font-semibold ${isAssistant ? 'text-honey' : ''}`} style={isAssistant ? {} : { color: msg.sender_color || '#a8a29e' }}>
+                        {isAssistant ? 'Hive Assistant' : msg.sender_name}
                       </span>
                     )}
                     <span className="text-[10px] text-hive-600">{formatTime(msg.created_at)}</span>
@@ -137,14 +261,50 @@ export default function ChatPanel({ agents, onClose, embedded }) {
                   <div className={`text-sm rounded-2xl px-3.5 py-2 inline-block text-left leading-relaxed ${
                     isUser
                       ? 'bg-honey text-white rounded-br-md'
-                      : 'bg-hive-800 text-hive-200 border border-hive-700/50 rounded-bl-md'
-                  }`}>
-                    {msg.text}
+                      : isAssistant
+                        ? 'bg-honey/10 text-hive-200 border border-honey/20 rounded-bl-md'
+                        : 'bg-hive-800 text-hive-200 border border-hive-700/50 rounded-bl-md'
+                  }`}
+                    dangerouslySetInnerHTML={isAssistant ? { __html: renderMarkdown(msg.text) } : undefined}
+                  >
+                    {isAssistant ? undefined : msg.text}
                   </div>
                 </div>
               </div>
             )
           })
+        )}
+
+        {/* Streaming response */}
+        {streaming && (
+          <div className="flex gap-2.5">
+            <div className="shrink-0 w-8 h-8 rounded-xl bg-honey/10 flex items-center justify-center text-sm">
+              🐝
+            </div>
+            <div className="max-w-[80%]">
+              <div className="flex items-center gap-2 mb-0.5">
+                <span className="text-xs font-semibold text-honey">Hive Assistant</span>
+              </div>
+              <div className="text-sm rounded-2xl px-3.5 py-2 inline-block text-left leading-relaxed bg-honey/10 text-hive-200 border border-honey/20 rounded-bl-md">
+                {streamingText ? (
+                  <span dangerouslySetInnerHTML={{ __html: renderMarkdown(streamingText) }} />
+                ) : (
+                  <span className="flex gap-1 items-center">
+                    <span className="w-1.5 h-1.5 bg-honey rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1.5 h-1.5 bg-honey rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1.5 h-1.5 bg-honey rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </span>
+                )}
+              </div>
+              {/* Action confirmations */}
+              {actions.map((action, i) => (
+                <div key={i} className="mt-1.5 flex items-center gap-1.5 text-xs text-green-400">
+                  <span className="w-4 h-4 rounded-full bg-green-500/20 flex items-center justify-center text-[10px]">✓</span>
+                  <span>{action.type === 'create_task' ? `Task created: ${action.result?.title || 'New task'}` : action.type === 'pause_agents' ? 'Agents paused' : action.type === 'resume_agents' ? 'Agents resumed' : action.type === 'update_setting' ? `Setting updated` : action.type === 'run_task' ? 'Task queued' : action.type}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
         <div ref={bottomRef} />
       </div>
@@ -156,27 +316,26 @@ export default function ChatPanel({ agents, onClose, embedded }) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Send a message..."
+            placeholder={mode === 'assistant' ? 'Ask the hive...' : 'Send a message...'}
             className="flex-1 bg-hive-800 border border-hive-700 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-honey/30 focus:border-honey/50 placeholder:text-hive-500"
+            disabled={streaming}
           />
           <button
             onClick={handleSend}
-            disabled={!input.trim()}
+            disabled={!input.trim() || streaming}
             className="px-4 py-2.5 bg-honey text-white rounded-xl text-sm font-medium hover:bg-honey-dim transition-all disabled:opacity-30 active:scale-95"
           >
-            Send
+            {streaming ? '...' : mode === 'assistant' ? 'Ask' : 'Send'}
           </button>
         </div>
       </div>
     </div>
   )
 
-  // Embedded mode — render inline (no modal wrapper)
   if (embedded) {
     return content
   }
 
-  // Modal mode — with backdrop
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex justify-end" onClick={onClose}>
       <div className="w-full max-w-lg bg-hive-900 border-l border-hive-700/50 shadow-2xl flex flex-col h-full" onClick={e => e.stopPropagation()}>

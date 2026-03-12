@@ -47,6 +47,17 @@ export const api = {
   sendMessage: (data) => request('/messages', { method: 'POST', body: data }),
   clearMessages: () => request('/messages', { method: 'DELETE' }),
   triggerStandup: () => request('/chat/standup', { method: 'POST' }),
+  askChat: async (message) => {
+    const headers = { 'Content-Type': 'application/json' }
+    if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`
+    const res = await fetch(`${BASE}/chat/ask`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ message })
+    })
+    if (!res.ok) throw new Error(`Chat error: ${res.status}`)
+    return res
+  },
 
   // Push notifications
   getVapidKey: () => request('/push/vapid-key'),
