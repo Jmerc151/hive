@@ -419,7 +419,7 @@ const TOOL_REGISTRY = [
       description: { type: 'string', required: true, description: 'Task details' },
       priority: { type: 'string', required: false, description: 'low, medium, high, critical (default: medium)' }
     },
-    agents: ['nexus', 'scout'],
+    agents: ['nexus', 'scout', 'forge', 'quill', 'dealer', 'oracle'],
     execute: async (args) => {
       const id = uuid()
       db.prepare('INSERT INTO tasks (id, title, description, agent_id, priority, status) VALUES (?, ?, ?, ?, ?, ?)').run(
@@ -542,11 +542,14 @@ Then continue working with that data.
   }
 
   prompt += `
-### CRITICAL Rules:
-- ALWAYS start your response with [TOOL:...] calls. Do NOT just write text — call tools first.
-- The format is [TOOL:name]{"key":"value"}[/TOOL] — square brackets, colon, name, then JSON args, then [/TOOL].
-- Wait for tool results before drawing conclusions. Never make up data.
-- You can call multiple tools per step, each on its own line.
+### MANDATORY Rules — You MUST follow these:
+1. Your FIRST response MUST contain at least one [TOOL:...] call. Text-only responses are REJECTED.
+2. The format is [TOOL:name]{"key":"value"}[/TOOL] — square brackets, colon, name, then JSON args, then [/TOOL].
+3. DO NOT write plans, analyses, or reports without calling tools first. Get real data, then analyze.
+4. After getting tool results, take the NEXT action — don't just summarize what you got. Use create_task to delegate follow-up work.
+5. You can call multiple tools per step, each on its own line.
+6. If your task says "research X" → call web_search. If it says "build X" → call write_file. If it says "email X" → call send_email. If it says "analyze X" → call get_quote/get_indicators. ALWAYS match task type to tool.
+7. When you find an opportunity, DON'T just describe it — create_task to assign the next step to the right agent.
 `
 
   return prompt
@@ -1408,17 +1411,22 @@ Details: ${task.description || 'No additional details.'}
 
 ${agentMemory ? `## Your Memory (learnings from past tasks):\n${agentMemory.slice(-2000)}\n` : ''}
 
-## Instructions
-You are working on this task. You have real tools available — USE THEM to get actual data and take real actions.
+## MANDATORY: Use Tools — Do NOT Just Write Text
 
-1. THINK about what you need to do
-2. Call tools to get real data or take actions: [TOOL:name]{"param":"value"}[/TOOL]
-3. If you need input from another agent: [CONSULT:agent_id] question here
-   Available agents: ${agents.filter(a => a.id !== agent.id).map(a => `${a.id} (${a.name} - ${a.role})`).join(', ')}
-4. Analyze tool results and provide your final output
+You MUST produce REAL work using your tools. Text-only responses are REJECTED.
 
-DO NOT make up data. If you need market prices, indicators, or account info — call the tools.
-Start by analyzing the task and calling any tools you need.`
+**Your first response MUST start with tool calls.** Examples:
+- Research task → [TOOL:web_search]{"query":"..."}[/TOOL]
+- Build task → [TOOL:write_file]{"path":"...","content":"..."}[/TOOL]
+- Trading task → [TOOL:get_quote]{"symbol":"..."}[/TOOL]
+- Outreach task → [TOOL:send_email]{"to":"...","subject":"...","body":"..."}[/TOOL]
+
+After getting results, take the NEXT action — don't just summarize. Use [TOOL:create_task] to delegate follow-up work to other agents.
+
+Available agents for delegation: ${agents.filter(a => a.id !== agent.id).map(a => `${a.id} (${a.name} - ${a.role})`).join(', ')}
+For consultation: [CONSULT:agent_id] question
+
+START WITH TOOL CALLS NOW.`
 
     messages.push({ role: 'user', content: initialPrompt })
 
@@ -1546,8 +1554,21 @@ Start by analyzing the task and calling any tools you need.`
         }
       }
 
-      // No tools, no consults → agent is done
-      if (!hadAction) break
+      // No tools, no consults — nudge the agent to use tools on first attempt
+      if (!hadAction) {
+        if (step === 0 && totalToolCalls === 0) {
+          // Agent produced text-only on step 1. Push it to use tools.
+          console.log(`⚠️ ${agent.name}: text-only response on step 1, nudging to use tools`)
+          db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+            .run(task.id, agent.id, 'Nudging agent — text-only response, no tools used', 'warning')
+          messages.push({
+            role: 'user',
+            content: `STOP. You wrote a text response without using any tools. This is not acceptable. You MUST use your tools to take REAL actions. Do NOT write plans or descriptions — call tools NOW.\n\nReminder of syntax: [TOOL:tool_name]{"param":"value"}[/TOOL]\n\nYour available tools include: ${getAgentTools(agent.id).map(t => t.name).join(', ')}\n\nCall at least one tool right now.`
+          })
+          continue
+        }
+        break
+      }
     }
 
     activeRuns.delete(agent.id)
