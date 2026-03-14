@@ -1,6 +1,18 @@
 export const BASE = import.meta.env.VITE_API_URL || '/api'
 export const API_KEY = import.meta.env.VITE_API_KEY || localStorage.getItem('hive_api_key') || ''
 
+// Session token (set after login)
+export function getSessionToken() {
+  return localStorage.getItem('hive_session_token') || ''
+}
+export function setSessionToken(token) {
+  if (token) localStorage.setItem('hive_session_token', token)
+  else localStorage.removeItem('hive_session_token')
+}
+export function getAuthToken() {
+  return getSessionToken() || API_KEY
+}
+
 async function request(path, options = {}) {
   const maxRetries = 2
   let lastError
@@ -8,7 +20,8 @@ async function request(path, options = {}) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const headers = { 'Content-Type': 'application/json' }
-      if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`
+      const token = getAuthToken()
+      if (token) headers['Authorization'] = `Bearer ${token}`
 
       const res = await fetch(`${BASE}${path}`, {
         headers,
@@ -17,6 +30,13 @@ async function request(path, options = {}) {
       })
 
       if (res.status === 401) {
+        // If we had a session token, it's expired — clear and reload to show login
+        if (getSessionToken()) {
+          setSessionToken(null)
+          window.location.reload()
+          throw new Error('Session expired')
+        }
+        // Fallback: prompt for API key
         const key = prompt('Enter your Hive API key:')
         if (key) {
           localStorage.setItem('hive_api_key', key)
@@ -74,7 +94,8 @@ export const api = {
   triggerStandup: () => request('/chat/standup', { method: 'POST' }),
   askChat: async (message) => {
     const headers = { 'Content-Type': 'application/json' }
-    if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`
+    const chatToken = getAuthToken()
+    if (chatToken) headers['Authorization'] = `Bearer ${chatToken}`
     const res = await fetch(`${BASE}/chat/ask`, {
       method: 'POST',
       headers,
@@ -102,7 +123,8 @@ export const api = {
   dismissSuggestion: (id) => request(`/bot-suggestions/${id}`, { method: 'DELETE' }),
   downloadBot: async (taskId) => {
     const headers = {}
-    if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`
+    const dlToken = getAuthToken()
+    if (dlToken) headers['Authorization'] = `Bearer ${dlToken}`
     const res = await fetch(`${BASE}/tasks/${taskId}/download`, { headers })
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Download failed' }))
@@ -300,9 +322,13 @@ export const api = {
   getGuardrailEvents: (limit) => request(`/guardrails/events?limit=${limit || 50}`),
 
   // Skill Import/Export
-  exportSkill: (slug) => `${BASE}/skills/${slug}/export?token=${API_KEY}`,
+  exportSkill: (slug) => `${BASE}/skills/${slug}/export?token=${getAuthToken()}`,
   importSkill: (content) => request('/skills/import', { method: 'POST', body: { content } }),
   importSkillUrl: (url) => request('/skills/import-url', { method: 'POST', body: { url } }),
+
+  // Agent Sandbox
+  getAgentPrompt: (agentId) => request(`/agents/${agentId}/prompt`),
+  runSandbox: (data) => request('/sandbox/run', { method: 'POST', body: data }),
 
   // Knowledge Base (RAG)
   getKnowledge: () => request('/knowledge'),
@@ -311,4 +337,20 @@ export const api = {
   getKnowledgeChunks: (id) => request(`/knowledge/${id}/chunks`),
   searchKnowledge: (query, topK) => request('/knowledge/search', { method: 'POST', body: { query, topK } }),
   importKnowledgeUrl: (url, title) => request('/knowledge/import-url', { method: 'POST', body: { url, title } }),
+
+  // A2A Protocol
+  getA2AAgents: () => request('/a2a/agents'),
+  addA2AAgent: (data) => request('/a2a/agents', { method: 'POST', body: data }),
+  deleteA2AAgent: (id) => request(`/a2a/agents/${id}`, { method: 'DELETE' }),
+  testA2AAgent: (id) => request(`/a2a/agents/${id}/test`, { method: 'POST' }),
+  callA2AAgent: (url, message) => request('/a2a/call', { method: 'POST', body: { agent_url: url, message } }),
+
+  // Auth
+  login: (username, password) => request('/auth/login', { method: 'POST', body: { username, password } }),
+  logout: () => request('/auth/logout', { method: 'POST' }),
+  getMe: () => request('/auth/me'),
+  getUsers: () => request('/users'),
+  createUser: (data) => request('/users', { method: 'POST', body: data }),
+  updateUser: (id, data) => request(`/users/${id}`, { method: 'PATCH', body: data }),
+  deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),
 }

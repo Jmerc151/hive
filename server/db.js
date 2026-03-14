@@ -345,6 +345,41 @@ db.exec(`
   );
 `)
 
+// A2A Protocol — external agent registry
+db.exec(`
+  CREATE TABLE IF NOT EXISTS a2a_agents (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    url TEXT NOT NULL,
+    agent_card TEXT DEFAULT '{}',
+    enabled INTEGER DEFAULT 1,
+    last_contacted TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`)
+
+// Multi-user auth
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role TEXT DEFAULT 'viewer' CHECK(role IN ('admin','operator','viewer')),
+    display_name TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    last_login TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+`)
+
 // Migration-safe column additions
 try { db.exec(`ALTER TABLE tasks ADD COLUMN tokens_used INTEGER DEFAULT 0`) } catch (e) { /* already exists */ }
 try { db.exec(`ALTER TABLE tasks ADD COLUMN estimated_cost REAL DEFAULT 0`) } catch (e) { /* already exists */ }

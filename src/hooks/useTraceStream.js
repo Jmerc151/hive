@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { BASE, API_KEY } from '../lib/api'
+import { BASE, getAuthToken } from '../lib/api'
 
 const MAX_EVENTS = 500
 
@@ -25,7 +25,8 @@ export function useTraceStream({ agentId = 'all', taskId = null, enabled = true 
       : `${baseOrigin}/agents/${agentId}/trace/live`
 
     const params = new URLSearchParams()
-    if (API_KEY) params.set('token', API_KEY)
+    const authToken = getAuthToken()
+    if (authToken) params.set('token', authToken)
     if (taskId) params.set('task_id', taskId)
     if (params.toString()) url += `?${params}`
 

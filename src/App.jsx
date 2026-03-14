@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { api, BASE, API_KEY } from './lib/api'
+import { api, BASE, API_KEY, getAuthToken, setSessionToken, getSessionToken } from './lib/api'
 import ToastContainer, { useToast } from './components/Toast'
 import Sidebar from './components/Sidebar'
 import TaskBoard from './components/TaskBoard'
@@ -34,6 +34,9 @@ import EvalHarness from './components/EvalHarness'
 import KnowledgeBase from './components/KnowledgeBase'
 import ScheduledJobs from './components/ScheduledJobs'
 import MemoryDashboard from './components/MemoryDashboard'
+import AgentSandbox from './components/AgentSandbox'
+import UserManagement from './components/UserManagement'
+import LoginScreen from './components/LoginScreen'
 import ErrorBoundary from './components/ErrorBoundary'
 
 export default function App() {
@@ -69,6 +72,39 @@ export default function App() {
   const [showSchedule, setShowSchedule] = useState(false)
   const [showMemory, setShowMemory] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
+  const [showSandbox, setShowSandbox] = useState(false)
+  const [showUsers, setShowUsers] = useState(false)
+  const [currentUser, setCurrentUser] = useState(null)
+  const [authChecked, setAuthChecked] = useState(false)
+
+  // Check auth on mount
+  useEffect(() => {
+    const token = getSessionToken()
+    if (token || API_KEY) {
+      api.getMe().then(user => {
+        setCurrentUser(user)
+        setAuthChecked(true)
+      }).catch(() => {
+        // Session expired or invalid — clear and show login if API key is set
+        setSessionToken(null)
+        setAuthChecked(true)
+      })
+    } else {
+      setAuthChecked(true)
+    }
+  }, [])
+
+  const handleLogin = async (username, password) => {
+    const { token, user } = await api.login(username, password)
+    setSessionToken(token)
+    setCurrentUser(user)
+  }
+
+  const handleLogout = async () => {
+    try { await api.logout() } catch {}
+    setSessionToken(null)
+    setCurrentUser(null)
+  }
 
   const refresh = useCallback(async () => {
     const [a, t] = await Promise.all([api.getAgents(), api.getTasks()])
@@ -93,7 +129,8 @@ export default function App() {
     refresh()
 
     // SSE connection for real-time updates
-    const sseUrl = `${BASE}/events/stream${API_KEY ? `?token=${API_KEY}` : ''}`
+    const authToken = getAuthToken()
+    const sseUrl = `${BASE}/events/stream${authToken ? `?token=${authToken}` : ''}`
     let es = null
     let reconnectTimer = null
 
@@ -168,6 +205,8 @@ export default function App() {
         setShowSchedule(false)
         setShowMemory(false)
         setShowShortcuts(false)
+        setShowSandbox(false)
+        setShowUsers(false)
         return
       }
 
@@ -246,6 +285,11 @@ export default function App() {
 
   const activeCount = agents.filter(a => a.isRunning).length
 
+  // Show login screen if no API key and no session
+  if (authChecked && !currentUser && !API_KEY) {
+    return <LoginScreen onLogin={handleLogin} />
+  }
+
   return (
     <div className="flex h-screen h-[100dvh] overflow-hidden bg-hive-900">
       {/* Desktop sidebar */}
@@ -259,6 +303,8 @@ export default function App() {
           taskCount={tasks.length}
           onScorecard={(agent) => setShowScorecard(agent)}
           onSkills={(agent) => setShowSkills(agent)}
+          currentUser={currentUser}
+          onLogout={handleLogout}
           onNav={(key) => {
             const navMap = {
               deliverables: () => setShowDeliverables(true),
@@ -275,12 +321,14 @@ export default function App() {
               trading: () => setShowTrading(true),
               proposals: () => setShowProposals(true),
               botGen: () => setShowBotGen(true),
+              sandbox: () => setShowSandbox(true),
               eval: () => setShowEval(true),
               knowledge: () => setShowKnowledge(true),
               schedule: () => setShowSchedule(true),
               memory: () => setShowMemory(true),
               spend: () => setShowSpend(true),
               chat: () => setShowChat(true),
+              users: () => setShowUsers(true),
             }
             navMap[key]?.()
           }}
@@ -558,6 +606,10 @@ export default function App() {
       {showEval && (
         <EvalHarness onClose={() => setShowEval(false)} agents={agents} />
       )}
+
+      {showSandbox && (
+        <AgentSandbox agents={agents} onClose={() => setShowSandbox(false)} />
+      )}
       {showDeliverables && (
         <DeliverablesPanel
           agents={agents}
@@ -575,6 +627,10 @@ export default function App() {
 
       {showMemory && (
         <MemoryDashboard agents={agents} onClose={() => setShowMemory(false)} />
+      )}
+
+      {showUsers && (
+        <UserManagement onClose={() => setShowUsers(false)} />
       )}
 
       {/* Mobile CommandBar — hide when chat is open since chat has its own input */}

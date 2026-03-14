@@ -26,6 +26,7 @@ const NAV_ITEMS = [
   { key: 'history', icon: '📜', label: 'History' },
   { key: 'trace', icon: '📡', label: 'Live Trace' },
   { key: 'knowledge', icon: '📚', label: 'Knowledge' },
+  { key: 'sandbox', icon: '🧫', label: 'Sandbox' },
   { key: 'eval', icon: '🧪', label: 'Eval Harness' },
   { key: 'schedule', icon: '⏰', label: 'Schedule' },
   { key: 'memory', icon: '🧠', label: 'Memory' },
@@ -35,7 +36,7 @@ const NAV_ITEMS = [
   { key: 'chat', icon: '💬', label: 'Chat' },
 ]
 
-export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgent, onNewTask, taskCount, onScorecard, onSkills, onNav }) {
+export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgent, onNewTask, taskCount, onScorecard, onSkills, onNav, currentUser, onLogout }) {
   const [collapsed, setCollapsed] = useState(false)
 
   if (collapsed) {
@@ -187,8 +188,37 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
               <span className="truncate">{item.label}</span>
             </button>
           ))}
+          {currentUser?.role === 'admin' && (
+            <button
+              onClick={() => onNav?.('users')}
+              className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs text-hive-300 hover:bg-hive-700/50 hover:text-hive-100 transition-colors text-left"
+            >
+              <span>👥</span>
+              <span className="truncate">Users</span>
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Current user */}
+      {currentUser && currentUser.username !== 'api' && currentUser.username !== 'anonymous' && (
+        <div className="border-t border-hive-700 p-3">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-full bg-hive-700 flex items-center justify-center text-xs font-bold text-hive-300">
+              {(currentUser.display_name || currentUser.username).charAt(0).toUpperCase()}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-medium text-hive-200 truncate">{currentUser.display_name || currentUser.username}</div>
+              <div className="text-[10px] text-hive-500">{currentUser.role}</div>
+            </div>
+            {onLogout && (
+              <button onClick={onLogout} className="text-[10px] text-hive-500 hover:text-hive-300" title="Sign out">
+                Sign out
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Filter indicator */}
       {filterAgent && (

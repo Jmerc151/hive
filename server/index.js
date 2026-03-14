@@ -96,18 +96,79 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3333,h
 app.use(cors({ origin: ALLOWED_ORIGINS }))
 app.use(express.json())
 
+// ── Password hashing ────────────────────────────────
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex')
+  const hash = crypto.createHash('sha256').update(salt + password).digest('hex')
+  return `${salt}:${hash}`
+}
+
+function verifyPassword(password, stored) {
+  const [salt, hash] = stored.split(':')
+  const attempt = crypto.createHash('sha256').update(salt + password).digest('hex')
+  return hash === attempt
+}
+
+// Seed default admin if no users exist
+try {
+  const userCount = db.prepare('SELECT COUNT(*) as c FROM users').get()
+  if (userCount.c === 0) {
+    const adminId = uuid()
+    db.prepare('INSERT INTO users (id, username, password_hash, role, display_name) VALUES (?, ?, ?, ?, ?)')
+      .run(adminId, 'admin', hashPassword('admin'), 'admin', 'Admin')
+    console.log('🔑 Default admin user created (username: admin, password: admin)')
+  }
+} catch (e) { /* users table may not exist yet on first boot */ }
+
 // ── Auth middleware ───────────────────────────────
 const API_KEY = process.env.HIVE_API_KEY
-if (API_KEY) {
-  app.use('/api', (req, res, next) => {
-    if (req.path.startsWith('/webhooks/') && req.method === 'POST') return next()
-    const token = req.headers.authorization?.replace('Bearer ', '') || req.query.token
-    if (token !== API_KEY) {
-      return res.status(401).json({ error: 'Unauthorized' })
+
+function authenticateRequest(req, res, next) {
+  // Skip webhook endpoints and login
+  if (req.path.startsWith('/webhooks/') && req.method === 'POST') return next()
+  if (req.path === '/auth/login' && req.method === 'POST') return next()
+
+  const authHeader = req.headers.authorization
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : req.query.token
+
+  // API key check (master key = admin)
+  if (API_KEY && token === API_KEY) {
+    req.user = { id: 'api', role: 'admin', username: 'api', display_name: 'API Key' }
+    return next()
+  }
+
+  // Session token check
+  if (token) {
+    const session = db.prepare("SELECT s.*, u.id as user_id, u.username, u.role, u.display_name FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = ? AND s.expires_at > datetime('now')").get(token)
+    if (session) {
+      req.user = { id: session.user_id, role: session.role, username: session.username, display_name: session.display_name }
+      return next()
+    }
+  }
+
+  // If no API key configured, allow open access (backwards compat)
+  if (!API_KEY) {
+    req.user = { id: 'anonymous', role: 'admin', username: 'anonymous', display_name: 'Anonymous' }
+    return next()
+  }
+
+  res.status(401).json({ error: 'Unauthorized' })
+}
+
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Insufficient permissions' })
     }
     next()
-  })
-  console.log('🔒 Auth enabled — requests require Bearer token')
+  }
+}
+
+// Apply auth globally to /api routes
+app.use('/api', authenticateRequest)
+
+if (API_KEY) {
+  console.log('🔒 Auth enabled — requests require Bearer token or session')
 } else {
   console.log('🔓 No HIVE_API_KEY set — API is open (protected by helmet + rate limiting)')
 }
@@ -1885,7 +1946,7 @@ app.patch('/api/tasks/:id', (req, res) => {
   }
 })
 
-app.delete('/api/tasks/:id', (req, res) => {
+app.delete('/api/tasks/:id', requireRole('admin', 'operator'), (req, res) => {
   db.prepare('DELETE FROM tasks WHERE id = ?').run(req.params.id)
   res.json({ ok: true })
 })
@@ -1981,7 +2042,7 @@ Respond with ONLY the optimized prompt text. No preamble, no explanation.`,
 // ██ ReAct LOOP — Multi-step reasoning                ██
 // ══════════════════════════════════════════════════════
 
-app.post('/api/tasks/:id/run', async (req, res) => {
+app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res) => {
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
   if (!task) return res.status(404).json({ error: 'Task not found' })
   if (!task.agent_id) return res.status(400).json({ error: 'No agent assigned' })
@@ -4653,7 +4714,7 @@ app.get('/api/settings', (req, res) => {
   res.json(settings)
 })
 
-app.patch('/api/settings', (req, res) => {
+app.patch('/api/settings', requireRole('admin'), (req, res) => {
   const updates = req.body
   for (const [key, value] of Object.entries(updates)) {
     setSetting(key, String(value))
@@ -6248,6 +6309,301 @@ app.delete('/api/scheduled-jobs/:id', (req, res) => {
 // ── Memory Dashboard — DELETE endpoint ──────────────
 app.delete('/api/memory/:id', (req, res) => {
   db.prepare('DELETE FROM memory_embeddings WHERE id = ?').run(req.params.id)
+  res.json({ deleted: true })
+})
+
+// ── Agent Sandbox — Run prompt A/B comparison ──────────
+app.post('/api/sandbox/run', requireRole('admin', 'operator'), async (req, res) => {
+  const { agent_id, task_description, modified_prompt, max_steps = 3 } = req.body
+  if (!agent_id || !task_description) return res.status(400).json({ error: 'agent_id and task_description required' })
+
+  const agent = agents.find(a => a.id === agent_id)
+  if (!agent) return res.status(404).json({ error: 'Agent not found' })
+
+  const currentPrompt = agent.systemPrompt + buildToolsPrompt(agent_id)
+  const testPrompt = modified_prompt || currentPrompt
+
+  const runWithPrompt = async (systemPrompt, label) => {
+    const taskId = uuid()
+    const startTime = Date.now()
+
+    db.prepare("INSERT INTO tasks (id, title, description, agent_id, status) VALUES (?, ?, ?, ?, 'in_progress')")
+      .run(taskId, `[Sandbox:${label}] ${task_description.slice(0, 80)}`, task_description, agent_id)
+
+    try {
+      const model = getAgentModel(agent_id)
+      const messages = [{ role: 'user', content: task_description }]
+      let fullOutput = ''
+      let toolsUsed = []
+      let totalTokens = 0
+      let totalCost = 0
+
+      const toolsSchema = SUPPORTS_FUNCTION_CALLING[model] ? buildToolsSchema(agent_id) : undefined
+
+      for (let step = 0; step < max_steps; step++) {
+        const response = await callClaude({
+          model,
+          max_tokens: 2048,
+          system: systemPrompt,
+          messages,
+          tools: toolsSchema,
+        }, agent_id, taskId)
+
+        const tokensIn = response.usage?.input_tokens || 0
+        const tokensOut = response.usage?.output_tokens || 0
+        const pricing = MODEL_COSTS[model] || DEFAULT_COST
+        const stepCost = (tokensIn * pricing.input) + (tokensOut * pricing.output)
+        totalTokens += tokensIn + tokensOut
+        totalCost += stepCost
+
+        const text = response.content?.map(b => b.type === 'text' ? b.text : '').join('') || ''
+        fullOutput += text + '\n'
+        messages.push({ role: 'assistant', content: text })
+
+        // Parse tool calls (hybrid: native + text)
+        const nativeCalls = response.nativeToolCalls || []
+        const textCalls = parseToolCalls(text)
+        const allTools = [...nativeCalls]
+        for (const tc of textCalls) {
+          if (!allTools.some(nc => nc.name === tc.name && JSON.stringify(nc.args) === JSON.stringify(tc.args))) {
+            allTools.push(tc)
+          }
+        }
+
+        if (allTools.length === 0) break
+
+        toolsUsed.push(...allTools.map(t => t.name))
+
+        // Execute tools (max 3 per step in sandbox)
+        for (const tool of allTools.slice(0, 3)) {
+          try {
+            const result = await executeTool(tool, agent_id, taskId)
+            const resultStr = result.resultStr || result.error || 'no result'
+            messages.push({ role: 'user', content: `[TOOL_RESULT:${tool.name}]${resultStr.slice(0, 2000)}[/TOOL_RESULT]` })
+            fullOutput += `\n[Tool: ${tool.name}] ${resultStr.slice(0, 200)}\n`
+          } catch (e) {
+            messages.push({ role: 'user', content: `[TOOL_ERROR:${tool.name}]${e.message}[/TOOL_ERROR]` })
+          }
+        }
+      }
+
+      const duration = Date.now() - startTime
+
+      db.prepare("UPDATE tasks SET status = 'done', output = ?, tokens_used = ?, estimated_cost = ?, completed_at = datetime('now') WHERE id = ?")
+        .run(fullOutput.slice(0, 50000), totalTokens, totalCost, taskId)
+
+      return {
+        label,
+        task_id: taskId,
+        output: fullOutput.trim(),
+        tools_used: [...new Set(toolsUsed)],
+        tokens: totalTokens,
+        cost: totalCost,
+        duration_ms: duration
+      }
+    } catch (e) {
+      db.prepare("UPDATE tasks SET status = 'failed', output = ? WHERE id = ?").run(e.message, taskId)
+      return { label, task_id: taskId, error: e.message, tools_used: [], tokens: 0, cost: 0, duration_ms: Date.now() - startTime }
+    }
+  }
+
+  try {
+    const [current, modified] = await Promise.all([
+      runWithPrompt(currentPrompt, 'current'),
+      runWithPrompt(testPrompt, 'modified')
+    ])
+
+    // Auto-score with LLM evaluation
+    let scoring = null
+    try {
+      const scoreResponse = await callClaude({
+        model: 'anthropic/claude-haiku-4-5',
+        max_tokens: 512,
+        system: 'You are a quality evaluator. Compare two agent outputs for the same task. Score each 1-10 on: tool_usage (did it use tools effectively?), relevance (does output match the task?), actionability (is the output actionable?). Return ONLY valid JSON: {"current": {"tool_usage": N, "relevance": N, "actionability": N}, "modified": {"tool_usage": N, "relevance": N, "actionability": N}, "winner": "current"|"modified"|"tie", "reason": "brief explanation"}',
+        messages: [{ role: 'user', content: `Task: ${task_description}\n\nCurrent output:\n${current.output?.slice(0, 3000) || current.error}\n\nModified output:\n${modified.output?.slice(0, 3000) || modified.error}` }]
+      }, 'nexus', null)
+
+      const scoreText = scoreResponse.content?.map(b => b.text || '').join('') || ''
+      const jsonMatch = scoreText.match(/\{[\s\S]*\}/)
+      if (jsonMatch) scoring = JSON.parse(jsonMatch[0])
+    } catch (e) {
+      log('warn', 'sandbox_scoring_failed', { error: e.message })
+    }
+
+    res.json({ current, modified, scoring })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ══════════════════════════════════════════════════════
+// ██ A2A PROTOCOL ENDPOINTS                            ██
+// ══════════════════════════════════════════════════════
+
+// Agent Card discovery (A2A spec — outside /api prefix, no auth required)
+app.get('/.well-known/agent.json', (req, res) => {
+  const agentCards = agents.map(a => ({
+    name: a.name,
+    description: a.description,
+    url: `${req.protocol}://${req.get('host')}/a2a/${a.id}`,
+    capabilities: { streaming: false, pushNotifications: false },
+    skills: [{ id: a.id, name: a.role, description: a.description }]
+  }))
+  res.json({
+    name: 'Hive Agent Team',
+    description: 'Autonomous AI income agent team — research, build, write, sell, trade, self-improve',
+    url: `${req.protocol}://${req.get('host')}/a2a`,
+    version: '1.0.0',
+    capabilities: { streaming: false, pushNotifications: false },
+    agents: agentCards,
+    authentication: { schemes: ['bearer'] }
+  })
+})
+
+// A2A task submission (JSON-RPC per A2A spec)
+app.post('/a2a/:agentId', authenticateRequest, async (req, res) => {
+  const { method, params, id: rpcId } = req.body
+  const agent = agents.find(a => a.id === req.params.agentId)
+  if (!agent) return res.json({ jsonrpc: '2.0', error: { code: -32601, message: 'Agent not found' }, id: rpcId })
+
+  if (method === 'tasks/send') {
+    const taskId = uuid()
+    const message = params?.message?.parts?.map(p => p.text || '').join('\n') || params?.input || ''
+    db.prepare("INSERT INTO tasks (id, title, description, agent_id, status) VALUES (?, ?, ?, ?, 'todo')")
+      .run(taskId, `[A2A] ${message.slice(0, 80)}`, message, agent.id)
+    traceBus.emit('task:update', { id: taskId, status: 'todo', agent_id: agent.id })
+    res.json({ jsonrpc: '2.0', result: { id: taskId, status: { state: 'submitted' }, artifacts: [] }, id: rpcId })
+  } else if (method === 'tasks/get') {
+    const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(params?.id)
+    if (!task) return res.json({ jsonrpc: '2.0', error: { code: -32602, message: 'Task not found' }, id: rpcId })
+    const stateMap = { backlog: 'submitted', todo: 'submitted', in_progress: 'working', done: 'completed', failed: 'failed', paused: 'input-required', awaiting_approval: 'input-required', in_review: 'working' }
+    res.json({ jsonrpc: '2.0', result: { id: task.id, status: { state: stateMap[task.status] || 'unknown' }, artifacts: task.output ? [{ parts: [{ type: 'text', text: task.output }] }] : [] }, id: rpcId })
+  } else if (method === 'tasks/cancel') {
+    db.prepare("UPDATE tasks SET status = 'failed' WHERE id = ?").run(params?.id)
+    res.json({ jsonrpc: '2.0', result: { id: params?.id, status: { state: 'canceled' } }, id: rpcId })
+  } else {
+    res.json({ jsonrpc: '2.0', error: { code: -32601, message: `Unknown method: ${method}` }, id: rpcId })
+  }
+})
+
+// A2A outbound — call external A2A agent
+app.post('/api/a2a/call', requireRole('admin', 'operator'), async (req, res) => {
+  const { agent_url, message } = req.body
+  if (!agent_url || !message) return res.status(400).json({ error: 'agent_url and message required' })
+  try {
+    const response = await fetch(agent_url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'tasks/send', params: { message: { role: 'user', parts: [{ type: 'text', text: message }] } }, id: uuid() }),
+      signal: AbortSignal.timeout(30000)
+    })
+    const result = await response.json()
+    res.json(result)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// A2A external agent management
+app.get('/api/a2a/agents', (req, res) => {
+  res.json(db.prepare('SELECT * FROM a2a_agents ORDER BY created_at DESC').all())
+})
+
+app.post('/api/a2a/agents', requireRole('admin', 'operator'), async (req, res) => {
+  const { url, name } = req.body
+  if (!url) return res.status(400).json({ error: 'url required' })
+  let agentCard = {}
+  try {
+    const cardUrl = new URL('/.well-known/agent.json', url).href
+    const cardResp = await fetch(cardUrl, { signal: AbortSignal.timeout(10000) })
+    if (cardResp.ok) agentCard = await cardResp.json()
+  } catch {}
+  const id = uuid()
+  db.prepare('INSERT INTO a2a_agents (id, name, description, url, agent_card) VALUES (?, ?, ?, ?, ?)')
+    .run(id, name || agentCard.name || 'External Agent', agentCard.description || '', url, JSON.stringify(agentCard))
+  res.json({ id, agent_card: agentCard })
+})
+
+app.delete('/api/a2a/agents/:id', requireRole('admin'), (req, res) => {
+  db.prepare('DELETE FROM a2a_agents WHERE id = ?').run(req.params.id)
+  res.json({ deleted: true })
+})
+
+app.post('/api/a2a/agents/:id/test', requireRole('admin', 'operator'), async (req, res) => {
+  const agent = db.prepare('SELECT * FROM a2a_agents WHERE id = ?').get(req.params.id)
+  if (!agent) return res.status(404).json({ error: 'Agent not found' })
+  try {
+    const response = await fetch(agent.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'tasks/send', params: { message: { role: 'user', parts: [{ type: 'text', text: 'Hello from Hive — connectivity test' }] } }, id: uuid() }),
+      signal: AbortSignal.timeout(15000)
+    })
+    const result = await response.json()
+    db.prepare("UPDATE a2a_agents SET last_contacted = datetime('now') WHERE id = ?").run(req.params.id)
+    res.json({ success: true, result })
+  } catch (e) {
+    res.json({ success: false, error: e.message })
+  }
+})
+
+// ══════════════════════════════════════════════════════
+// ██ AUTH / USER MANAGEMENT ENDPOINTS                  ██
+// ══════════════════════════════════════════════════════
+
+// Login (no auth required — register it before the global middleware catches it)
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body
+  if (!username || !password) return res.status(400).json({ error: 'Username and password required' })
+  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username)
+  if (!user || !verifyPassword(password, user.password_hash)) return res.status(401).json({ error: 'Invalid credentials' })
+  const sessionId = crypto.randomBytes(32).toString('hex')
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+  db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(sessionId, user.id, expiresAt)
+  db.prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?").run(user.id)
+  res.json({ token: sessionId, user: { id: user.id, username: user.username, role: user.role, display_name: user.display_name } })
+})
+
+app.post('/api/auth/logout', (req, res) => {
+  const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : req.query.token
+  if (token) db.prepare('DELETE FROM sessions WHERE id = ?').run(token)
+  res.json({ success: true })
+})
+
+app.get('/api/auth/me', (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Not authenticated' })
+  res.json(req.user)
+})
+
+// User management (admin only)
+app.get('/api/users', requireRole('admin'), (req, res) => {
+  const users = db.prepare('SELECT id, username, role, display_name, created_at, last_login FROM users ORDER BY created_at').all()
+  res.json(users)
+})
+
+app.post('/api/users', requireRole('admin'), (req, res) => {
+  const { username, password, role = 'viewer', display_name = '' } = req.body
+  if (!username || !password) return res.status(400).json({ error: 'Username and password required' })
+  const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username)
+  if (existing) return res.status(409).json({ error: 'Username already exists' })
+  const id = uuid()
+  db.prepare('INSERT INTO users (id, username, password_hash, role, display_name) VALUES (?, ?, ?, ?, ?)')
+    .run(id, username, hashPassword(password), role, display_name)
+  res.json({ id, username, role, display_name })
+})
+
+app.patch('/api/users/:id', requireRole('admin'), (req, res) => {
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id)
+  if (!user) return res.status(404).json({ error: 'User not found' })
+  if (req.body.role) db.prepare('UPDATE users SET role = ? WHERE id = ?').run(req.body.role, req.params.id)
+  if (req.body.display_name !== undefined) db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(req.body.display_name, req.params.id)
+  if (req.body.password) db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(req.body.password), req.params.id)
+  res.json({ updated: true })
+})
+
+app.delete('/api/users/:id', requireRole('admin'), (req, res) => {
+  if (req.params.id === req.user?.id) return res.status(400).json({ error: 'Cannot delete yourself' })
+  db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id)
   res.json({ deleted: true })
 })
 

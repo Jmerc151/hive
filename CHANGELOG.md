@@ -1,5 +1,41 @@
 # Hive Changelog
 
+## 2026-03-14 — Agent Sandbox, A2A Protocol, Multi-User Auth
+
+### Feature: Agent Sandbox Mode
+- Side-by-side prompt comparison: run same task with current vs modified system prompt in parallel
+- Auto-scoring with Claude Haiku (0-100 scale across relevance, tool usage, quality, reasoning)
+- Results display with diff highlighting and per-dimension score breakdown
+- `POST /api/sandbox/run` endpoint with parallel execution
+- AgentSandbox.jsx panel with agent selector, prompt editor, side-by-side results
+
+### Cleanup: react-router-dom Removed
+- Removed unused react-router-dom dependency (Hive uses panel-based navigation, not routes)
+- Package.json and lock file cleaned up
+
+
+
+### Feature: A2A (Agent-to-Agent) Protocol Support
+- `GET /.well-known/agent.json` — Agent Card discovery endpoint (A2A spec)
+- `POST /a2a/:agentId` — JSON-RPC task submission (tasks/send, tasks/get, tasks/cancel)
+- `POST /api/a2a/call` — Outbound call to external A2A agents
+- `GET/POST/DELETE /api/a2a/agents` — External agent registry management
+- `POST /api/a2a/agents/:id/test` — Connectivity test for registered agents
+- A2A tab added to Skill Registry (Skills & Agents panel) — register, test, delete external agents
+- New `a2a_agents` database table
+
+### Feature: Multi-User Role-Based Access
+- Three roles: admin (full access), operator (run/create tasks), viewer (read-only)
+- Session-based auth with SHA-256 password hashing (30-day sessions)
+- Login screen when no API key configured
+- API key continues working as admin master key (backwards compatible)
+- Role guards on sensitive endpoints: task run, settings, sandbox, task delete
+- User management panel (admin only): create, edit, delete users, role assignment
+- Users nav item in sidebar (admin only) with current user display and sign-out
+- New `users` and `sessions` database tables
+- Default admin user seeded on first boot (username: admin, password: admin)
+- Auth token propagated to SSE connections and trace streams
+
 ## 2026-03-14 — Production-Grade Platform Hardening (28 Features)
 
 ### Phase 1: Critical Foundation Fixes
