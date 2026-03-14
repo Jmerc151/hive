@@ -84,7 +84,32 @@ export default function DeliverablesPanel({ agents = [], onClose }) {
                         <h3 className="text-sm font-semibold truncate">{item.title}</h3>
                         {item.has_tools && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-400 border border-green-500/20 shrink-0">
-                            real tools
+                            {item.evidence?.tools_used ? `${item.evidence.tools_used} tools` : 'real tools'}
+                          </span>
+                        )}
+                        {item.evidence?.files_created > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 shrink-0">
+                            {item.evidence.files_created} files
+                          </span>
+                        )}
+                        {item.evidence?.emails_sent > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20 shrink-0">
+                            {item.evidence.emails_sent} emails
+                          </span>
+                        )}
+                        {item.evidence?.trades_placed > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 shrink-0">
+                            {item.evidence.trades_placed} trades
+                          </span>
+                        )}
+                        {item.evidence?.tasks_created > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shrink-0">
+                            {item.evidence.tasks_created} follow-ups
+                          </span>
+                        )}
+                        {item.spawned_by && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-hive-700/50 text-hive-400 shrink-0">
+                            chained
                           </span>
                         )}
                         {item.score != null && (

@@ -313,6 +313,8 @@ try { db.exec(`ALTER TABLE tasks ADD COLUMN pipeline_id TEXT`) } catch (e) { /* 
 try { db.exec(`ALTER TABLE tasks ADD COLUMN pipeline_step INTEGER DEFAULT 0`) } catch (e) { /* already exists */ }
 try { db.exec(`ALTER TABLE tasks ADD COLUMN nexus_score INTEGER`) } catch (e) { /* already exists */ }
 try { db.exec(`ALTER TABLE strategies ADD COLUMN paper_start_date TEXT`) } catch (e) { /* already exists */ }
+try { db.exec(`ALTER TABLE tasks ADD COLUMN spawned_by TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
+try { db.exec(`ALTER TABLE tasks ADD COLUMN evidence TEXT DEFAULT '{}'`) } catch (e) { /* already exists */ }
 
 // Strategy meta table for learning loop
 db.exec(`

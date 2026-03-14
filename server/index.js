@@ -420,12 +420,14 @@ const TOOL_REGISTRY = [
       priority: { type: 'string', required: false, description: 'low, medium, high, critical (default: medium)' }
     },
     agents: ['nexus', 'scout', 'forge', 'quill', 'dealer', 'oracle'],
-    execute: async (args) => {
+    execute: async (args, ctx) => {
       const id = uuid()
-      db.prepare('INSERT INTO tasks (id, title, description, agent_id, priority, status) VALUES (?, ?, ?, ?, ?, ?)').run(
-        id, args.title, args.description, args.agent_id, args.priority || 'medium', 'todo'
+      const parentId = ctx?.taskId || ''
+      db.prepare('INSERT INTO tasks (id, title, description, agent_id, priority, status, spawned_by) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+        id, args.title, args.description, args.agent_id, args.priority || 'medium', 'todo', parentId
       )
-      return { id, title: args.title, agent_id: args.agent_id, status: 'todo', message: 'Task created and queued.' }
+      if (args.agent_id) setTimeout(() => processAgentQueue(args.agent_id), 3000)
+      return { id, title: args.title, agent_id: args.agent_id, status: 'todo', spawned_by: parentId, message: 'Task created and queued — will auto-run.' }
     }
   },
   {
@@ -505,6 +507,23 @@ const TOOL_REGISTRY = [
     execute: async (args) => {
       const memPath = join(__dirname, '..', 'memory', `${args.agent_id}.md`)
       try { return readFileSync(memPath, 'utf8') } catch { return 'No memory file found.' }
+    }
+  },
+  {
+    name: 'log_revenue',
+    description: 'Record revenue earned from a sale, affiliate commission, client payment, or trading profit',
+    params: {
+      amount: { type: 'number', required: true, description: 'Revenue amount in USD' },
+      source: { type: 'string', required: true, description: 'Revenue source: affiliate, freelance, product, trading, consulting' },
+      notes: { type: 'string', required: false, description: 'Details about the revenue' }
+    },
+    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus'],
+    execute: async (args, ctx) => {
+      const id = uuid()
+      db.prepare('INSERT INTO revenue_entries (id, title, amount, source, agent_id, task_id, notes) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+        id, `${args.source}: $${args.amount}`, args.amount, args.source, ctx?.agentId || '', ctx?.taskId || '', args.notes || ''
+      )
+      return { id, amount: args.amount, source: args.source, message: `Revenue logged: $${args.amount} from ${args.source}` }
     }
   }
 ]
@@ -632,7 +651,7 @@ async function executeTool(toolCall, agentId, taskId) {
 
   try {
     const result = await Promise.race([
-      tool.execute(toolCall.args),
+      tool.execute(toolCall.args, { agentId, taskId }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('Tool execution timed out (30s)')), 30000))
     ])
     let resultStr = JSON.stringify(result, null, 0)
@@ -908,33 +927,51 @@ async function reviewCompletedWork(completedTask, agent, output) {
     db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
       .run(completedTask.id, 'nexus', 'Nexus is reviewing this work...', 'info')
 
+    // Get evidence from the task
+    let evidenceData = {}
+    try { evidenceData = JSON.parse(completedTask.evidence || '{}') } catch { /* empty */ }
+    const toolsUsed = evidenceData.tools_used || 0
+    const evidenceSummary = toolsUsed > 0
+      ? `Tools used: ${toolsUsed} (${Object.entries(evidenceData.tool_breakdown || {}).map(([k, v]) => `${k}:${v}`).join(', ')})`
+      : 'NO TOOLS USED — text-only output'
+
     const response = await callClaude({
       model: getAgentModel('nexus'),
       max_tokens: 2048,
-      system: `You are Nexus, the meta-agent and quality reviewer for Hive — a personal AI agent team focused on income generation. You review the output of other agents to ensure quality, actionability, and alignment with income goals.
+      system: `You are Nexus, the quality reviewer for Hive. You evaluate agent work PRIMARILY on whether they used tools to produce REAL results.
 
-Evaluate:
-1. **Quality** — Is the output well-written, thorough, and professional?
-2. **Actionability** — Can the user act on this immediately? Are there clear next steps?
-3. **Income Relevance** — Does this contribute to generating income? Is it focused on results?
-4. **Accuracy** — Are claims, data, or strategies sound? Any red flags?
-5. **Improvement** — How could this agent do better next time?
+## Scoring Rules (STRICT):
+- **0-3/10**: Text-only output, no tools used. Agent just wrote an essay. Automatic FAIL.
+- **4-5/10**: Some tool usage but mostly text. NEEDS WORK.
+- **6-7/10**: Used tools but didn't create follow-up tasks or take full action. NEEDS WORK.
+- **8-10/10**: Used multiple tools, created follow-up tasks, produced real deliverables. PASS.
 
-Your accumulated review knowledge:
-${nexusMemory.slice(-1500) || '(no prior reviews)'}
+## What Counts as Real Work:
+- web_search calls with real data extracted
+- write_file calls producing actual code/content files
+- send_email calls sending real outreach
+- place_order calls executing trades
+- create_task calls delegating follow-up work
+- log_revenue calls recording earnings
 
-Format your response as:
-**Score: X/10**
-**Verdict: PASS | NEEDS WORK | FAIL**
+## What Does NOT Count:
+- Writing a report about what COULD be done
+- Describing opportunities without acting on them
+- Planning without executing
+- Making up data without calling tools
 
-Then explain your findings concisely. If NEEDS WORK or FAIL, list specific issues.`,
+Your accumulated knowledge:
+${nexusMemory.slice(-1000) || '(no prior reviews)'}
+
+Format: **Score: X/10** then **Verdict: PASS | NEEDS WORK | FAIL** then brief explanation.`,
       messages: [{
         role: 'user',
         content: `Review this completed work:
 
 **Task:** ${completedTask.title}
 **Agent:** ${agent.name} (${agent.role})
-**Description:** ${completedTask.description || 'No description'}
+**Evidence:** ${evidenceSummary}
+**Spawned by:** ${completedTask.spawned_by || 'none (top-level task)'}
 
 **Agent Output (first 4000 chars):**
 ${output.slice(0, 4000)}`
@@ -1402,14 +1439,30 @@ app.post('/api/tasks/:id/run', async (req, res) => {
     let messages = []
     let fullOutput = ''
     let totalToolCalls = 0
+    const toolUsageCounts = {}
 
     const toolsPrompt = buildToolsPrompt(agent.id)
+
+    // Inject parent task context if this task was spawned by another
+    let parentContext = ''
+    if (task.spawned_by) {
+      const parentTask = db.prepare('SELECT title, agent_id, output FROM tasks WHERE id = ?').get(task.spawned_by)
+      if (parentTask && parentTask.output) {
+        const cleanOutput = parentTask.output
+          .replace(/^--- Step \d+ ---$/gm, '')
+          .replace(/\[TOOL:\w+\][\s\S]*?\[\/TOOL\]/g, '')
+          .replace(/\[TOOL_RESULT:\w+\][\s\S]*?\[\/TOOL_RESULT\]/g, '')
+          .replace(/\[TOOL_ERROR:\w+\][\s\S]*?\[\/TOOL_ERROR\]/g, '')
+          .trim()
+        parentContext = `## Context from ${parentTask.agent_id}'s work\nThis task was created by ${parentTask.agent_id} after completing: "${parentTask.title}"\nKey findings:\n${cleanOutput.slice(0, 2000)}\n\nUse this context to do your work. Don't repeat what was already done — build on it.\n\n`
+      }
+    }
 
     const initialPrompt = `Task: ${task.title}
 
 Details: ${task.description || 'No additional details.'}
 
-${agentMemory ? `## Your Memory (learnings from past tasks):\n${agentMemory.slice(-2000)}\n` : ''}
+${parentContext}${agentMemory ? `## Your Memory (learnings from past tasks):\n${agentMemory.slice(-2000)}\n` : ''}
 
 ## MANDATORY: Use Tools — Do NOT Just Write Text
 
@@ -1499,6 +1552,7 @@ START WITH TOOL CALLS NOW.`
         hadAction = true
         const callsToRun = toolCalls.slice(0, MAX_TOOLS_PER_STEP)
         totalToolCalls += callsToRun.length
+        for (const tc of callsToRun) { toolUsageCounts[tc.name] = (toolUsageCounts[tc.name] || 0) + 1 }
 
         db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
           .run(task.id, agent.id, `Executing ${callsToRun.length} tool(s): ${callsToRun.map(c => c.name).join(', ')}`, 'info')
@@ -1572,8 +1626,18 @@ START WITH TOOL CALLS NOW.`
     }
 
     activeRuns.delete(agent.id)
-    db.prepare(`UPDATE tasks SET status = 'done', output = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
-      .run(fullOutput.slice(0, 50000), task.id)
+    const evidence = JSON.stringify({
+      tools_used: totalToolCalls,
+      tool_breakdown: toolUsageCounts,
+      files_created: toolUsageCounts.write_file || 0,
+      emails_sent: toolUsageCounts.send_email || 0,
+      trades_placed: toolUsageCounts.place_order || 0,
+      tasks_created: toolUsageCounts.create_task || 0,
+      web_searches: toolUsageCounts.web_search || 0,
+      revenue_logged: toolUsageCounts.log_revenue || 0,
+    })
+    db.prepare(`UPDATE tasks SET status = 'done', output = ?, evidence = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
+      .run(fullOutput.slice(0, 50000), evidence, task.id)
     db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
       .run(task.id, agent.id, 'Task completed successfully', 'success')
 
@@ -3319,18 +3383,27 @@ function buildChatSnapshot() {
   }
 
   // Recently completed WITH evidence — show what actually happened
-  const recentDone = db.prepare("SELECT title, agent_id, output, completed_at FROM tasks WHERE status = 'done' ORDER BY completed_at DESC LIMIT 5").all()
+  const recentDone = db.prepare("SELECT title, agent_id, output, evidence, spawned_by, completed_at FROM tasks WHERE status = 'done' ORDER BY completed_at DESC LIMIT 5").all()
   if (recentDone.length) {
     const doneLines = recentDone.map(t => {
-      const output = t.output || ''
-      const hasToolResults = output.includes('[TOOL_RESULT')
-      const outputLen = output.length
-      // Summarize what actually happened
-      let evidence = 'NO OUTPUT'
-      if (outputLen > 500 && hasToolResults) evidence = `REAL WORK — used tools, ${outputLen} chars output`
-      else if (outputLen > 500) evidence = `text output only (${outputLen} chars, no tool execution)`
-      else if (outputLen > 0) evidence = `minimal output (${outputLen} chars — likely failed to execute)`
-      return `- ${t.agent_id}: "${t.title}" | ${evidence}`
+      let ev = {}
+      try { ev = JSON.parse(t.evidence || '{}') } catch { /* empty */ }
+      const toolCount = ev.tools_used || 0
+      let summary = 'NO OUTPUT'
+      if (toolCount > 0) {
+        const actions = []
+        if (ev.web_searches) actions.push(`${ev.web_searches} searches`)
+        if (ev.files_created) actions.push(`${ev.files_created} files`)
+        if (ev.emails_sent) actions.push(`${ev.emails_sent} emails`)
+        if (ev.trades_placed) actions.push(`${ev.trades_placed} trades`)
+        if (ev.tasks_created) actions.push(`${ev.tasks_created} follow-ups`)
+        if (ev.revenue_logged) actions.push(`${ev.revenue_logged} revenue entries`)
+        summary = `REAL WORK — ${actions.join(', ') || toolCount + ' tool calls'}`
+      } else if ((t.output || '').length > 500) {
+        summary = 'text-only (no tools used)'
+      }
+      const chain = t.spawned_by ? ' [chained]' : ''
+      return `- ${t.agent_id}: "${t.title}" | ${summary}${chain}`
     })
     sections.push('## Recently Completed (with evidence)\n' + doneLines.join('\n'))
   }
@@ -3875,7 +3948,7 @@ app.get('/api/deliverables', (req, res) => {
   if (agent) { where += ' AND agent_id = ?'; params.push(agent) }
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM tasks ${where}`).get(...params).c
-  const tasks = db.prepare(`SELECT id, title, agent_id, output, tokens_used, estimated_cost, nexus_score, completed_at FROM tasks ${where} ORDER BY completed_at DESC LIMIT ? OFFSET ?`).all(...params, parseInt(limit), parseInt(offset))
+  const tasks = db.prepare(`SELECT id, title, agent_id, output, evidence, spawned_by, tokens_used, estimated_cost, nexus_score, completed_at FROM tasks ${where} ORDER BY completed_at DESC LIMIT ? OFFSET ?`).all(...params, parseInt(limit), parseInt(offset))
 
   const deliverables = tasks.map(t => {
     const output = t.output || ''
@@ -3901,19 +3974,24 @@ app.get('/api/deliverables', (req, res) => {
       .replace(/\n{3,}/g, '\n\n')
       .trim()
 
+    let ev = {}
+    try { ev = JSON.parse(t.evidence || '{}') } catch { /* empty */ }
+
     return {
       id: t.id,
       title: t.title,
       agent_id: t.agent_id,
       type,
-      has_tools: hasTools,
+      has_tools: hasTools || (ev.tools_used || 0) > 0,
       has_code: hasCode,
       output_length: output.length,
       output: cleanOutput,
       tokens_used: t.tokens_used,
       cost: t.estimated_cost,
       score: t.nexus_score,
-      completed_at: t.completed_at
+      completed_at: t.completed_at,
+      evidence: ev,
+      spawned_by: t.spawned_by || null
     }
   })
 
