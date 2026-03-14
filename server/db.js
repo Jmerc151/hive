@@ -14,7 +14,7 @@ db.exec(`
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     description TEXT DEFAULT '',
-    status TEXT DEFAULT 'backlog' CHECK(status IN ('backlog','todo','in_progress','in_review','done','failed','awaiting_approval')),
+    status TEXT DEFAULT 'backlog' CHECK(status IN ('backlog','todo','in_progress','in_review','done','failed','awaiting_approval','paused')),
     priority TEXT DEFAULT 'medium' CHECK(priority IN ('low','medium','high','critical')),
     agent_id TEXT,
     output TEXT DEFAULT '',
@@ -315,6 +315,111 @@ try { db.exec(`ALTER TABLE tasks ADD COLUMN nexus_score INTEGER`) } catch (e) { 
 try { db.exec(`ALTER TABLE strategies ADD COLUMN paper_start_date TEXT`) } catch (e) { /* already exists */ }
 try { db.exec(`ALTER TABLE tasks ADD COLUMN spawned_by TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
 try { db.exec(`ALTER TABLE tasks ADD COLUMN evidence TEXT DEFAULT '{}'`) } catch (e) { /* already exists */ }
+
+// ── Performance indexes ──
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+  CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at);
+  CREATE INDEX IF NOT EXISTS idx_task_logs_task ON task_logs(task_id);
+  CREATE INDEX IF NOT EXISTS idx_task_traces_task ON task_traces(task_id);
+  CREATE INDEX IF NOT EXISTS idx_spend_log_date ON spend_log(date);
+  CREATE INDEX IF NOT EXISTS idx_spend_log_agent ON spend_log(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);
+  CREATE INDEX IF NOT EXISTS idx_intel_status ON intel_items(status);
+  CREATE INDEX IF NOT EXISTS idx_eval_runs_case ON eval_runs(eval_case_id);
+  CREATE INDEX IF NOT EXISTS idx_guardrail_task ON guardrail_events(task_id);
+`)
+
+// ── Industry-grade upgrade tables ──
+
+// Task checkpointing for pause/resume (LangGraph-style)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS task_checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    step INTEGER NOT NULL,
+    messages_json TEXT NOT NULL,
+    tool_counts_json TEXT DEFAULT '{}',
+    full_output TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_checkpoint_task ON task_checkpoints(task_id, step);
+`)
+
+// Guardrail event logging
+db.exec(`
+  CREATE TABLE IF NOT EXISTS guardrail_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT,
+    agent_id TEXT,
+    tool_name TEXT NOT NULL,
+    rule TEXT NOT NULL,
+    action TEXT NOT NULL CHECK(action IN ('blocked','warned')),
+    details TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`)
+
+// Evaluation harness
+db.exec(`
+  CREATE TABLE IF NOT EXISTS eval_cases (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    input_prompt TEXT NOT NULL,
+    expected_tools TEXT DEFAULT '[]',
+    expected_keywords TEXT DEFAULT '[]',
+    max_cost REAL DEFAULT 0.50,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS eval_runs (
+    id TEXT PRIMARY KEY,
+    eval_case_id TEXT NOT NULL REFERENCES eval_cases(id) ON DELETE CASCADE,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending','running','passed','failed')),
+    actual_tools TEXT DEFAULT '[]',
+    actual_output TEXT DEFAULT '',
+    score REAL DEFAULT 0,
+    cost REAL DEFAULT 0,
+    duration_ms INTEGER DEFAULT 0,
+    failure_reason TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`)
+
+// MCP server connections
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mcp_servers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    transport TEXT NOT NULL CHECK(transport IN ('stdio','sse')),
+    command TEXT DEFAULT '',
+    args TEXT DEFAULT '[]',
+    url TEXT DEFAULT '',
+    enabled INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`)
+
+// Semantic memory embeddings
+db.exec(`
+  CREATE TABLE IF NOT EXISTS memory_embeddings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    embedding TEXT NOT NULL,
+    tags TEXT DEFAULT '[]',
+    source_task_id TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_agent ON memory_embeddings(agent_id);
+`)
+
+// OTLP trace columns
+try { db.exec(`ALTER TABLE task_traces ADD COLUMN trace_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
+try { db.exec(`ALTER TABLE task_traces ADD COLUMN span_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
+try { db.exec(`ALTER TABLE task_traces ADD COLUMN parent_span_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
 
 // Strategy meta table for learning loop
 db.exec(`

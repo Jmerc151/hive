@@ -25,6 +25,7 @@ const NAV_ITEMS = [
   { key: 'revenue', icon: '💵', label: 'Revenue' },
   { key: 'history', icon: '📜', label: 'History' },
   { key: 'trace', icon: '📡', label: 'Live Trace' },
+  { key: 'eval', icon: '🧪', label: 'Eval Harness' },
   { key: 'triggers', icon: '⚡', label: 'Triggers' },
   { key: 'botGen', icon: '⚒️', label: 'Bot Generator' },
   { key: 'spend', icon: '💰', label: 'Spend Limits' },

@@ -235,4 +235,39 @@ export const api = {
   createProposal: (data) => request('/proposals', { method: 'POST', body: data }),
   updateProposal: (id, data) => request(`/proposals/${id}`, { method: 'PATCH', body: data }),
   deleteProposal: (id) => request(`/proposals/${id}`, { method: 'DELETE' }),
+
+  // Task Checkpoints
+  resumeTask: (id) => request(`/tasks/${id}/resume`, { method: 'POST' }),
+  approveContinue: (id) => request(`/tasks/${id}/approve-continue`, { method: 'POST' }),
+  rejectContinue: (id) => request(`/tasks/${id}/reject-continue`, { method: 'POST' }),
+
+  // Eval Harness
+  getEvalCases: () => request('/eval/cases'),
+  createEvalCase: (data) => request('/eval/cases', { method: 'POST', body: data }),
+  deleteEvalCase: (id) => request(`/eval/cases/${id}`, { method: 'DELETE' }),
+  runEval: (caseId) => request(`/eval/run/${caseId}`, { method: 'POST' }),
+  runAllEvals: () => request('/eval/run-all', { method: 'POST' }),
+  getEvalHistory: (caseId, limit) => request(`/eval/history?${caseId ? 'case_id=' + caseId + '&' : ''}limit=${limit || 50}`),
+
+  // MCP Servers
+  getMCPServers: () => request('/mcp/servers'),
+  addMCPServer: (data) => request('/mcp/servers', { method: 'POST', body: data }),
+  deleteMCPServer: (id) => request(`/mcp/servers/${id}`, { method: 'DELETE' }),
+  testMCPServer: (id) => request(`/mcp/servers/${id}/test`, { method: 'POST' }),
+  getMCPTools: () => request('/mcp/tools'),
+
+  // Semantic Memory
+  searchMemory: (query, agentId, topK) => request(`/memory/search?query=${encodeURIComponent(query)}${agentId ? '&agent_id=' + agentId : ''}${topK ? '&top_k=' + topK : ''}`),
+  getMemoryEntries: (agentId, limit) => request(`/memory/entries?${agentId ? 'agent_id=' + agentId + '&' : ''}limit=${limit || 50}`),
+
+  // OTLP Trace Export
+  getOTLPTrace: (taskId) => request(`/traces/${taskId}/otlp`),
+
+  // Guardrail Events
+  getGuardrailEvents: (limit) => request(`/guardrails/events?limit=${limit || 50}`),
+
+  // Skill Import/Export
+  exportSkill: (slug) => `${BASE}/skills/${slug}/export?token=${API_KEY}`,
+  importSkill: (content) => request('/skills/import', { method: 'POST', body: { content } }),
+  importSkillUrl: (url) => request('/skills/import-url', { method: 'POST', body: { url } }),
 }

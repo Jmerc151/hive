@@ -293,6 +293,14 @@ export default function SkillRegistryV2({ onClose }) {
         <div className="flex items-center justify-between p-4 border-b border-hive-700 shrink-0">
           <h2 className="text-lg font-bold text-hive-100">Skill Registry</h2>
           <div className="flex items-center gap-2">
+            <button onClick={() => {
+              const url = prompt('Enter SKILL.md URL to import:')
+              if (url) api.importSkillUrl(url).then(() => loadSkills()).catch(e => alert(e.message))
+            }} className="px-3 py-1.5 bg-hive-700 text-hive-200 rounded-lg text-xs hover:bg-hive-600">Import URL</button>
+            <button onClick={() => {
+              const content = prompt('Paste SKILL.md content:')
+              if (content) api.importSkill(content).then(() => loadSkills()).catch(e => alert(e.message))
+            }} className="px-3 py-1.5 bg-hive-700 text-hive-200 rounded-lg text-xs hover:bg-hive-600">Import</button>
             <button onClick={() => { setCreating(true); setForm({ name: '', description: '', skill_md: '', tags: '' }) }}
               className="px-3 py-1.5 bg-honey text-hive-900 rounded-lg text-xs font-medium hover:bg-honey-dim">+ New Skill</button>
             <button onClick={onClose} className="text-hive-400 hover:text-hive-200 text-xl">&times;</button>
@@ -329,10 +337,10 @@ export default function SkillRegistryV2({ onClose }) {
                       {tags.map(t => <span key={t} className="text-[10px] bg-hive-700/60 text-hive-300 px-1.5 py-0.5 rounded">{t}</span>)}
                     </div>
                   )}
-                  <div className="flex items-center gap-1 text-[10px] text-hive-500">
-                    <span>{skill.source || 'custom'}</span>
-                    <span>·</span>
-                    <span>{skill.author || 'john'}</span>
+                  <div className="flex items-center justify-between text-[10px] text-hive-500">
+                    <span>{skill.source || 'custom'} · {skill.author || 'john'}</span>
+                    <a href={api.exportSkill(skill.slug)} target="_blank" rel="noopener noreferrer"
+                      onClick={e => e.stopPropagation()} className="text-honey hover:text-honey-dim">Export</a>
                   </div>
                 </div>
               )

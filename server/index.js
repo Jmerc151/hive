@@ -70,6 +70,17 @@ function getAgentModel(agentId) {
   return AGENT_MODELS[agentId] || 'anthropic/claude-sonnet-4-5'
 }
 
+// Models that support native function calling via OpenRouter
+const SUPPORTS_FUNCTION_CALLING = {
+  'anthropic/claude-sonnet-4-5': true,
+  'anthropic/claude-haiku-4-5': true,
+  'openai/gpt-4o': true,
+  'openai/gpt-4o-mini': true,
+  // Text-only models (use [TOOL:name] syntax):
+  // 'perplexity/sonar-pro': false
+  // 'deepseek/deepseek-r1': false
+}
+
 // ── Spend Controls ────────────────────────────────
 const MODEL_COSTS = {
   'perplexity/sonar-pro':         { input: 3 / 1_000_000, output: 15 / 1_000_000 },
@@ -151,11 +162,19 @@ async function callClaude(opts, agentId, taskId, signal) {
     messages.push({ role: msg.role, content: flattenContent(msg.content) })
   }
 
-  const response = await openai.chat.completions.create({
+  const createOpts = {
     model: opts.model,
     messages,
     max_tokens: opts.max_tokens,
-  }, signal ? { signal } : undefined)
+  }
+
+  // Native function calling for supported models
+  if (opts.tools && opts.tools.length > 0 && SUPPORTS_FUNCTION_CALLING[opts.model]) {
+    createOpts.tools = opts.tools
+    createOpts.tool_choice = 'auto'
+  }
+
+  const response = await openai.chat.completions.create(createOpts, signal ? { signal } : undefined)
 
   const tokensIn = response.usage?.prompt_tokens || 0
   const tokensOut = response.usage?.completion_tokens || 0
@@ -169,10 +188,20 @@ async function callClaude(opts, agentId, taskId, signal) {
       .run(tokensIn + tokensOut, cost, taskId)
   }
 
-  // Return Anthropic-compatible shape so all existing parsing code works unchanged
+  const msg = response.choices?.[0]?.message || {}
+
+  // Parse native tool_calls if present
+  const nativeToolCalls = (msg.tool_calls || []).map(tc => ({
+    name: tc.function?.name,
+    args: (() => { try { return JSON.parse(tc.function?.arguments || '{}') } catch { return {} } })(),
+    raw: `${tc.function?.name}(${tc.function?.arguments || '{}'})`,
+    native: true,
+  })).filter(tc => tc.name)
+
   return {
-    content: [{ type: 'text', text: response.choices?.[0]?.message?.content || '' }],
+    content: [{ type: 'text', text: msg.content || '' }],
     usage: { input_tokens: tokensIn, output_tokens: tokensOut },
+    nativeToolCalls,
   }
 }
 
@@ -525,6 +554,65 @@ const TOOL_REGISTRY = [
       )
       return { id, amount: args.amount, source: args.source, message: `Revenue logged: $${args.amount} from ${args.source}` }
     }
+  },
+  {
+    name: 'request_approval',
+    description: 'Pause execution and request human approval before proceeding with a sensitive action (e.g. large spend, live deployment)',
+    params: {
+      reason: { type: 'string', required: true, description: 'Why approval is needed' },
+      action_summary: { type: 'string', required: true, description: 'What you want to do next' }
+    },
+    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus'],
+    execute: async (args, ctx) => {
+      if (ctx?.taskId) {
+        db.prepare("UPDATE tasks SET status = 'paused', updated_at = datetime('now') WHERE id = ?").run(ctx.taskId)
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+          .run(ctx.taskId, ctx?.agentId || '', `⏸️ Approval requested: ${args.reason}\nProposed action: ${args.action_summary}`, 'warning')
+        sendPushToAll({ title: '⏸️ Approval Needed', body: `${args.reason}: ${args.action_summary}`, tag: `approval-${ctx.taskId}` })
+        email.sendApprovalEmail({ id: ctx.taskId, title: args.action_summary }, { name: ctx?.agentId || 'Agent' }).catch(() => {})
+      }
+      return { paused: true, message: 'Task paused — waiting for human approval. Execution will resume from checkpoint when approved.' }
+    }
+  },
+  {
+    name: 'store_memory',
+    description: 'Save an important learning or insight to semantic memory for future retrieval',
+    params: {
+      content: { type: 'string', required: true, description: 'The learning/insight to remember (be specific and concise)' },
+      tags: { type: 'string', required: false, description: 'Comma-separated tags for categorization' }
+    },
+    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus'],
+    execute: async (args, ctx) => {
+      const tags = (args.tags || '').split(',').map(t => t.trim()).filter(Boolean)
+      const stored = await storeMemoryEmbedding(ctx?.agentId || '', args.content, ctx?.taskId || '', tags)
+      return stored ? { stored: true, message: 'Memory saved successfully' } : { stored: false, message: 'Failed to generate embedding' }
+    }
+  },
+  {
+    name: 'recall_memory',
+    description: 'Search your own memory for relevant past learnings related to a topic',
+    params: {
+      query: { type: 'string', required: true, description: 'What to search for in memory' }
+    },
+    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus'],
+    execute: async (args, ctx) => {
+      const results = await searchMemoryEmbeddings(ctx?.agentId || '', args.query, 5)
+      if (results.length === 0) return { results: [], message: 'No relevant memories found' }
+      return { results, message: `Found ${results.length} relevant memories` }
+    }
+  },
+  {
+    name: 'recall_hive_memory',
+    description: 'Search ALL agents memory for cross-team knowledge on a topic',
+    params: {
+      query: { type: 'string', required: true, description: 'What to search for across all agents' }
+    },
+    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus'],
+    execute: async (args) => {
+      const results = await searchMemoryEmbeddings(null, args.query, 5)
+      if (results.length === 0) return { results: [], message: 'No relevant memories found across agents' }
+      return { results, message: `Found ${results.length} memories across agents` }
+    }
   }
 ]
 
@@ -572,6 +660,27 @@ Then continue working with that data.
 `
 
   return prompt
+}
+
+// Build OpenAI-format function calling schema for models that support it
+function buildToolsSchema(agentId) {
+  const tools = getAgentTools(agentId)
+  return tools.map(tool => {
+    const properties = {}
+    const required = []
+    for (const [name, schema] of Object.entries(tool.params)) {
+      properties[name] = { type: schema.type || 'string', description: schema.description || '' }
+      if (schema.required) required.push(name)
+    }
+    return {
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: { type: 'object', properties, required }
+      }
+    }
+  })
 }
 
 function parseToolCalls(text) {
@@ -637,11 +746,69 @@ function tryParseArgs(text) {
   }
 }
 
+// ── Guardrails: validate tool calls before execution ──
+function validateToolCall(toolCall, agentId, taskId) {
+  const rules = []
+
+  if (toolCall.name === 'send_email') {
+    const body = (toolCall.args.body || '') + ' ' + (toolCall.args.subject || '')
+    // PII patterns: SSN, credit cards
+    if (/\b\d{3}-\d{2}-\d{4}\b/.test(body)) rules.push({ rule: 'pii_ssn', action: 'blocked', details: 'Email body contains SSN pattern' })
+    if (/\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/.test(body)) rules.push({ rule: 'pii_cc', action: 'blocked', details: 'Email body contains credit card pattern' })
+  }
+
+  if (toolCall.name === 'place_order') {
+    const maxPosition = parseFloat(getSetting('max_position_size_usd') || '1000')
+    const qty = parseFloat(toolCall.args.qty || 0)
+    const price = parseFloat(toolCall.args.limitPrice || 0)
+    if (price > 0 && qty * price > maxPosition) {
+      rules.push({ rule: 'trade_size', action: 'blocked', details: `Position $${(qty * price).toFixed(0)} exceeds max $${maxPosition}` })
+    }
+    const maxDaily = parseInt(getSetting('max_daily_trades') || '20')
+    const today = new Date().toISOString().slice(0, 10)
+    const todayTrades = db.prepare("SELECT COUNT(*) as c FROM trades WHERE created_at >= ?").get(today + 'T00:00:00')?.c || 0
+    if (todayTrades >= maxDaily) {
+      rules.push({ rule: 'daily_trade_limit', action: 'blocked', details: `${todayTrades}/${maxDaily} daily trades reached` })
+    }
+  }
+
+  if (toolCall.name === 'write_file') {
+    const path = (toolCall.args.path || '').toLowerCase()
+    if (path.includes('..') || path.startsWith('/etc') || path.startsWith('/usr') || path.startsWith('/var') || path.startsWith('/root')) {
+      rules.push({ rule: 'path_traversal', action: 'blocked', details: `Dangerous file path: ${path}` })
+    }
+    if (/\.(env|key|pem|crt|p12|pfx)$/i.test(path)) {
+      rules.push({ rule: 'sensitive_file', action: 'blocked', details: `Sensitive file type: ${path}` })
+    }
+  }
+
+  if (toolCall.name === 'create_task') {
+    const pendingCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo','in_progress')").get()?.c || 0
+    if (pendingCount >= 20) {
+      rules.push({ rule: 'queue_overflow', action: 'blocked', details: `${pendingCount} tasks already queued (max 20)` })
+    }
+  }
+
+  // Log all guardrail events
+  for (const r of rules) {
+    db.prepare('INSERT INTO guardrail_events (task_id, agent_id, tool_name, rule, action, details) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(taskId || '', agentId || '', toolCall.name, r.rule, r.action, r.details)
+  }
+
+  const blocked = rules.find(r => r.action === 'blocked')
+  if (blocked) return { allowed: false, reason: blocked.details }
+  return { allowed: true, reason: null }
+}
+
 async function executeTool(toolCall, agentId, taskId) {
   const tool = TOOL_REGISTRY.find(t => t.name === toolCall.name)
   if (!tool) return { name: toolCall.name, error: `Unknown tool: ${toolCall.name}` }
   if (!tool.agents.includes(agentId)) return { name: toolCall.name, error: `Agent ${agentId} is not authorized to use ${toolCall.name}` }
   if (toolCall.parseError) return { name: toolCall.name, error: `Invalid JSON args: ${toolCall.parseError}` }
+
+  // Guardrails check
+  const guard = validateToolCall(toolCall, agentId, taskId)
+  if (!guard.allowed) return { name: toolCall.name, error: `Guardrail: ${guard.reason}` }
 
   for (const [param, schema] of Object.entries(tool.params)) {
     if (schema.required && (toolCall.args[param] === undefined || toolCall.args[param] === null)) {
@@ -1334,6 +1501,42 @@ app.get('/api/tasks/:id/logs', (req, res) => {
   res.json(logs)
 })
 
+// ── Task Resume (from checkpoint) ─────────────────────
+app.post('/api/tasks/:id/resume', async (req, res) => {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
+  if (!task) return res.status(404).json({ error: 'Task not found' })
+  const checkpoint = db.prepare('SELECT * FROM task_checkpoints WHERE task_id = ? ORDER BY step DESC LIMIT 1').get(task.id)
+  if (!checkpoint) return res.status(400).json({ error: 'No checkpoint found' })
+  db.prepare("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ?").run(task.id)
+  db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+    .run(task.id, task.agent_id, `Task queued for resume from step ${checkpoint.step}`, 'info')
+  if (task.agent_id) setTimeout(() => processAgentQueue(task.agent_id), 1000)
+  res.json({ ok: true, message: `Resuming from step ${checkpoint.step}` })
+})
+
+// ── Task Approval (mid-run continue/reject) ────────────
+app.post('/api/tasks/:id/approve-continue', async (req, res) => {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
+  if (!task) return res.status(404).json({ error: 'Task not found' })
+  if (task.status !== 'paused') return res.status(400).json({ error: 'Task is not paused' })
+  db.prepare("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ?").run(task.id)
+  db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+    .run(task.id, task.agent_id, 'Approved to continue — resuming from checkpoint', 'success')
+  if (task.agent_id) setTimeout(() => processAgentQueue(task.agent_id), 1000)
+  res.json({ ok: true })
+})
+
+app.post('/api/tasks/:id/reject-continue', async (req, res) => {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
+  if (!task) return res.status(404).json({ error: 'Task not found' })
+  db.prepare("UPDATE tasks SET status = 'failed', updated_at = datetime('now') WHERE id = ?").run(task.id)
+  db.prepare('DELETE FROM task_checkpoints WHERE task_id = ?').run(task.id)
+  db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+    .run(task.id, task.agent_id, 'Rejected — task cancelled', 'error')
+  activeRuns.delete(task.agent_id)
+  res.json({ ok: true })
+})
+
 // ══════════════════════════════════════════════════════
 // ██ Prompt Optimizer                                  ██
 // ══════════════════════════════════════════════════════
@@ -1442,6 +1645,27 @@ app.post('/api/tasks/:id/run', async (req, res) => {
     const toolUsageCounts = {}
 
     const toolsPrompt = buildToolsPrompt(agent.id)
+    const agentModel = getAgentModel(agent.id)
+    const toolsSchema = SUPPORTS_FUNCTION_CALLING[agentModel] ? buildToolsSchema(agent.id) : null
+
+    // ── Checkpoint restore: resume from last saved state if available ──
+    let startStep = 0
+    const lastCheckpoint = db.prepare('SELECT * FROM task_checkpoints WHERE task_id = ? ORDER BY step DESC LIMIT 1').get(task.id)
+    if (lastCheckpoint) {
+      try {
+        messages = JSON.parse(lastCheckpoint.messages_json)
+        fullOutput = lastCheckpoint.full_output || ''
+        Object.assign(toolUsageCounts, JSON.parse(lastCheckpoint.tool_counts_json || '{}'))
+        totalToolCalls = Object.values(toolUsageCounts).reduce((a, b) => a + b, 0)
+        startStep = lastCheckpoint.step + 1
+        console.log(`♻️ ${agent.name}: resuming from checkpoint step ${lastCheckpoint.step}`)
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+          .run(task.id, agent.id, `Resuming from checkpoint (step ${lastCheckpoint.step})`, 'info')
+      } catch (e) {
+        console.error(`Checkpoint restore failed for ${task.id}:`, e.message)
+        startStep = 0
+      }
+    }
 
     // Inject parent task context if this task was spawned by another
     let parentContext = ''
@@ -1481,9 +1705,11 @@ For consultation: [CONSULT:agent_id] question
 
 START WITH TOOL CALLS NOW.`
 
-    messages.push({ role: 'user', content: initialPrompt })
+    if (startStep === 0) {
+      messages.push({ role: 'user', content: initialPrompt })
+    }
 
-    for (let step = 0; step < MAX_STEPS; step++) {
+    for (let step = startStep; step < MAX_STEPS; step++) {
       if (abortController.signal.aborted) throw new Error('AbortError')
 
       db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
@@ -1508,13 +1734,13 @@ START WITH TOOL CALLS NOW.`
         ? '\n\n## Skills\n' + skillsV2.map(s => s.skill_md).join('\n\n---\n\n')
         : ''
 
-      const agentModel = getAgentModel(agent.id)
       const traceStart = Date.now()
       const response = await callClaude({
         model: agentModel,
         max_tokens: 4096,
         system: agent.systemPrompt + toolsPrompt + skillsContext,
         messages,
+        tools: toolsSchema || undefined,
       }, agent.id, task.id, abortController.signal)
 
       const traceDuration = Date.now() - traceStart
@@ -1536,10 +1762,20 @@ START WITH TOOL CALLS NOW.`
         payload: { content: stepOutput.slice(0, 500), step: step + 1, latency_ms: traceDuration, token_count: traceTokensIn + traceTokensOut, cost: traceCost, model: agentModel }
       })
 
-      // ── Parse tool calls ──
-      const toolCalls = parseToolCalls(stepOutput)
+      // ── Parse tool calls (hybrid: native function calling + text parsing) ──
+      const nativeCalls = response.nativeToolCalls || []
+      const textCalls = parseToolCalls(stepOutput)
+      // Merge: native calls take priority, add text-parsed calls that aren't duplicates
+      const toolCalls = [...nativeCalls]
+      for (const tc of textCalls) {
+        if (!toolCalls.some(nc => nc.name === tc.name && JSON.stringify(nc.args) === JSON.stringify(tc.args))) {
+          toolCalls.push(tc)
+        }
+      }
       if (toolCalls.length > 0) {
-        console.log(`🔧 ${agent.name} step ${step+1}: parsed ${toolCalls.length} tool call(s): ${toolCalls.map(t => t.name).join(', ')}`)
+        const nativeCount = nativeCalls.length
+        const textCount = toolCalls.length - nativeCount
+        console.log(`🔧 ${agent.name} step ${step+1}: ${toolCalls.length} tool call(s) [${nativeCount} native, ${textCount} text]: ${toolCalls.map(t => t.name).join(', ')}`)
       } else if (stepOutput.includes('TOOL') || stepOutput.includes('tool')) {
         console.log(`⚠️ ${agent.name} step ${step+1}: output mentions 'tool' but no calls parsed. First 300 chars: ${stepOutput.slice(0, 300)}`)
       }
@@ -1578,6 +1814,16 @@ START WITH TOOL CALLS NOW.`
         }
 
         messages.push({ role: 'user', content: resultsText.trim() + '\n\nContinue working on the task with these results.' })
+        // Save checkpoint after tool execution
+        db.prepare('INSERT OR REPLACE INTO task_checkpoints (task_id, step, messages_json, tool_counts_json, full_output) VALUES (?, ?, ?, ?, ?)')
+          .run(task.id, step, JSON.stringify(messages), JSON.stringify(toolUsageCounts), fullOutput)
+        // Check if task was paused by request_approval tool
+        const taskStatus = db.prepare('SELECT status FROM tasks WHERE id = ?').get(task.id)
+        if (taskStatus?.status === 'paused') {
+          console.log(`⏸️ ${agent.name}: task paused by request_approval — stopping execution`)
+          activeRuns.delete(agent.id)
+          return
+        }
         continue
       }
 
@@ -1626,6 +1872,9 @@ START WITH TOOL CALLS NOW.`
     }
 
     activeRuns.delete(agent.id)
+    // Clean up checkpoints on successful completion
+    db.prepare('DELETE FROM task_checkpoints WHERE task_id = ?').run(task.id)
+
     const evidence = JSON.stringify({
       tools_used: totalToolCalls,
       tool_breakdown: toolUsageCounts,
@@ -1728,8 +1977,13 @@ START WITH TOOL CALLS NOW.`
       } catch (e) { console.error('Pipeline continuation error:', e.message) }
     }
 
-    // Update memory → optional QA review → optional follow-ups → skill extraction → queue next
+    // Update memory → auto-embed → optional QA review → optional follow-ups → skill extraction → queue next
     updateAgentMemory(agent, task, fullOutput)
+      .then(() => {
+        // Auto-embed task summary into semantic memory
+        const summary = `Task: ${task.title}\nAgent: ${agent.id}\nEvidence: ${evidence}\nOutput: ${fullOutput.slice(0, 1000)}`
+        storeMemoryEmbedding(agent.id, summary, task.id, [task.agent_id, 'auto']).catch(() => {})
+      })
       .then(() => {
         const qaEnabled = getSetting('qa_reviews_enabled') !== 'false'
         return qaEnabled ? reviewCompletedWork(task, agent, fullOutput) : null
@@ -4310,6 +4564,564 @@ registerHeartbeat('trace-prune', 6 * 60 * 60 * 1000, () => {
 })
 
 // ── Seed Core Trading Skills ─────────────────────
+// ══════════════════════════════════════════════════════
+// ██ EVALUATION HARNESS — Automated agent testing      ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/eval/cases', (req, res) => {
+  const cases = db.prepare('SELECT * FROM eval_cases ORDER BY created_at DESC').all()
+  res.json(cases)
+})
+
+app.post('/api/eval/cases', (req, res) => {
+  const { name, agent_id, input_prompt, expected_tools, expected_keywords, max_cost } = req.body
+  if (!name || !agent_id || !input_prompt) return res.status(400).json({ error: 'name, agent_id, input_prompt required' })
+  const id = uuid()
+  db.prepare('INSERT INTO eval_cases (id, name, agent_id, input_prompt, expected_tools, expected_keywords, max_cost) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(id, name, agent_id, input_prompt, JSON.stringify(expected_tools || []), JSON.stringify(expected_keywords || []), max_cost || 0.50)
+  res.json({ id, name, agent_id })
+})
+
+app.delete('/api/eval/cases/:id', (req, res) => {
+  db.prepare('DELETE FROM eval_cases WHERE id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+app.post('/api/eval/run/:caseId', async (req, res) => {
+  const evalCase = db.prepare('SELECT * FROM eval_cases WHERE id = ?').get(req.params.caseId)
+  if (!evalCase) return res.status(404).json({ error: 'Eval case not found' })
+
+  const runId = uuid()
+  db.prepare("INSERT INTO eval_runs (id, eval_case_id, status) VALUES (?, ?, 'running')").run(runId, evalCase.id)
+  res.json({ runId, status: 'running' })
+
+  // Run eval async
+  try {
+    const agent = agents.find(a => a.id === evalCase.agent_id)
+    if (!agent) throw new Error('Agent not found')
+
+    const taskId = uuid()
+    db.prepare("INSERT INTO tasks (id, title, description, agent_id, status, token_budget) VALUES (?, ?, ?, ?, 'in_progress', ?)").run(
+      taskId, `[Eval] ${evalCase.name}`, evalCase.input_prompt, agent.id, 8192
+    )
+
+    const start = Date.now()
+    const toolsPrompt = buildToolsPrompt(agent.id)
+    const evalMessages = [{ role: 'user', content: evalCase.input_prompt }]
+    let output = ''
+    const toolsUsed = {}
+
+    // Run 3 steps max for eval
+    for (let step = 0; step < 3; step++) {
+      const response = await callClaude({
+        model: getAgentModel(agent.id),
+        max_tokens: 2048,
+        system: agent.systemPrompt + toolsPrompt,
+        messages: evalMessages,
+        tools: SUPPORTS_FUNCTION_CALLING[getAgentModel(agent.id)] ? buildToolsSchema(agent.id) : undefined,
+      }, agent.id, taskId)
+
+      const text = response.content.map(b => b.text || '').join('')
+      output += text
+      evalMessages.push({ role: 'assistant', content: text })
+
+      const nativeCalls = response.nativeToolCalls || []
+      const textCalls = parseToolCalls(text)
+      const allCalls = [...nativeCalls, ...textCalls]
+      for (const tc of allCalls) toolsUsed[tc.name] = (toolsUsed[tc.name] || 0) + 1
+
+      if (allCalls.length > 0) {
+        const results = await Promise.all(allCalls.slice(0, 3).map(tc => executeTool(tc, agent.id, taskId)))
+        const resultsText = results.map(r => r.error ? `[TOOL_ERROR:${r.name}]${r.error}[/TOOL_ERROR]` : `[TOOL_RESULT:${r.name}]${r.resultStr}[/TOOL_RESULT]`).join('\n')
+        evalMessages.push({ role: 'user', content: resultsText })
+      } else {
+        break
+      }
+    }
+
+    const duration = Date.now() - start
+    const costRow = db.prepare('SELECT estimated_cost FROM tasks WHERE id = ?').get(taskId)
+    const cost = costRow?.estimated_cost || 0
+
+    // Score: check expected tools and keywords
+    const expectedTools = JSON.parse(evalCase.expected_tools || '[]')
+    const expectedKeywords = JSON.parse(evalCase.expected_keywords || '[]')
+    let score = 0
+    const toolNames = Object.keys(toolsUsed)
+    const toolMatch = expectedTools.length === 0 ? 1 : expectedTools.filter(t => toolNames.includes(t)).length / expectedTools.length
+    const kwMatch = expectedKeywords.length === 0 ? 1 : expectedKeywords.filter(kw => output.toLowerCase().includes(kw.toLowerCase())).length / expectedKeywords.length
+    score = Math.round(((toolMatch * 0.7) + (kwMatch * 0.3)) * 100) / 100
+
+    const passed = score >= 0.7 && toolMatch >= 0.5
+    const failReason = !passed ? `Tool match: ${(toolMatch * 100).toFixed(0)}%, Keyword match: ${(kwMatch * 100).toFixed(0)}%` : ''
+
+    db.prepare('UPDATE eval_runs SET status = ?, actual_tools = ?, actual_output = ?, score = ?, cost = ?, duration_ms = ?, failure_reason = ? WHERE id = ?')
+      .run(passed ? 'passed' : 'failed', JSON.stringify(toolNames), output.slice(0, 5000), score, cost, duration, failReason, runId)
+
+    // Clean up eval task
+    db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId)
+  } catch (e) {
+    db.prepare("UPDATE eval_runs SET status = 'failed', failure_reason = ? WHERE id = ?").run(e.message, runId)
+  }
+})
+
+app.post('/api/eval/run-all', async (req, res) => {
+  const cases = db.prepare('SELECT * FROM eval_cases').all()
+  if (cases.length === 0) return res.json({ message: 'No eval cases', results: [] })
+
+  const results = []
+  for (const c of cases) {
+    const runId = uuid()
+    db.prepare("INSERT INTO eval_runs (id, eval_case_id, status) VALUES (?, ?, 'pending')").run(runId, c.id)
+    results.push({ runId, caseId: c.id, name: c.name })
+  }
+  res.json({ message: `Running ${cases.length} eval cases`, results })
+
+  // Run sequentially in background
+  for (const r of results) {
+    try {
+      const resp = await fetch(`http://localhost:${PORT}/api/eval/run/${r.caseId}`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' }
+      })
+      if (!resp.ok) console.error(`Eval run failed for ${r.name}`)
+    } catch (e) {
+      console.error(`Eval error for ${r.name}:`, e.message)
+    }
+  }
+})
+
+app.get('/api/eval/history', (req, res) => {
+  const { case_id, limit } = req.query
+  let q = 'SELECT er.*, ec.name as case_name, ec.agent_id FROM eval_runs er JOIN eval_cases ec ON ec.id = er.eval_case_id'
+  const params = []
+  if (case_id) { q += ' WHERE er.eval_case_id = ?'; params.push(case_id) }
+  q += ' ORDER BY er.created_at DESC LIMIT ?'
+  params.push(parseInt(limit) || 50)
+  res.json(db.prepare(q).all(...params))
+})
+
+// Seed default eval cases
+const existingCases = db.prepare('SELECT COUNT(*) as c FROM eval_cases').get().c
+if (existingCases === 0) {
+  const defaultCases = [
+    { name: 'Scout: Research AI Tools', agent_id: 'scout', input_prompt: 'Research the top 3 trending AI tools this week and create follow-up tasks', expected_tools: ['web_search', 'create_task'], expected_keywords: ['AI'] },
+    { name: 'Forge: Build Express Server', agent_id: 'forge', input_prompt: 'Build a minimal Express.js hello world server with package.json', expected_tools: ['write_file'], expected_keywords: ['express', 'server'] },
+    { name: 'Quill: Write Blog Post', agent_id: 'quill', input_prompt: 'Write a short blog post about AI productivity tools', expected_tools: ['web_search', 'write_file'], expected_keywords: ['productivity'] },
+    { name: 'Dealer: Find Freelance Jobs', agent_id: 'dealer', input_prompt: 'Find AI/automation freelance opportunities and draft outreach', expected_tools: ['web_search'], expected_keywords: ['freelance'] },
+    { name: 'Oracle: Analyze AAPL', agent_id: 'oracle', input_prompt: 'Analyze AAPL stock — get current price, indicators, and make a recommendation', expected_tools: ['get_quote', 'get_indicators'], expected_keywords: ['AAPL'] },
+    { name: 'Nexus: Review Agent Work', agent_id: 'nexus', input_prompt: 'Review the most recent completed tasks and score their quality', expected_tools: ['list_tasks'], expected_keywords: ['score'] },
+  ]
+  for (const c of defaultCases) {
+    db.prepare('INSERT INTO eval_cases (id, name, agent_id, input_prompt, expected_tools, expected_keywords) VALUES (?, ?, ?, ?, ?, ?)').run(
+      uuid(), c.name, c.agent_id, c.input_prompt, JSON.stringify(c.expected_tools), JSON.stringify(c.expected_keywords)
+    )
+  }
+  console.log('🧪 Seeded 6 default eval cases')
+}
+
+// ══════════════════════════════════════════════════════
+// ██ MCP CLIENT BRIDGE — External tool integration     ██
+// ══════════════════════════════════════════════════════
+
+// MCP server registry (lightweight — no MCP SDK dependency required for basic HTTP/SSE)
+const mcpClients = new Map()
+
+app.get('/api/mcp/servers', (req, res) => {
+  const servers = db.prepare('SELECT * FROM mcp_servers ORDER BY created_at DESC').all()
+  const enriched = servers.map(s => ({
+    ...s,
+    connected: mcpClients.has(s.id),
+    tools: mcpClients.get(s.id)?.tools || []
+  }))
+  res.json(enriched)
+})
+
+app.post('/api/mcp/servers', (req, res) => {
+  const { name, transport, command, args, url } = req.body
+  if (!name || !transport) return res.status(400).json({ error: 'name, transport required' })
+  const id = uuid()
+  db.prepare('INSERT INTO mcp_servers (id, name, transport, command, args, url) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, name, transport, command || '', JSON.stringify(args || []), url || '')
+  res.json({ id, name, transport })
+})
+
+app.delete('/api/mcp/servers/:id', (req, res) => {
+  mcpClients.delete(req.params.id)
+  db.prepare('DELETE FROM mcp_servers WHERE id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+app.post('/api/mcp/servers/:id/test', async (req, res) => {
+  const server = db.prepare('SELECT * FROM mcp_servers WHERE id = ?').get(req.params.id)
+  if (!server) return res.status(404).json({ error: 'Server not found' })
+
+  if (server.transport === 'sse' && server.url) {
+    try {
+      const resp = await fetch(server.url, { signal: AbortSignal.timeout(5000) })
+      res.json({ connected: resp.ok, status: resp.status })
+    } catch (e) {
+      res.json({ connected: false, error: e.message })
+    }
+  } else {
+    res.json({ connected: false, message: 'stdio transport — requires local process management' })
+  }
+})
+
+app.get('/api/mcp/tools', (req, res) => {
+  const allTools = []
+  for (const [serverId, client] of mcpClients) {
+    for (const tool of (client.tools || [])) {
+      allTools.push({ ...tool, serverId })
+    }
+  }
+  res.json(allTools)
+})
+
+// ══════════════════════════════════════════════════════
+// ██ SEMANTIC MEMORY — Vector search for agents        ██
+// ══════════════════════════════════════════════════════
+
+function cosineSimilarity(a, b) {
+  let dot = 0, normA = 0, normB = 0
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i]
+    normA += a[i] * a[i]
+    normB += b[i] * b[i]
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB) || 1)
+}
+
+async function embedText(text) {
+  try {
+    const response = await openai.embeddings.create({
+      model: 'openai/text-embedding-3-small',
+      input: text.slice(0, 8000),
+    })
+    return response.data?.[0]?.embedding || null
+  } catch (e) {
+    console.error('Embedding failed:', e.message)
+    return null
+  }
+}
+
+async function storeMemoryEmbedding(agentId, content, taskId, tags) {
+  const embedding = await embedText(content)
+  if (!embedding) return null
+  db.prepare('INSERT INTO memory_embeddings (agent_id, content, embedding, tags, source_task_id) VALUES (?, ?, ?, ?, ?)')
+    .run(agentId, content.slice(0, 5000), JSON.stringify(embedding), JSON.stringify(tags || []), taskId || '')
+  return true
+}
+
+async function searchMemoryEmbeddings(agentId, query, topK = 5) {
+  const queryEmbed = await embedText(query)
+  if (!queryEmbed) return []
+  const where = agentId ? 'WHERE agent_id = ?' : ''
+  const params = agentId ? [agentId] : []
+  const rows = db.prepare(`SELECT * FROM memory_embeddings ${where} ORDER BY created_at DESC LIMIT 200`).all(...params)
+
+  const scored = rows.map(row => {
+    try {
+      const emb = JSON.parse(row.embedding)
+      return { ...row, score: cosineSimilarity(queryEmbed, emb) }
+    } catch { return { ...row, score: 0 } }
+  })
+  scored.sort((a, b) => b.score - a.score)
+  return scored.slice(0, topK).filter(s => s.score > 0.3).map(s => ({
+    content: s.content,
+    agent_id: s.agent_id,
+    score: Math.round(s.score * 100) / 100,
+    created_at: s.created_at,
+    tags: s.tags,
+  }))
+}
+
+app.get('/api/memory/search', async (req, res) => {
+  const { query, agent_id, top_k } = req.query
+  if (!query) return res.status(400).json({ error: 'query required' })
+  const results = await searchMemoryEmbeddings(agent_id || null, query, parseInt(top_k) || 5)
+  res.json(results)
+})
+
+app.get('/api/memory/entries', (req, res) => {
+  const { agent_id, limit } = req.query
+  const where = agent_id ? 'WHERE agent_id = ?' : ''
+  const params = agent_id ? [agent_id] : []
+  const entries = db.prepare(`SELECT id, agent_id, content, tags, source_task_id, created_at FROM memory_embeddings ${where} ORDER BY created_at DESC LIMIT ?`).all(...params, parseInt(limit) || 50)
+  res.json(entries)
+})
+
+// ══════════════════════════════════════════════════════
+// ██ OPENTELEMETRY TRACE EXPORT                        ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/traces/:taskId/otlp', (req, res) => {
+  const traces = db.prepare('SELECT * FROM task_traces WHERE task_id = ? ORDER BY step ASC, created_at ASC').all(req.params.taskId)
+  if (traces.length === 0) return res.json({ resourceSpans: [] })
+
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.taskId)
+  const traceId = req.params.taskId.replace(/-/g, '').slice(0, 32).padEnd(32, '0')
+
+  const spans = traces.map((t, i) => {
+    const spanId = (t.span_id || uuid().replace(/-/g, '').slice(0, 16)).padEnd(16, '0')
+    const parentSpanId = t.parent_span_id || (t.type !== 'llm_call' && i > 0 ? traces[i - 1].span_id || '' : '')
+    const startNanos = new Date(t.created_at + 'Z').getTime() * 1_000_000
+    const endNanos = startNanos + (t.duration_ms || 0) * 1_000_000
+
+    return {
+      traceId,
+      spanId,
+      parentSpanId: parentSpanId || undefined,
+      name: t.type,
+      kind: t.type === 'llm_call' ? 3 : 2, // CLIENT=3, INTERNAL=2
+      startTimeUnixNano: String(startNanos),
+      endTimeUnixNano: String(endNanos),
+      attributes: [
+        { key: 'agent.id', value: { stringValue: t.agent_id || '' } },
+        { key: 'task.id', value: { stringValue: t.task_id } },
+        { key: 'step', value: { intValue: t.step } },
+        { key: 'model', value: { stringValue: t.model || '' } },
+        { key: 'tokens.input', value: { intValue: t.tokens_in || 0 } },
+        { key: 'tokens.output', value: { intValue: t.tokens_out || 0 } },
+        { key: 'cost', value: { doubleValue: t.cost || 0 } },
+        { key: 'input', value: { stringValue: (t.input_summary || '').slice(0, 500) } },
+        { key: 'output', value: { stringValue: (t.output_summary || '').slice(0, 500) } },
+      ],
+      status: { code: t.type === 'tool_error' ? 2 : 1 }, // ERROR=2, OK=1
+    }
+  })
+
+  res.json({
+    resourceSpans: [{
+      resource: {
+        attributes: [
+          { key: 'service.name', value: { stringValue: 'hive' } },
+          { key: 'service.version', value: { stringValue: '1.0.0' } },
+          { key: 'task.title', value: { stringValue: task?.title || '' } },
+          { key: 'agent.id', value: { stringValue: task?.agent_id || '' } },
+        ]
+      },
+      scopeSpans: [{
+        scope: { name: 'hive.agent.traces', version: '1.0.0' },
+        spans,
+      }]
+    }]
+  })
+})
+
+// ══════════════════════════════════════════════════════
+// ██ AGENT PROTOCOL API — Standard agent interface     ██
+// ══════════════════════════════════════════════════════
+
+app.get('/ap/v1/agent/tasks', (req, res) => {
+  const { page, page_size } = req.query
+  const limit = parseInt(page_size) || 20
+  const offset = ((parseInt(page) || 1) - 1) * limit
+  const tasks = db.prepare('SELECT * FROM tasks ORDER BY created_at DESC LIMIT ? OFFSET ?').all(limit, offset)
+  res.json({
+    tasks: tasks.map(t => ({
+      task_id: t.id,
+      input: t.description || t.title,
+      additional_input: { title: t.title, agent_id: t.agent_id, priority: t.priority },
+      status: t.status === 'done' ? 'completed' : t.status === 'in_progress' ? 'running' : t.status,
+      output: t.output || null,
+      artifacts: [],
+      created_at: t.created_at,
+    })),
+    pagination: { total: db.prepare('SELECT COUNT(*) as c FROM tasks').get().c, page: parseInt(page) || 1, page_size: limit }
+  })
+})
+
+app.post('/ap/v1/agent/tasks', (req, res) => {
+  const { input, additional_input } = req.body
+  if (!input) return res.status(400).json({ error: 'input required' })
+  const id = uuid()
+  const agentId = additional_input?.agent_id || 'scout'
+  const title = additional_input?.title || input.slice(0, 200)
+  db.prepare("INSERT INTO tasks (id, title, description, agent_id, status) VALUES (?, ?, ?, ?, 'todo')").run(id, title, input, agentId)
+  setTimeout(() => processAgentQueue(agentId), 2000)
+  res.status(201).json({
+    task_id: id,
+    input,
+    status: 'created',
+    created_at: new Date().toISOString(),
+  })
+})
+
+app.get('/ap/v1/agent/tasks/:id', (req, res) => {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
+  if (!task) return res.status(404).json({ error: 'Task not found' })
+  res.json({
+    task_id: task.id,
+    input: task.description || task.title,
+    additional_input: { title: task.title, agent_id: task.agent_id, priority: task.priority, evidence: task.evidence },
+    status: task.status === 'done' ? 'completed' : task.status === 'in_progress' ? 'running' : task.status,
+    output: task.output || null,
+    artifacts: [],
+    created_at: task.created_at,
+    updated_at: task.updated_at,
+  })
+})
+
+app.get('/ap/v1/agent/tasks/:id/steps', (req, res) => {
+  const traces = db.prepare('SELECT * FROM task_traces WHERE task_id = ? ORDER BY step ASC, created_at ASC').all(req.params.id)
+  res.json({
+    steps: traces.map(t => ({
+      step_id: String(t.id),
+      task_id: t.task_id,
+      name: t.type,
+      status: 'completed',
+      input: t.input_summary,
+      output: t.output_summary,
+      additional_output: { tokens_in: t.tokens_in, tokens_out: t.tokens_out, cost: t.cost, duration_ms: t.duration_ms, model: t.model },
+      created_at: t.created_at,
+    }))
+  })
+})
+
+app.post('/ap/v1/agent/tasks/:id/steps', async (req, res) => {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
+  if (!task) return res.status(404).json({ error: 'Task not found' })
+  if (task.status === 'in_progress') return res.status(409).json({ error: 'Task already running' })
+  db.prepare("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ?").run(task.id)
+  if (task.agent_id) setTimeout(() => processAgentQueue(task.agent_id), 1000)
+  res.json({ step_id: uuid(), task_id: task.id, status: 'queued' })
+})
+
+app.get('/ap/v1/agent/tasks/:id/artifacts', (req, res) => {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
+  if (!task) return res.status(404).json({ error: 'Task not found' })
+  let evidence = {}
+  try { evidence = JSON.parse(task.evidence || '{}') } catch {}
+  const artifacts = []
+  if (task.output) artifacts.push({ artifact_id: `${task.id}-output`, file_name: 'output.txt', relative_path: 'output.txt' })
+  if (evidence.files_created) artifacts.push({ artifact_id: `${task.id}-files`, file_name: 'files', relative_path: 'files/', metadata: { count: evidence.files_created } })
+  res.json({ artifacts })
+})
+
+// ══════════════════════════════════════════════════════
+// ██ SKILL IMPORT/EXPORT                               ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/skills/:slug/export', (req, res) => {
+  const skill = db.prepare('SELECT * FROM skills WHERE slug = ?').get(req.params.slug)
+  if (!skill) return res.status(404).json({ error: 'Skill not found' })
+
+  // Build SKILL.md with frontmatter
+  const assignedAgents = db.prepare('SELECT agent_id FROM agent_skills_v2 WHERE skill_id = ?').all(skill.id).map(r => r.agent_id)
+  let tags = []
+  try { tags = JSON.parse(skill.tags || '[]') } catch {}
+  let requiresTools = []
+  try { requiresTools = JSON.parse(skill.requires_tools || '[]') } catch {}
+
+  const frontmatter = [
+    '---',
+    `name: ${skill.name}`,
+    `slug: ${skill.slug}`,
+    `description: ${skill.description}`,
+    `version: ${skill.version}`,
+    `author: ${skill.author || 'john'}`,
+    `agents: [${assignedAgents.join(', ')}]`,
+    `tags: [${tags.join(', ')}]`,
+    `requires_tools: [${requiresTools.join(', ')}]`,
+    '---',
+    '',
+  ].join('\n')
+
+  res.setHeader('Content-Type', 'text/markdown')
+  res.setHeader('Content-Disposition', `attachment; filename="${skill.slug}.skill.md"`)
+  res.send(frontmatter + skill.skill_md)
+})
+
+app.post('/api/skills/import', (req, res) => {
+  const { content } = req.body
+  if (!content) return res.status(400).json({ error: 'content required' })
+
+  // Parse YAML frontmatter
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
+  if (!fmMatch) return res.status(400).json({ error: 'Invalid SKILL.md — missing frontmatter' })
+
+  const frontmatter = fmMatch[1]
+  const skillMd = fmMatch[2].trim()
+
+  const getName = (key) => {
+    const m = frontmatter.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'))
+    return m ? m[1].trim() : ''
+  }
+  const getArray = (key) => {
+    const m = frontmatter.match(new RegExp(`^${key}:\\s*\\[(.*)\\]$`, 'm'))
+    return m ? m[1].split(',').map(s => s.trim()).filter(Boolean) : []
+  }
+
+  const name = getName('name')
+  const slug = getName('slug') || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-')
+  const description = getName('description')
+  const version = getName('version') || '1.0.0'
+  const author = getName('author') || 'imported'
+  const agentIds = getArray('agents')
+  const tags = getArray('tags')
+  const requiresTools = getArray('requires_tools')
+
+  if (!name || !skillMd) return res.status(400).json({ error: 'name and skill content required' })
+
+  // Upsert skill
+  const existing = db.prepare('SELECT id FROM skills WHERE slug = ?').get(slug)
+  const skillId = existing?.id || uuid()
+  if (existing) {
+    db.prepare('UPDATE skills SET name=?, description=?, version=?, author=?, skill_md=?, tags=?, requires_tools=?, source=?, updated_at=datetime(\'now\') WHERE id=?')
+      .run(name, description, version, author, skillMd, JSON.stringify(tags), JSON.stringify(requiresTools), 'custom', skillId)
+  } else {
+    db.prepare('INSERT INTO skills (id, slug, name, description, version, author, skill_md, tags, requires_tools, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(skillId, slug, name, description, version, author, skillMd, JSON.stringify(tags), JSON.stringify(requiresTools), 'custom')
+  }
+
+  // Assign to agents
+  for (const agentId of agentIds) {
+    db.prepare('INSERT OR IGNORE INTO agent_skills_v2 (agent_id, skill_id) VALUES (?, ?)').run(agentId, skillId)
+  }
+
+  res.json({ id: skillId, slug, name, agents: agentIds })
+})
+
+app.post('/api/skills/import-url', async (req, res) => {
+  const { url } = req.body
+  if (!url) return res.status(400).json({ error: 'url required' })
+  try {
+    const resp = await fetch(url, { signal: AbortSignal.timeout(10000) })
+    if (!resp.ok) return res.status(400).json({ error: `Failed to fetch: ${resp.status}` })
+    const content = await resp.text()
+    // Inline the import logic
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
+    if (!fmMatch) return res.status(400).json({ error: 'Invalid SKILL.md — missing frontmatter' })
+    const frontmatter = fmMatch[1]
+    const skillMd = fmMatch[2].trim()
+    const getName = (key) => { const m = frontmatter.match(new RegExp(`^${key}:\\s*(.+)$`, 'm')); return m ? m[1].trim() : '' }
+    const getArray = (key) => { const m = frontmatter.match(new RegExp(`^${key}:\\s*\\[(.*)\\]$`, 'm')); return m ? m[1].split(',').map(s => s.trim()).filter(Boolean) : [] }
+    const name = getName('name')
+    const slug = getName('slug') || name.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+    if (!name || !skillMd) return res.status(400).json({ error: 'name and content required' })
+    const skillId = uuid()
+    db.prepare('INSERT OR REPLACE INTO skills (id, slug, name, description, version, author, skill_md, tags, requires_tools, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(skillId, slug, name, getName('description'), getName('version') || '1.0.0', getName('author') || 'imported', skillMd, JSON.stringify(getArray('tags')), JSON.stringify(getArray('requires_tools')), 'custom')
+    for (const agentId of getArray('agents')) {
+      db.prepare('INSERT OR IGNORE INTO agent_skills_v2 (agent_id, skill_id) VALUES (?, ?)').run(agentId, skillId)
+    }
+    res.json({ id: skillId, slug, name, source: url })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ══════════════════════════════════════════════════════
+// ██ GUARDRAIL EVENTS ENDPOINT                         ██
+// ══════════════════════════════════════════════════════
+
+app.get('/api/guardrails/events', (req, res) => {
+  const { limit } = req.query
+  const events = db.prepare('SELECT * FROM guardrail_events ORDER BY created_at DESC LIMIT ?').all(parseInt(limit) || 50)
+  res.json(events)
+})
+
 function seedTradingSkills() {
   const existingCount = db.prepare('SELECT COUNT(*) as c FROM skills').get().c
   if (existingCount >= 3) return // Already seeded

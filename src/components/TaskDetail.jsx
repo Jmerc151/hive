@@ -6,8 +6,8 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 
 const STATUS_OPTIONS = ['backlog', 'todo', 'awaiting_approval', 'in_progress', 'in_review', 'done']
-const STATUS_LABELS = { backlog: 'Backlog', todo: 'To Do', awaiting_approval: 'Awaiting Approval', in_progress: 'In Progress', in_review: 'Review', done: 'Done', failed: 'Failed' }
-const STATUS_COLORS = { backlog: 'text-hive-400', todo: 'text-blue-400', awaiting_approval: 'text-amber-400', in_progress: 'text-honey', in_review: 'text-prism', done: 'text-honey', failed: 'text-red-400' }
+const STATUS_LABELS = { backlog: 'Backlog', todo: 'To Do', awaiting_approval: 'Awaiting Approval', in_progress: 'In Progress', in_review: 'Review', done: 'Done', failed: 'Failed', paused: 'Paused' }
+const STATUS_COLORS = { backlog: 'text-hive-400', todo: 'text-blue-400', awaiting_approval: 'text-amber-400', in_progress: 'text-honey', in_review: 'text-prism', done: 'text-honey', failed: 'text-red-400', paused: 'text-orange-400' }
 const LOG_COLORS = { info: 'text-blue-400', success: 'text-green-400', error: 'text-red-400', warning: 'text-yellow-400', output: 'text-hive-300' }
 
 function formatDuration(start, end) {
@@ -449,6 +449,30 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
                   Approve & Run
                 </button>
               </>
+            )}
+            {task.status === 'paused' && (
+              <>
+                <button
+                  onClick={async () => { await api.rejectContinue(task.id) }}
+                  className="px-4 py-2 text-sm text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 transition-colors"
+                >
+                  Reject & Stop
+                </button>
+                <button
+                  onClick={async () => { await api.approveContinue(task.id) }}
+                  className="px-4 py-2 bg-green-600 text-white rounded-lg font-medium text-sm hover:bg-green-700 transition-colors"
+                >
+                  Approve & Continue
+                </button>
+              </>
+            )}
+            {task.status === 'failed' && task.agent_id && (
+              <button
+                onClick={async () => { try { await api.resumeTask(task.id) } catch {} }}
+                className="px-4 py-2 bg-honey/20 text-honey rounded-lg font-medium text-sm hover:bg-honey/30 transition-colors"
+              >
+                ♻️ Resume from Checkpoint
+              </button>
             )}
             {task.status === 'done' && hasFiles && (
               <button

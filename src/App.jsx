@@ -30,6 +30,7 @@ import IntelFeed from './components/IntelFeed'
 import CommandBar from './components/CommandBar'
 import SkillRegistryV2 from './components/SkillRegistryV2'
 import DeliverablesPanel from './components/DeliverablesPanel'
+import EvalHarness from './components/EvalHarness'
 
 export default function App() {
   const { toasts, addToast, removeToast } = useToast()
@@ -59,6 +60,7 @@ export default function App() {
   const [showIntel, setShowIntel] = useState(false)
   const [showSkillsV2, setShowSkillsV2] = useState(false)
   const [showDeliverables, setShowDeliverables] = useState(false)
+  const [showEval, setShowEval] = useState(false)
 
   const refresh = useCallback(async () => {
     const [a, t] = await Promise.all([api.getAgents(), api.getTasks()])
@@ -159,6 +161,7 @@ export default function App() {
               trading: () => setShowTrading(true),
               proposals: () => setShowProposals(true),
               botGen: () => setShowBotGen(true),
+              eval: () => setShowEval(true),
               spend: () => setShowSpend(true),
               chat: () => setShowChat(true),
             }
@@ -431,6 +434,9 @@ export default function App() {
         <SkillRegistryV2 onClose={() => setShowSkillsV2(false)} />
       )}
 
+      {showEval && (
+        <EvalHarness onClose={() => setShowEval(false)} agents={agents} />
+      )}
       {showDeliverables && (
         <DeliverablesPanel
           agents={agents}

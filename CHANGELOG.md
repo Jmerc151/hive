@@ -1,5 +1,81 @@
 # Hive Changelog
 
+## 2026-03-14 — Industry-Grade Platform Upgrade (10 Features)
+
+### 1. Native Function Calling (Hybrid Mode)
+- OpenRouter native `tool_calls` for Claude and GPT-4o models
+- `buildToolsSchema()` generates OpenAI-format tool definitions from TOOL_REGISTRY
+- Text-based `[TOOL:name]` fallback for DeepSeek R1 and Perplexity Sonar
+- Hybrid merging: native + text tool calls deduplicated per step
+
+### 2. Task Checkpointing + Pause/Resume
+- `task_checkpoints` table stores messages, tool counts, output per step
+- Failed tasks resume from last checkpoint via `POST /api/tasks/:id/resume`
+- Checkpoints auto-deleted on task completion
+- TaskDetail shows "Resume from Checkpoint" button for failed tasks
+
+### 3. Mid-Run Approval (Human-in-the-Loop)
+- New `paused` task status with orange UI badge
+- `request_approval` tool — any agent can pause for human review
+- `POST /api/tasks/:id/approve-continue` and `reject-continue` endpoints
+- Push + email notifications on approval requests
+- TaskDetail shows Approve/Reject buttons for paused tasks
+
+### 4. Guardrails Middleware
+- `validateToolCall()` pre-execution validation on all tool calls
+- PII detection: blocks emails containing SSN/credit card patterns
+- Trade safety: enforces max position size and daily trade limits
+- Path traversal: blocks write_file outside /workspace/ and /tmp/
+- Queue overflow: blocks create_task when >20 pending tasks
+- `guardrail_events` table logs all blocked/warned actions
+
+### 5. Evaluation Harness
+- `EvalHarness.jsx` — test case management UI with pass/fail badges
+- `eval_cases` + `eval_runs` tables for structured testing
+- 6 seeded test cases (one per agent) with expected tools/keywords
+- Scoring: 70% tool match + 30% keyword match
+- `POST /api/eval/run/:caseId`, `POST /api/eval/run-all`, `GET /api/eval/history`
+- Added to Sidebar as nav item with 🧪 icon
+
+### 6. MCP Client Bridge
+- `mcp_servers` table for Model Context Protocol server registry
+- CRUD endpoints: `GET/POST/DELETE /api/mcp/servers`
+- `POST /api/mcp/servers/:id/test` — test connection and list tools
+- `GET /api/mcp/tools` — aggregate tools across all connected servers
+
+### 7. Semantic Memory (Vector Embeddings)
+- `memory_embeddings` table with per-agent vector storage
+- `embedText()` via OpenRouter's text-embedding-3-small model
+- `cosineSimilarity()` JS implementation for retrieval (top-K, threshold 0.3)
+- New tools: `store_memory`, `recall_memory`, `recall_hive_memory` (cross-agent)
+- Auto-embeds task summaries on completion
+- `GET /api/memory/search`, `GET /api/memory/entries` endpoints
+
+### 8. OpenTelemetry Trace Export
+- `trace_id`, `span_id`, `parent_span_id` columns on task_traces
+- `GET /api/traces/:taskId/otlp` — returns OTLP-compatible JSON
+- Compatible with Langfuse, Arize Phoenix, and any OTLP collector
+- ResourceSpans format with service name, span attributes, status codes
+
+### 9. Agent Protocol API
+- Standard REST API at `/ap/v1/agent/tasks` following Agent Protocol spec
+- `GET/POST` tasks, `GET` steps (maps to task_traces), `POST` execute step
+- `GET /ap/v1/agent/tasks/:id/artifacts` — task outputs and files
+- Same Bearer token auth as main API
+
+### 10. Skill Import/Export
+- `GET /api/skills/:slug/export` — returns SKILL.md with YAML frontmatter
+- `POST /api/skills/import` — parse and create skill from pasted SKILL.md
+- `POST /api/skills/import-url` — fetch SKILL.md from URL and import
+- Import/Export buttons added to SkillRegistryV2 UI
+
+### Infrastructure
+- 6 new database tables, 3 new columns on task_traces
+- 20+ new API methods in api.js
+- `paused` status added to tasks CHECK constraint
+- 11 new performance indexes on hot query paths
+- ~500 lines added to server/index.js
+
 ## 2026-03-12 — Agent Tool Execution System
 
 ### Real Tools for Agents
