@@ -1,19 +1,171 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '../lib/api'
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  MiniMap,
+  addEdge,
+  useNodesState,
+  useEdgesState,
+  Handle,
+  Position,
+  MarkerType,
+} from '@xyflow/react'
+import '@xyflow/react/dist/style.css'
+
+// ── Custom Node Components ──
+
+function AgentNode({ data, selected }) {
+  const agent = data.agent
+  return (
+    <div className={`px-4 py-3 rounded-xl border-2 min-w-[180px] max-w-[220px] transition-all ${
+      selected ? 'border-honey shadow-lg shadow-honey/20' : 'border-hive-600'
+    }`} style={{ background: '#1e1e2e' }}>
+      <Handle type="target" position={Position.Top} className="!w-3 !h-3 !bg-hive-400 !border-hive-600" />
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-lg">{agent?.avatar || '🤖'}</span>
+        <div>
+          <div className="text-sm font-semibold text-hive-100">{agent?.name || data.agentId}</div>
+          <div className="text-[10px] text-hive-400 truncate">{agent?.role || ''}</div>
+        </div>
+      </div>
+      {data.prompt && (
+        <div className="text-[11px] text-hive-300 line-clamp-2 leading-relaxed">{data.prompt}</div>
+      )}
+      {!data.prompt && (
+        <div className="text-[11px] text-hive-500 italic">Double-click to edit prompt</div>
+      )}
+      <Handle type="source" position={Position.Bottom} className="!w-3 !h-3 !bg-honey !border-honey-dim" />
+    </div>
+  )
+}
+
+function StartNode() {
+  return (
+    <div className="w-12 h-12 rounded-full bg-green-500/20 border-2 border-green-500 flex items-center justify-center">
+      <span className="text-green-400 text-lg">▶</span>
+      <Handle type="source" position={Position.Bottom} className="!w-3 !h-3 !bg-green-400 !border-green-600" />
+    </div>
+  )
+}
+
+function EndNode() {
+  return (
+    <div className="w-12 h-12 rounded-full bg-red-500/20 border-2 border-red-500 flex items-center justify-center">
+      <span className="text-red-400 text-lg">■</span>
+      <Handle type="target" position={Position.Top} className="!w-3 !h-3 !bg-red-400 !border-red-600" />
+    </div>
+  )
+}
+
+const nodeTypes = { agentNode: AgentNode, startNode: StartNode, endNode: EndNode }
+
+// ── Convert between react-flow and pipeline JSON ──
+
+function pipelineToFlow(pipeline, agents) {
+  const steps = (pipeline.steps || []).sort((a, b) => a.position - b.position)
+  const nodes = [
+    { id: 'start', type: 'startNode', position: { x: 250, y: 0 }, data: {} },
+  ]
+  const edges = []
+
+  steps.forEach((step, i) => {
+    const nodeId = `step-${i}`
+    const agent = agents.find(a => a.id === step.agent_id)
+    nodes.push({
+      id: nodeId,
+      type: 'agentNode',
+      position: { x: 200, y: 100 + i * 140 },
+      data: { agentId: step.agent_id, agent, prompt: step.prompt_template },
+    })
+    edges.push({
+      id: `e-${i === 0 ? 'start' : `step-${i - 1}`}-${nodeId}`,
+      source: i === 0 ? 'start' : `step-${i - 1}`,
+      target: nodeId,
+      markerEnd: { type: MarkerType.ArrowClosed, color: '#E8C547' },
+      style: { stroke: '#E8C547', strokeWidth: 2 },
+    })
+  })
+
+  const lastId = steps.length > 0 ? `step-${steps.length - 1}` : 'start'
+  nodes.push({ id: 'end', type: 'endNode', position: { x: 250, y: 100 + steps.length * 140 }, data: {} })
+  edges.push({
+    id: `e-${lastId}-end`,
+    source: lastId,
+    target: 'end',
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#ef4444' },
+    style: { stroke: '#ef4444', strokeWidth: 2 },
+  })
+
+  return { nodes, edges }
+}
+
+function flowToPipeline(nodes) {
+  return nodes
+    .filter(n => n.type === 'agentNode')
+    .sort((a, b) => a.position.y - b.position.y)
+    .map((n, i) => ({
+      agent_id: n.data.agentId,
+      prompt_template: n.data.prompt || '',
+      position: i + 1,
+    }))
+}
+
+// ── Prompt Editor Modal ──
+
+function PromptEditor({ node, onSave, onClose }) {
+  const [prompt, setPrompt] = useState(node?.data?.prompt || '')
+  return (
+    <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-hive-800 border border-hive-700 rounded-xl w-full max-w-lg p-5" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-lg">{node?.data?.agent?.avatar || '🤖'}</span>
+          <h3 className="font-semibold text-hive-100">{node?.data?.agent?.name || 'Agent'} — Step Prompt</h3>
+        </div>
+        <textarea
+          value={prompt}
+          onChange={e => setPrompt(e.target.value)}
+          placeholder="Instructions for this agent... Use {{previous_output}} to inject the previous step's output."
+          rows={6}
+          className="w-full bg-hive-900 border border-hive-600 rounded-lg px-3 py-2 text-sm text-hive-100 placeholder:text-hive-500 focus:outline-none focus:ring-2 focus:ring-honey/50 resize-none mb-3"
+          autoFocus
+        />
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm text-hive-400 hover:text-hive-200">Cancel</button>
+          <button onClick={() => { onSave(prompt); onClose() }} className="px-4 py-1.5 bg-honey text-white rounded-lg text-sm font-medium hover:bg-honey-dim">Save</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Main Component ──
 
 export default function PipelineBuilder({ agents, onClose }) {
   const [pipelines, setPipelines] = useState([])
-  const [editing, setEditing] = useState(null) // null = list, object = editing
+  const [editing, setEditing] = useState(null)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [steps, setSteps] = useState([])
   const [running, setRunning] = useState(null)
-  const [pipelineStatuses, setPipelineStatuses] = useState({}) // { pipelineId: { current_step, steps: [...] } }
+  const [editingNode, setEditingNode] = useState(null)
+  const [pipelineStatuses, setPipelineStatuses] = useState({})
+  const [isMobile] = useState(() => window.innerWidth < 768)
+
+  // List-based fallback state (for mobile + simple editing)
+  const [listSteps, setListSteps] = useState([])
+
+  const [nodes, setNodes, onNodesChange] = useNodesState([])
+  const [edges, setEdges, onEdgesChange] = useEdgesState([])
+  const onConnect = useCallback((params) => setEdges(eds => addEdge({
+    ...params,
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#E8C547' },
+    style: { stroke: '#E8C547', strokeWidth: 2 },
+  }, eds)), [setEdges])
 
   const refresh = () => api.getPipelines().then(setPipelines).catch(() => {})
   useEffect(() => { refresh() }, [])
 
-  // Fetch live status for each pipeline
   useEffect(() => {
     if (pipelines.length === 0) return
     const fetchStatuses = async () => {
@@ -35,33 +187,32 @@ export default function PipelineBuilder({ agents, onClose }) {
     setEditing('new')
     setName('')
     setDescription('')
-    setSteps([{ agent_id: agents[0]?.id || '', prompt_template: '', position: 1 }])
+    if (isMobile) {
+      setListSteps([{ agent_id: agents[0]?.id || '', prompt_template: '', position: 1 }])
+    } else {
+      const { nodes: n, edges: e } = pipelineToFlow({ steps: [{ agent_id: agents[0]?.id || '', prompt_template: '', position: 1 }] }, agents)
+      setNodes(n)
+      setEdges(e)
+    }
   }
 
   const editPipeline = (p) => {
     setEditing(p.id)
     setName(p.name)
     setDescription(p.description || '')
-    setSteps(p.steps.sort((a, b) => a.position - b.position))
-  }
-
-  const addStep = () => {
-    setSteps([...steps, { agent_id: agents[0]?.id || '', prompt_template: '', position: steps.length + 1 }])
-  }
-
-  const removeStep = (i) => {
-    const updated = steps.filter((_, idx) => idx !== i).map((s, idx) => ({ ...s, position: idx + 1 }))
-    setSteps(updated)
-  }
-
-  const updateStep = (i, field, value) => {
-    const updated = [...steps]
-    updated[i] = { ...updated[i], [field]: value }
-    setSteps(updated)
+    if (isMobile) {
+      setListSteps(p.steps.sort((a, b) => a.position - b.position))
+    } else {
+      const { nodes: n, edges: e } = pipelineToFlow(p, agents)
+      setNodes(n)
+      setEdges(e)
+    }
   }
 
   const handleSave = async () => {
-    if (!name.trim() || steps.length === 0) return
+    if (!name.trim()) return
+    const steps = isMobile ? listSteps : flowToPipeline(nodes)
+    if (steps.length === 0) return
     const data = { name: name.trim(), description: description.trim(), steps }
     if (editing === 'new') {
       await api.createPipeline(data)
@@ -74,9 +225,7 @@ export default function PipelineBuilder({ agents, onClose }) {
 
   const handleRun = async (id) => {
     setRunning(id)
-    try {
-      await api.runPipeline(id)
-    } catch (e) { alert(e.message) }
+    try { await api.runPipeline(id) } catch (e) { alert(e.message) }
     setRunning(null)
   }
 
@@ -85,12 +234,45 @@ export default function PipelineBuilder({ agents, onClose }) {
     refresh()
   }
 
+  const addAgentToCanvas = (agentId) => {
+    const agent = agents.find(a => a.id === agentId)
+    const agentNodes = nodes.filter(n => n.type === 'agentNode')
+    const y = agentNodes.length > 0 ? Math.max(...agentNodes.map(n => n.position.y)) + 140 : 100
+    const newNode = {
+      id: `step-${Date.now()}`,
+      type: 'agentNode',
+      position: { x: 200, y },
+      data: { agentId, agent, prompt: '' },
+    }
+    setNodes(nds => [...nds, newNode])
+  }
+
+  const onNodeDoubleClick = useCallback((_, node) => {
+    if (node.type === 'agentNode') setEditingNode(node)
+  }, [])
+
+  const handlePromptSave = (prompt) => {
+    setNodes(nds => nds.map(n =>
+      n.id === editingNode.id ? { ...n, data: { ...n.data, prompt } } : n
+    ))
+    setEditingNode(null)
+  }
+
+  // ── Mobile list editor helpers ──
+  const addListStep = () => setListSteps([...listSteps, { agent_id: agents[0]?.id || '', prompt_template: '', position: listSteps.length + 1 }])
+  const removeListStep = (i) => setListSteps(listSteps.filter((_, idx) => idx !== i).map((s, idx) => ({ ...s, position: idx + 1 })))
+  const updateListStep = (i, field, value) => {
+    const updated = [...listSteps]
+    updated[i] = { ...updated[i], [field]: value }
+    setListSteps(updated)
+  }
+
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-hive-800 border border-hive-700 rounded-xl w-full max-w-2xl shadow-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-2 md:p-4" onClick={onClose}>
+      <div className="bg-hive-800 border border-hive-700 rounded-xl w-full max-w-5xl shadow-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
 
         {/* Header */}
-        <div className="p-5 border-b border-hive-700 flex items-center justify-between shrink-0">
+        <div className="p-4 border-b border-hive-700 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
             <span className="text-xl">🔗</span>
             <h2 className="text-lg font-semibold">{editing ? (editing === 'new' ? 'New Pipeline' : 'Edit Pipeline') : 'Pipelines'}</h2>
@@ -101,10 +283,10 @@ export default function PipelineBuilder({ agents, onClose }) {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5">
+        <div className="flex-1 overflow-hidden flex flex-col">
           {!editing ? (
-            /* Pipeline List */
-            <div className="space-y-3">
+            /* ── Pipeline List ── */
+            <div className="flex-1 overflow-y-auto p-5 space-y-3">
               <button onClick={startNew} className="w-full p-3 border border-dashed border-hive-600 rounded-lg text-sm text-hive-400 hover:border-honey/50 hover:text-honey transition-all">
                 + Create Pipeline
               </button>
@@ -124,7 +306,6 @@ export default function PipelineBuilder({ agents, onClose }) {
                       <button onClick={() => handleDelete(p.id)} className="px-2 py-1 text-xs text-red-400 hover:text-red-300">Del</button>
                     </div>
                   </div>
-                  {/* Steps preview with status */}
                   <div className="flex items-center gap-1 flex-wrap">
                     {p.steps.sort((a, b) => a.position - b.position).map((s, i) => {
                       const agent = agents.find(a => a.id === s.agent_id)
@@ -156,63 +337,107 @@ export default function PipelineBuilder({ agents, onClose }) {
               )}
             </div>
           ) : (
-            /* Pipeline Editor */
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-hive-300 mb-1.5">Pipeline Name</label>
-                <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Research → Write → Publish"
-                  className="w-full bg-hive-900 border border-hive-600 rounded-lg px-3 py-2.5 text-sm text-hive-100 placeholder:text-hive-500 focus:outline-none focus:ring-2 focus:ring-honey/50" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-hive-300 mb-1.5">Description</label>
-                <input type="text" value={description} onChange={e => setDescription(e.target.value)} placeholder="What does this pipeline do?"
-                  className="w-full bg-hive-900 border border-hive-600 rounded-lg px-3 py-2.5 text-sm text-hive-100 placeholder:text-hive-500 focus:outline-none focus:ring-2 focus:ring-honey/50" />
+            /* ── Pipeline Editor ── */
+            <div className="flex-1 overflow-hidden flex flex-col">
+              {/* Name/description */}
+              <div className="p-4 border-b border-hive-700 space-y-2 shrink-0">
+                <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Pipeline name..."
+                  className="w-full bg-hive-900 border border-hive-600 rounded-lg px-3 py-2 text-sm text-hive-100 placeholder:text-hive-500 focus:outline-none focus:ring-2 focus:ring-honey/50" />
+                <input type="text" value={description} onChange={e => setDescription(e.target.value)} placeholder="Description (optional)"
+                  className="w-full bg-hive-900 border border-hive-600 rounded-lg px-3 py-2 text-sm text-hive-100 placeholder:text-hive-500 focus:outline-none focus:ring-2 focus:ring-honey/50" />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-hive-300 mb-2">Steps</label>
-                <div className="space-y-3">
-                  {steps.map((step, i) => {
+              {isMobile ? (
+                /* ── Mobile: List editor ── */
+                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                  {listSteps.map((step, i) => {
                     const agent = agents.find(a => a.id === step.agent_id)
                     return (
-                      <div key={i} className="p-3 bg-hive-700/30 rounded-lg border border-hive-700 relative">
+                      <div key={i} className="p-3 bg-hive-700/30 rounded-lg border border-hive-700">
                         <div className="flex items-center gap-2 mb-2">
                           <span className="text-xs font-bold text-hive-500 w-6">#{step.position}</span>
-                          <select value={step.agent_id} onChange={e => updateStep(i, 'agent_id', e.target.value)}
-                            className="flex-1 bg-hive-900 border border-hive-600 rounded-lg px-2 py-1.5 text-sm text-hive-100 focus:outline-none">
-                            {agents.map(a => <option key={a.id} value={a.id}>{a.avatar} {a.name} — {a.role}</option>)}
+                          <select value={step.agent_id} onChange={e => updateListStep(i, 'agent_id', e.target.value)}
+                            className="flex-1 bg-hive-900 border border-hive-600 rounded-lg px-2 py-1.5 text-sm text-hive-100">
+                            {agents.map(a => <option key={a.id} value={a.id}>{a.avatar} {a.name}</option>)}
                           </select>
-                          {steps.length > 1 && (
-                            <button onClick={() => removeStep(i)} className="text-xs text-red-400 hover:text-red-300">Remove</button>
+                          {listSteps.length > 1 && (
+                            <button onClick={() => removeListStep(i)} className="text-xs text-red-400">Remove</button>
                           )}
                         </div>
-                        <textarea value={step.prompt_template} onChange={e => updateStep(i, 'prompt_template', e.target.value)}
-                          placeholder={`Instructions for ${agent?.name || 'agent'}... Use {{previous_output}} to inject the previous step's output.`}
-                          rows={3}
-                          className="w-full bg-hive-900 border border-hive-600 rounded-lg px-3 py-2 text-sm text-hive-100 placeholder:text-hive-500 focus:outline-none focus:ring-2 focus:ring-honey/50 resize-none" />
+                        <textarea value={step.prompt_template} onChange={e => updateListStep(i, 'prompt_template', e.target.value)}
+                          placeholder={`Instructions for ${agent?.name || 'agent'}...`} rows={3}
+                          className="w-full bg-hive-900 border border-hive-600 rounded-lg px-3 py-2 text-sm text-hive-100 placeholder:text-hive-500 resize-none" />
                       </div>
                     )
                   })}
+                  <button onClick={addListStep} className="w-full p-2 border border-dashed border-hive-600 rounded-lg text-xs text-hive-400 hover:border-hive-500">
+                    + Add Step
+                  </button>
                 </div>
-                <button onClick={addStep} className="mt-2 w-full p-2 border border-dashed border-hive-600 rounded-lg text-xs text-hive-400 hover:border-hive-500 hover:text-hive-300">
-                  + Add Step
+              ) : (
+                /* ── Desktop: React Flow canvas ── */
+                <div className="flex-1 flex">
+                  {/* Agent palette */}
+                  <div className="w-48 border-r border-hive-700 p-3 overflow-y-auto shrink-0">
+                    <div className="text-xs font-medium text-hive-400 uppercase tracking-wider mb-2">Drag Agent</div>
+                    {agents.map(agent => (
+                      <button
+                        key={agent.id}
+                        onClick={() => addAgentToCanvas(agent.id)}
+                        className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-hive-200 hover:bg-hive-700/50 transition-colors mb-1 text-left"
+                      >
+                        <span>{agent.avatar}</span>
+                        <span className="truncate">{agent.name}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Canvas */}
+                  <div className="flex-1" style={{ height: '100%', minHeight: 400 }}>
+                    <ReactFlow
+                      nodes={nodes}
+                      edges={edges}
+                      onNodesChange={onNodesChange}
+                      onEdgesChange={onEdgesChange}
+                      onConnect={onConnect}
+                      onNodeDoubleClick={onNodeDoubleClick}
+                      nodeTypes={nodeTypes}
+                      fitView
+                      style={{ background: '#12121e' }}
+                      defaultEdgeOptions={{
+                        markerEnd: { type: MarkerType.ArrowClosed, color: '#E8C547' },
+                        style: { stroke: '#E8C547', strokeWidth: 2 },
+                      }}
+                    >
+                      <Background color="#2a2a3e" gap={20} size={1} />
+                      <Controls className="!bg-hive-800 !border-hive-700 !rounded-lg [&>button]:!bg-hive-700 [&>button]:!border-hive-600 [&>button]:!text-hive-200 [&>button:hover]:!bg-hive-600" />
+                      <MiniMap
+                        nodeColor={() => '#E8C547'}
+                        maskColor="rgba(0,0,0,0.6)"
+                        style={{ background: '#1e1e2e', border: '1px solid #333' }}
+                      />
+                    </ReactFlow>
+                  </div>
+                </div>
+              )}
+
+              {/* Save footer */}
+              <div className="p-4 border-t border-hive-700 flex justify-end gap-2 shrink-0">
+                <button onClick={() => setEditing(null)} className="px-4 py-2 text-sm text-hive-400 hover:text-hive-200">Cancel</button>
+                <button onClick={handleSave} disabled={!name.trim()}
+                  className="px-5 py-2 bg-gradient-to-r from-honey to-honey-dim text-white rounded-lg font-medium text-sm hover:opacity-90 disabled:opacity-40">
+                  {editing === 'new' ? 'Create Pipeline' : 'Save Changes'}
                 </button>
               </div>
             </div>
           )}
         </div>
-
-        {/* Footer */}
-        {editing && (
-          <div className="p-4 border-t border-hive-700 flex justify-end gap-2 shrink-0">
-            <button onClick={() => setEditing(null)} className="px-4 py-2 text-sm text-hive-400 hover:text-hive-200">Cancel</button>
-            <button onClick={handleSave} disabled={!name.trim() || steps.length === 0}
-              className="px-5 py-2 bg-gradient-to-r from-honey to-honey-dim text-white rounded-lg font-medium text-sm hover:opacity-90 disabled:opacity-40">
-              {editing === 'new' ? 'Create Pipeline' : 'Save Changes'}
-            </button>
-          </div>
-        )}
       </div>
+
+      {/* Prompt editor modal */}
+      {editingNode && (
+        <PromptEditor node={editingNode} onSave={handlePromptSave} onClose={() => setEditingNode(null)} />
+      )}
     </div>
   )
 }

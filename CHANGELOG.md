@@ -1,5 +1,42 @@
 # Hive Changelog
 
+## 2026-03-14 — Agent Effectiveness Upgrade
+
+### Agent Prompt Overhaul (all 6 agents)
+- Memory protocol: all agents now `recall_memory` before work and `store_memory` after
+- Structured output guidance: agents produce JSON arrays for downstream parsing
+- Scout: added recall_memory, recall_hive_memory, store_memory, list_strategies references
+- Forge: removed incorrect send_email reference, added web_search, read_file, execute_code, list_workspace, delete_file
+- Quill: added read_file, recall_memory, store_memory, list_workspace
+- Dealer: added recall_memory, store_memory with outreach tracking
+- Oracle: added recall_memory, store_memory with trade decision logging
+- Nexus: added web_search, recall_hive_memory, softened follow-up task creation
+
+### 4 New Tools
+- `http_request` (all agents) — external API calls with internal IP blocking, 30s timeout, 10KB response limit
+- `list_workspace` (forge/quill/nexus) — directory listing restricted to workspace/
+- `execute_code` (forge only) — Node.js execution with 10s timeout, temp file cleanup
+- `delete_file` (forge/nexus) — workspace-restricted file deletion with path traversal protection
+
+### Heartbeat Feedback Loops
+- `parseHeartbeatOutput()` — routes structured JSON from heartbeat outputs to correct tables
+- Bot opportunity scan → auto-inserts into `bot_suggestions` table
+- Feature discovery → auto-creates proposals (type=feature)
+- UX design review → auto-creates proposals (type=design)
+- Self-assessment → auto-creates proposals (type=prompt)
+- Skill discovery → auto-creates skills with generated slugs
+- Removed `auto-standup` heartbeat (wasteful token burn)
+- Memory compaction now uses `claude-haiku-4-5` (cheaper, avoids circular reasoning)
+
+### Visual Pipeline Builder
+- Full rewrite of PipelineBuilder.jsx with @xyflow/react
+- Custom node types: AgentNode (avatar, role, prompt), StartNode, EndNode
+- Drag-and-drop from agent palette sidebar
+- PromptEditor modal for double-click editing
+- Bidirectional conversion: react-flow JSON ↔ pipeline steps format
+- Mobile fallback: list-based editor below 768px
+- Dark theme with Hive design system colors
+
 ## 2026-03-14 — Industry-Grade Platform Upgrade (10 Features)
 
 ### 1. Native Function Calling (Hybrid Mode)

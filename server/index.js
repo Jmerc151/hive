@@ -613,6 +613,124 @@ const TOOL_REGISTRY = [
       if (results.length === 0) return { results: [], message: 'No relevant memories found across agents' }
       return { results, message: `Found ${results.length} memories across agents` }
     }
+  },
+  {
+    name: 'http_request',
+    description: 'Make HTTP requests to external APIs and URLs',
+    params: {
+      url: { type: 'string', description: 'URL to request', required: true },
+      method: { type: 'string', description: 'HTTP method (GET, POST, PUT, DELETE)', required: false },
+      headers: { type: 'object', description: 'Request headers as JSON object', required: false },
+      body: { type: 'object', description: 'Request body as JSON object', required: false }
+    },
+    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus'],
+    execute: async (args) => {
+      const url = args.url
+      if (!url) return { error: 'url is required' }
+      const blocked = /^https?:\/\/(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/i
+      if (blocked.test(url)) return { error: 'Internal URLs are blocked' }
+      const method = (args.method || 'GET').toUpperCase()
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 30000)
+      try {
+        const opts = { method, signal: controller.signal, headers: { 'User-Agent': 'Hive/1.0' } }
+        if (args.headers) Object.assign(opts.headers, args.headers)
+        if (args.body && ['POST', 'PUT', 'PATCH'].includes(method)) {
+          opts.body = JSON.stringify(args.body)
+          opts.headers['Content-Type'] = opts.headers['Content-Type'] || 'application/json'
+        }
+        const resp = await fetch(url, opts)
+        const text = await resp.text()
+        return { status: resp.status, body: text.slice(0, 10000) }
+      } catch (e) {
+        return { error: e.message }
+      } finally {
+        clearTimeout(timeout)
+      }
+    }
+  },
+  {
+    name: 'list_workspace',
+    description: 'List files and directories in the workspace',
+    params: {
+      path: { type: 'string', description: 'Subdirectory path within workspace (optional)', required: false }
+    },
+    agents: ['forge', 'quill', 'nexus'],
+    execute: async (args) => {
+      const { readdirSync, statSync, mkdirSync } = await import('fs')
+      const { join, resolve } = await import('path')
+      const wsRoot = resolve('workspace')
+      try { mkdirSync(wsRoot, { recursive: true }) } catch {}
+      const subpath = (args.path || '').replace(/\.\./g, '').replace(/^\//, '')
+      const target = resolve(wsRoot, subpath)
+      if (!target.startsWith(wsRoot)) return { error: 'Path outside workspace' }
+      try {
+        const entries = readdirSync(target).map(name => {
+          try {
+            const s = statSync(join(target, name))
+            return { name, type: s.isDirectory() ? 'dir' : 'file', size: s.size, modified: s.mtime.toISOString() }
+          } catch { return { name, type: 'unknown' } }
+        })
+        return { path: subpath || '/', entries }
+      } catch (e) {
+        return { error: e.message }
+      }
+    }
+  },
+  {
+    name: 'execute_code',
+    description: 'Execute Node.js code in the workspace directory',
+    params: {
+      code: { type: 'string', description: 'JavaScript code to execute', required: true }
+    },
+    agents: ['forge'],
+    execute: async (args) => {
+      if (!args.code) return { error: 'code is required' }
+      const { execSync } = await import('child_process')
+      const { resolve, join } = await import('path')
+      const { writeFileSync, mkdirSync, unlinkSync } = await import('fs')
+      const wsRoot = resolve('workspace')
+      try { mkdirSync(wsRoot, { recursive: true }) } catch {}
+      const tmpFile = join(wsRoot, `_exec_${Date.now()}.js`)
+      try {
+        writeFileSync(tmpFile, args.code)
+        const result = execSync(`node "${tmpFile}"`, {
+          cwd: wsRoot,
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+          encoding: 'utf-8',
+          env: { ...process.env, NODE_NO_WARNINGS: '1' }
+        })
+        return { stdout: (result || '').slice(0, 10000), exitCode: 0 }
+      } catch (e) {
+        return { stdout: (e.stdout || '').slice(0, 5000), stderr: (e.stderr || '').slice(0, 5000), exitCode: e.status || 1 }
+      } finally {
+        try { unlinkSync(tmpFile) } catch {}
+      }
+    }
+  },
+  {
+    name: 'delete_file',
+    description: 'Delete a file from the workspace directory',
+    params: {
+      path: { type: 'string', description: 'File path within workspace to delete', required: true }
+    },
+    agents: ['forge', 'nexus'],
+    execute: async (args) => {
+      if (!args.path) return { error: 'path is required' }
+      const { unlinkSync } = await import('fs')
+      const { resolve } = await import('path')
+      const wsRoot = resolve('workspace')
+      const safePath = (args.path || '').replace(/\.\./g, '').replace(/^\//, '')
+      const target = resolve(wsRoot, safePath)
+      if (!target.startsWith(wsRoot)) return { error: 'Path outside workspace' }
+      try {
+        unlinkSync(target)
+        return { deleted: true, path: safePath }
+      } catch (e) {
+        return { error: e.message }
+      }
+    }
   }
 ]
 
@@ -1080,6 +1198,68 @@ Generate 1 follow-up task:`
   }
 }
 
+// ── Heartbeat Output Parser — routes structured output to correct tables ────────
+function parseHeartbeatOutput(task, output) {
+  if (!output || !task.title) return
+  const title = task.title.toLowerCase()
+
+  function extractJSON(text) {
+    const match = text.match(/\[[\s\S]*?\](?=\s*$|\s*```|\s*\n\n)/m)
+    if (!match) return null
+    try { return JSON.parse(match[0]) } catch { return null }
+  }
+
+  // Bot opportunity scan → bot_suggestions
+  if (title.includes('bot opportunity') || title.includes('bot scan') || title.includes('bot idea')) {
+    const items = extractJSON(output)
+    if (items && Array.isArray(items)) {
+      for (const item of items.slice(0, 5)) {
+        try {
+          db.prepare('INSERT OR IGNORE INTO bot_suggestions (id, name, type, description, audience, monetization, reasoning, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+            uuid(), item.name || item.title || 'Untitled', item.type || 'bot', item.description || '', item.audience || '', item.monetization || '', item.reasoning || '', 'scout-heartbeat'
+          )
+        } catch {}
+      }
+    }
+  }
+
+  // Feature discovery / UX review / Self-assessment → proposals
+  if (title.includes('feature discovery') || title.includes('ux review') || title.includes('ux design') || title.includes('self-assessment') || title.includes('self assessment')) {
+    const items = extractJSON(output)
+    const proposalType = title.includes('ux') ? 'design' : title.includes('feature') ? 'feature' : 'prompt'
+    if (items && Array.isArray(items)) {
+      for (const item of items.slice(0, 5)) {
+        try {
+          createProposal({
+            type: proposalType,
+            title: item.title || item.name || 'Untitled',
+            description: item.description || item.summary || '',
+            proposed_by: task.agent_id || 'nexus',
+            priority: item.priority || 'medium',
+            source_task_id: task.id
+          })
+        } catch {}
+      }
+    }
+  }
+
+  // Skill discovery → auto-create skills
+  if (title.includes('skill discovery') || title.includes('discover skill')) {
+    const items = extractJSON(output)
+    if (items && Array.isArray(items)) {
+      for (const item of items.slice(0, 3)) {
+        if (!item.name || !item.description) continue
+        const slug = item.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+        try {
+          db.prepare('INSERT OR IGNORE INTO skills (id, slug, name, description, skill_md, tags, source) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+            uuid(), slug, item.name, item.description, item.skill_md || item.instructions || `# ${item.name}\n\n${item.description}`, JSON.stringify(item.tags || []), 'custom'
+          )
+        } catch {}
+      }
+    }
+  }
+}
+
 // ── QA Review — Nexus auto-reviews completed work ────────
 async function reviewCompletedWork(completedTask, agent, output) {
   try {
@@ -1295,18 +1475,7 @@ function registerHeartbeat(name, intervalMs, fn) {
   console.log(`💓 Heartbeat registered: ${name} (every ${Math.round(intervalMs / 60000)}min)`)
 }
 
-// Daily standup every 24 hours
-registerHeartbeat('auto-standup', 24 * 60 * 60 * 1000, async () => {
-  try {
-    const PORT = process.env.API_PORT || process.env.PORT || 3002
-    const headers = {}
-    if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`
-    await fetch(`http://localhost:${PORT}/api/chat/standup`, { method: 'POST', headers })
-    console.log('💓 Auto-standup triggered')
-  } catch (e) {
-    console.error('Auto-standup failed:', e.message)
-  }
-})
+// auto-standup removed — wasteful no-op
 
 // Queue monitor — every 5 minutes
 registerHeartbeat('queue-monitor', 5 * 60 * 1000, () => {
@@ -1327,7 +1496,7 @@ registerHeartbeat('memory-compaction', 7 * 24 * 60 * 60 * 1000, async () => {
     if (memory.length > 10000) {
       try {
         const response = await callClaude({
-          model: getAgentModel(agent.id),
+          model: 'anthropic/claude-haiku-4-5',
           max_tokens: 2048,
           system: `Compact this agent memory to the most important 50% of content. Keep the most valuable learnings — especially income-generating insights, successful strategies, and key patterns. Remove redundant or outdated entries. Preserve markdown formatting.`,
           messages: [{ role: 'user', content: memory }]
@@ -1983,6 +2152,10 @@ START WITH TOOL CALLS NOW.`
         // Auto-embed task summary into semantic memory
         const summary = `Task: ${task.title}\nAgent: ${agent.id}\nEvidence: ${evidence}\nOutput: ${fullOutput.slice(0, 1000)}`
         storeMemoryEmbedding(agent.id, summary, task.id, [task.agent_id, 'auto']).catch(() => {})
+      })
+      .then(() => {
+        // Parse heartbeat outputs for feedback loops
+        try { parseHeartbeatOutput(task, fullOutput) } catch (e) { console.log('Heartbeat parse error:', e.message) }
       })
       .then(() => {
         const qaEnabled = getSetting('qa_reviews_enabled') !== 'false'

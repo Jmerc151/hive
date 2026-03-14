@@ -57,7 +57,7 @@ Task created → assigned to agent → auto-queued
 
 ## Tool System
 
-22 real tools in TOOL_REGISTRY, executed via ReAct loop:
+26 real tools in TOOL_REGISTRY, executed via ReAct loop:
 
 | Category | Tools |
 |----------|-------|
@@ -68,6 +68,7 @@ Task created → assigned to agent → auto-queued
 | Strategy | list_strategies, save_strategy |
 | Management | create_task, list_tasks, read_memory |
 | Workflow | request_approval |
+| Workspace | http_request, list_workspace, execute_code, delete_file |
 | Memory | store_memory, recall_memory, recall_hive_memory |
 
 Native function calling for Claude/GPT models. Text-based `[TOOL:name]` fallback for DeepSeek/Perplexity.
@@ -87,7 +88,7 @@ Limits hit → tasks pause (stay `todo`), don't fail.
 | Job | Interval | Purpose |
 |-----|----------|---------|
 | queue-monitor | 5 min | Check for idle agents with pending tasks |
-| auto-standup | 24 hrs | Team standup conversation |
+| ~~auto-standup~~ | — | Removed (wasteful token burn) |
 | memory-compaction | 7 days | Compact agent memories >10KB |
 | nexus-retrospective | 7 days | Generate weekly performance review task |
 | weekly-bot-scan | 7 days | Scout researches bot opportunities |
