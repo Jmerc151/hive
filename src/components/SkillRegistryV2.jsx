@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api'
+import ConfirmDialog from './ConfirmDialog'
 
 const AGENT_COLORS = {
   scout: '#06b6d4', forge: '#3b82f6', quill: '#8b5cf6',
@@ -74,6 +75,7 @@ export default function SkillRegistryV2({ onClose }) {
   const [form, setForm] = useState({ name: '', description: '', skill_md: '', tags: '' })
   const [assignModal, setAssignModal] = useState(null)
   const [agentSkills, setAgentSkills] = useState({})
+  const [confirmDelete, setConfirmDelete] = useState(null)
 
   const refresh = () => {
     setLoading(true)
@@ -211,7 +213,7 @@ export default function SkillRegistryV2({ onClose }) {
             </div>
             <div className="flex items-center gap-2">
               {!editing && <button onClick={() => setEditing(true)} className="px-3 py-1 bg-hive-700 text-hive-200 rounded-lg text-xs hover:bg-hive-600">Edit</button>}
-              <button onClick={() => handleDelete(detail.slug)} className="px-3 py-1 bg-danger/15 text-danger rounded-lg text-xs hover:bg-danger/25">Delete</button>
+              <button onClick={() => setConfirmDelete({ slug: detail.slug, name: detail.name })} className="px-3 py-1 bg-danger/15 text-danger rounded-lg text-xs hover:bg-danger/25">Delete</button>
               <button onClick={onClose} className="text-hive-400 hover:text-hive-200 text-xl ml-2">&times;</button>
             </div>
           </div>
@@ -260,6 +262,13 @@ export default function SkillRegistryV2({ onClose }) {
             )}
           </div>
         </div>
+        <ConfirmDialog
+          isOpen={!!confirmDelete}
+          title="Delete Skill?"
+          message={`Are you sure you want to delete "${confirmDelete?.name}"? This action cannot be undone.`}
+          onConfirm={() => { handleDelete(confirmDelete.slug); setConfirmDelete(null) }}
+          onCancel={() => setConfirmDelete(null)}
+        />
       </div>
     )
   }

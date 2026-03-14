@@ -111,4 +111,37 @@ router.get('/trace/connections', (req, res) => {
   res.json({ connections: stats })
 })
 
+/**
+ * GET /api/events/stream — Global dashboard SSE stream
+ * Streams task_update, agent_status, and spend_update events
+ * Query: ?token=<key> (auth via query param since EventSource doesn't support headers)
+ */
+router.get('/events/stream', (req, res) => {
+  const hb = setupSSE(res)
+
+  const send = (event, data) => {
+    try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) } catch {}
+  }
+
+  send('connected', { time: new Date().toISOString() })
+
+  addConn('events', res)
+
+  const onTaskUpdate = (data) => send('task_update', data)
+  const onAgentStatus = (data) => send('agent_status', data)
+  const onSpendUpdate = (data) => send('spend_update', data)
+
+  traceBus.on('task:update', onTaskUpdate)
+  traceBus.on('agent:status', onAgentStatus)
+  traceBus.on('spend:update', onSpendUpdate)
+
+  req.on('close', () => {
+    clearInterval(hb)
+    traceBus.off('task:update', onTaskUpdate)
+    traceBus.off('agent:status', onAgentStatus)
+    traceBus.off('spend:update', onSpendUpdate)
+    removeConn('events', res)
+  })
+})
+
 export default router

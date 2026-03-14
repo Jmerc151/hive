@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { api } from './lib/api'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { api, BASE, API_KEY } from './lib/api'
 import ToastContainer, { useToast } from './components/Toast'
 import Sidebar from './components/Sidebar'
 import TaskBoard from './components/TaskBoard'
@@ -31,6 +31,10 @@ import CommandBar from './components/CommandBar'
 import SkillRegistryV2 from './components/SkillRegistryV2'
 import DeliverablesPanel from './components/DeliverablesPanel'
 import EvalHarness from './components/EvalHarness'
+import KnowledgeBase from './components/KnowledgeBase'
+import ScheduledJobs from './components/ScheduledJobs'
+import MemoryDashboard from './components/MemoryDashboard'
+import ErrorBoundary from './components/ErrorBoundary'
 
 export default function App() {
   const { toasts, addToast, removeToast } = useToast()
@@ -61,6 +65,10 @@ export default function App() {
   const [showSkillsV2, setShowSkillsV2] = useState(false)
   const [showDeliverables, setShowDeliverables] = useState(false)
   const [showEval, setShowEval] = useState(false)
+  const [showKnowledge, setShowKnowledge] = useState(false)
+  const [showSchedule, setShowSchedule] = useState(false)
+  const [showMemory, setShowMemory] = useState(false)
+  const [showShortcuts, setShowShortcuts] = useState(false)
 
   const refresh = useCallback(async () => {
     const [a, t] = await Promise.all([api.getAgents(), api.getTasks()])
@@ -68,11 +76,117 @@ export default function App() {
     setTasks(t)
   }, [])
 
-  useEffect(() => {
-    refresh()
-    const interval = setInterval(refresh, 3000)
-    return () => clearInterval(interval)
+  const [sseConnected, setSseConnected] = useState(false)
+  const debounceRef = useRef(null)
+
+  // Debounced refresh — batches rapid SSE events into one fetch per second
+  const debouncedRefresh = useCallback(() => {
+    if (debounceRef.current) return
+    debounceRef.current = setTimeout(() => {
+      debounceRef.current = null
+      refresh()
+    }, 1000)
   }, [refresh])
+
+  useEffect(() => {
+    // Initial fetch
+    refresh()
+
+    // SSE connection for real-time updates
+    const sseUrl = `${BASE}/events/stream${API_KEY ? `?token=${API_KEY}` : ''}`
+    let es = null
+    let reconnectTimer = null
+
+    function connect() {
+      es = new EventSource(sseUrl)
+
+      es.addEventListener('connected', () => {
+        setSseConnected(true)
+        refresh() // Full refresh on reconnect
+      })
+
+      es.addEventListener('task_update', () => {
+        debouncedRefresh()
+      })
+
+      es.addEventListener('agent_status', () => {
+        debouncedRefresh()
+      })
+
+      es.addEventListener('spend_update', () => {
+        // Spend updates don't need task/agent refresh
+      })
+
+      es.onerror = () => {
+        setSseConnected(false)
+        // EventSource auto-reconnects, but we mark disconnected
+      }
+    }
+
+    connect()
+
+    // Fallback poll every 30s for robustness
+    const fallback = setInterval(refresh, 30000)
+
+    return () => {
+      if (es) es.close()
+      clearInterval(fallback)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [refresh, debouncedRefresh])
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return
+
+      if (e.key === 'Escape') {
+        setShowCreate(false)
+        setSelectedTask(null)
+        setShowSpend(false)
+        setShowBotGen(false)
+        setReviewTaskId(null)
+        setShowScorecard(null)
+        setShowRevenue(false)
+        setShowPipelines(false)
+        setShowTriggers(false)
+        setShowSkills(null)
+        setAbTestTask(null)
+        setShowTrading(false)
+        setShowProposals(false)
+        setShowProjects(false)
+        setShowHistory(false)
+        setShowTrace(false)
+        setShowGraph(false)
+        setShowCostTimeline(false)
+        setShowIntel(false)
+        setShowSkillsV2(false)
+        setShowDeliverables(false)
+        setShowEval(false)
+        setShowKnowledge(false)
+        setShowSchedule(false)
+        setShowMemory(false)
+        setShowShortcuts(false)
+        return
+      }
+
+      if (e.key === 'n' && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault()
+        setShowCreate(true)
+        return
+      }
+
+      if (e.key === '?' && e.shiftKey) {
+        e.preventDefault()
+        setShowShortcuts(prev => !prev)
+        return
+      }
+    }
+
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
 
   useEffect(() => {
     async function setupPush() {
@@ -162,6 +276,9 @@ export default function App() {
               proposals: () => setShowProposals(true),
               botGen: () => setShowBotGen(true),
               eval: () => setShowEval(true),
+              knowledge: () => setShowKnowledge(true),
+              schedule: () => setShowSchedule(true),
+              memory: () => setShowMemory(true),
               spend: () => setShowSpend(true),
               chat: () => setShowChat(true),
             }
@@ -185,6 +302,7 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full flex-shrink-0 transition-colors ${sseConnected ? 'bg-green-400' : 'bg-red-400 animate-pulse'}`} title={sseConnected ? 'Live connected' : 'Reconnecting...'} />
             {activeCount > 0 && (
               <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-honey/10 border border-honey/20 rounded-full">
                 <div className="w-1.5 h-1.5 rounded-full bg-honey animate-pulse" />
@@ -194,6 +312,7 @@ export default function App() {
             <SearchBar agents={agents} onSelectTask={setSelectedTask} />
             <button
               onClick={() => setShowCreate(true)}
+              aria-label="New task"
               className="flex items-center gap-1 px-3 py-2 bg-gradient-to-r from-honey to-honey-dim text-white rounded-xl font-medium text-sm shadow-lg shadow-honey/20 hover:shadow-honey/30 transition-all active:scale-95"
             >
               <span className="text-lg leading-none">+</span>
@@ -226,6 +345,7 @@ export default function App() {
         )}
 
         {/* Desktop: Split layout — Chat left, Dashboard right */}
+        <ErrorBoundary>
         <div className={`flex-1 overflow-hidden ${mobileView !== 'board' ? 'hidden md:flex' : 'flex'}`}>
           {/* Left: Chat panel (40%) */}
           <div className="hidden md:flex md:w-[40%] lg:w-[38%] border-r border-hive-700/50 flex-col">
@@ -286,6 +406,7 @@ export default function App() {
             onUpdateTask={handleUpdateTask}
           />
         </div>
+        </ErrorBoundary>
       </main>
 
       {/* Mobile bottom nav */}
@@ -444,10 +565,45 @@ export default function App() {
         />
       )}
 
+      {showKnowledge && (
+        <KnowledgeBase onClose={() => setShowKnowledge(false)} />
+      )}
+
+      {showSchedule && (
+        <ScheduledJobs agents={agents} onClose={() => setShowSchedule(false)} />
+      )}
+
+      {showMemory && (
+        <MemoryDashboard agents={agents} onClose={() => setShowMemory(false)} />
+      )}
+
       {/* Mobile CommandBar — hide when chat is open since chat has its own input */}
       {mobileView !== 'chat' && (
         <div className="md:hidden">
           <CommandBar agents={agents} onTaskCreated={() => refresh()} />
+        </div>
+      )}
+
+      {/* Keyboard shortcuts help */}
+      {showShortcuts && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setShowShortcuts(false)}>
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+          <div className="relative bg-hive-800 border border-hive-700 rounded-xl p-6 max-w-sm w-full">
+            <h3 className="text-lg font-bold text-hive-100 mb-4">Keyboard Shortcuts</h3>
+            <div className="space-y-2 text-sm">
+              {[
+                ['⌘K', 'Command bar'],
+                ['N', 'New task'],
+                ['Esc', 'Close panel'],
+                ['?', 'This help'],
+              ].map(([key, desc]) => (
+                <div key={key} className="flex justify-between">
+                  <kbd className="px-2 py-0.5 bg-hive-700 rounded text-hive-300 font-mono text-xs">{key}</kbd>
+                  <span className="text-hive-400">{desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 

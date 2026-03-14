@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { api } from '../lib/api'
 import TraceView from './TraceView'
 import MarkdownRenderer from './MarkdownRenderer'
+import ConfirmDialog from './ConfirmDialog'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 
@@ -40,6 +41,7 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
   const [selectedFile, setSelectedFile] = useState(null)
   const [filesLoading, setFilesLoading] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(null)
   const logsEndRef = useRef(null)
 
   const fileCount = useMemo(() => countFiles(task?.output), [task?.output])
@@ -125,7 +127,7 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
               )}
             </div>
           </div>
-          <button onClick={onClose} className="text-hive-400 hover:text-hive-200 text-xl shrink-0">&times;</button>
+          <button onClick={onClose} className="text-hive-400 hover:text-hive-200 text-xl shrink-0" aria-label="Close task detail">&times;</button>
         </div>
 
         {/* Tabs */}
@@ -428,7 +430,7 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
         {/* Footer Actions */}
         <div className="p-4 border-t border-hive-700 flex items-center justify-between">
           <button
-            onClick={() => onDelete(task.id)}
+            onClick={() => setConfirmDelete({ id: task.id, name: task.title })}
             className="text-xs text-red-400 hover:text-red-300 transition-colors"
           >
             Delete Task
@@ -502,6 +504,13 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
           </div>
         </div>
       </div>
+      <ConfirmDialog
+        isOpen={!!confirmDelete}
+        title="Delete Task?"
+        message={`Are you sure you want to delete "${confirmDelete?.name}"? This action cannot be undone.`}
+        onConfirm={() => { onDelete(confirmDelete.id); setConfirmDelete(null) }}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   )
 }

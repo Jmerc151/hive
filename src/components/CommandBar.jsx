@@ -93,7 +93,7 @@ export default function CommandBar({ agents = [], onTaskCreated }) {
 
   const inputEl = (
     <div ref={wrapperRef} className="relative w-full">
-      <form onSubmit={handleSubmit} className="flex items-center gap-2 bg-hive-800 border border-hive-700 rounded-xl px-3 py-2 focus-within:border-honey/50 transition-colors">
+      <form onSubmit={handleSubmit} role="search" className="flex items-center gap-2 bg-hive-800 border border-hive-700 rounded-xl px-3 py-2 focus-within:border-honey/50 transition-colors">
         <span className="text-hive-500 text-sm shrink-0">⌘K</span>
         <input ref={inputRef} type="text" value={text}
           onChange={e => { setText(e.target.value); setHistoryIdx(-1); setShowAC(e.target.value.length > 0) }}
@@ -101,6 +101,7 @@ export default function CommandBar({ agents = [], onTaskCreated }) {
           onFocus={() => text.length > 0 && setShowAC(true)}
           placeholder="Type a command..."
           disabled={loading}
+          aria-label="Command bar"
           className="bg-transparent text-sm text-hive-100 placeholder:text-hive-500 focus:outline-none flex-1 min-w-0 disabled:opacity-50" />
         {loading && (
           <svg className="animate-spin h-4 w-4 text-honey shrink-0" viewBox="0 0 24 24">

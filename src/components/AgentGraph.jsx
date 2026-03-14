@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
 import { api } from '../lib/api'
+import { SkeletonChart } from './Skeleton'
 
 const RANGES = ['1h', '24h', '7d']
 
@@ -22,6 +23,7 @@ export default function AgentGraph({ onClose }) {
   const graphRef = useRef()
   const containerRef = useRef()
   const [dims, setDims] = useState({ w: 800, h: 600 })
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const handleResize = () => setWindowWidth(window.innerWidth)
@@ -56,6 +58,7 @@ export default function AgentGraph({ onClose }) {
         type: edge.interaction_type || edge.type || 'consult'
       })))
     } catch (err) { console.error('Graph fetch error:', err) }
+    finally { setLoading(false) }
   }, [range])
 
   useEffect(() => { fetchData() }, [fetchData])
@@ -125,12 +128,14 @@ export default function AgentGraph({ onClose }) {
                 {r}
               </button>
             ))}
-            <button onClick={onClose} className="ml-2 text-hive-400 hover:text-hive-200 text-xl">&times;</button>
+            <button onClick={onClose} className="ml-2 text-hive-400 hover:text-hive-200 text-xl" aria-label="Close agent graph">&times;</button>
           </div>
         </div>
 
         <div className="flex-1 min-h-0 p-4">
-          {isMobile ? (
+          {loading ? (
+            <SkeletonChart />
+          ) : isMobile ? (
             <div className="space-y-2 overflow-y-auto max-h-[60vh]">
               {edges.length === 0 && <p className="text-hive-400 text-sm text-center py-8">No interactions in this time range</p>}
               {edges.map((edge, i) => (

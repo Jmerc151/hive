@@ -304,6 +304,47 @@ db.exec(`
   );
 `)
 
+// Knowledge base for RAG
+db.exec(`
+  CREATE TABLE IF NOT EXISTS knowledge_documents (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    source_type TEXT NOT NULL CHECK(source_type IN ('text','url','file')),
+    source_url TEXT DEFAULT '',
+    content TEXT NOT NULL,
+    chunk_count INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending','processing','ready','failed')),
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS knowledge_chunks (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    embedding TEXT DEFAULT '',
+    chunk_index INTEGER DEFAULT 0,
+    token_count INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_chunks_doc ON knowledge_chunks(document_id);
+`)
+
+// Scheduled agent jobs (user-configurable cron)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS scheduled_jobs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    task_title TEXT NOT NULL,
+    task_description TEXT DEFAULT '',
+    cron_expression TEXT NOT NULL,
+    enabled INTEGER DEFAULT 1,
+    last_run TEXT,
+    next_run TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`)
+
 // Migration-safe column additions
 try { db.exec(`ALTER TABLE tasks ADD COLUMN tokens_used INTEGER DEFAULT 0`) } catch (e) { /* already exists */ }
 try { db.exec(`ALTER TABLE tasks ADD COLUMN estimated_cost REAL DEFAULT 0`) } catch (e) { /* already exists */ }
@@ -329,6 +370,11 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_intel_status ON intel_items(status);
   CREATE INDEX IF NOT EXISTS idx_eval_runs_case ON eval_runs(eval_case_id);
   CREATE INDEX IF NOT EXISTS idx_guardrail_task ON guardrail_events(task_id);
+  CREATE INDEX IF NOT EXISTS idx_spend_log_agent_date ON spend_log(agent_id, date);
+  CREATE INDEX IF NOT EXISTS idx_tasks_agent_status ON tasks(agent_id, status);
+  CREATE INDEX IF NOT EXISTS idx_task_logs_agent ON task_logs(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_proposals_proposed_by ON proposals(proposed_by);
+  CREATE INDEX IF NOT EXISTS idx_memory_agent_created ON memory_embeddings(agent_id, created_at DESC);
 `)
 
 // ── Industry-grade upgrade tables ──
@@ -463,7 +509,10 @@ const defaults = {
   email_on_proposal: 'true',
   email_weekly_summary: 'true',
   self_improvement_enabled: 'true',
-  self_improvement_budget_percent: '20'
+  self_improvement_budget_percent: '20',
+  max_react_steps: '8',
+  step_timeout_ms: '300000',
+  auto_chain_enabled: 'true'
 }
 
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')

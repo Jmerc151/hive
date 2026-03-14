@@ -1,13 +1,19 @@
 {
-  "name": "Ember Agents",
-  "short_name": "Ember",
-  "description": "AI agent team for building Ember restaurant SaaS",
+  "name": "Hive — AI Agent Team",
+  "short_name": "Hive",
+  "description": "Autonomous AI income agent team",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0c0a09",
-  "theme_color": "#f97316",
+  "background_color": "#1a1a2e",
+  "theme_color": "#F59E0B",
   "orientation": "any",
   "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
     {
       "src": "/icons/icon-192.svg",
       "sizes": "192x192",

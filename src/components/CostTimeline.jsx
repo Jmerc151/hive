@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { api } from '../lib/api'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { SkeletonChart } from './Skeleton'
 
 const AGENTS = [
   { id: 'scout', color: '#06b6d4' },
@@ -81,13 +82,13 @@ export default function CostTimeline({ onClose }) {
                 </button>
               ))}
             </div>
-            <button onClick={onClose} className="text-hive-400 hover:text-hive-200 text-xl">&times;</button>
+            <button onClick={onClose} className="text-hive-400 hover:text-hive-200 text-xl" aria-label="Close cost timeline">&times;</button>
           </div>
         </div>
 
         <div className="p-4 space-y-6">
           {loading ? (
-            <div className="flex items-center justify-center h-48 text-hive-400">Loading...</div>
+            <SkeletonChart />
           ) : (
             <>
               <div className="bg-hive-800 rounded-xl border border-hive-700 p-4">

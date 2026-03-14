@@ -2,26 +2,51 @@ export const BASE = import.meta.env.VITE_API_URL || '/api'
 export const API_KEY = import.meta.env.VITE_API_KEY || localStorage.getItem('hive_api_key') || ''
 
 async function request(path, options = {}) {
-  const headers = { 'Content-Type': 'application/json' }
-  if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`
+  const maxRetries = 2
+  let lastError
 
-  const res = await fetch(`${BASE}${path}`, {
-    headers,
-    ...options,
-    body: options.body ? JSON.stringify(options.body) : undefined
-  })
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const headers = { 'Content-Type': 'application/json' }
+      if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`
 
-  if (res.status === 401) {
-    const key = prompt('Enter your Hive API key:')
-    if (key) {
-      localStorage.setItem('hive_api_key', key)
-      window.location.reload()
+      const res = await fetch(`${BASE}${path}`, {
+        headers,
+        ...options,
+        body: options.body ? JSON.stringify(options.body) : undefined
+      })
+
+      if (res.status === 401) {
+        const key = prompt('Enter your Hive API key:')
+        if (key) {
+          localStorage.setItem('hive_api_key', key)
+          window.location.reload()
+        }
+        throw new Error('Unauthorized')
+      }
+
+      // Don't retry 4xx client errors (except 429)
+      if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+        const data = await res.json().catch(() => ({}))
+        throw Object.assign(new Error(data.error || `Request failed: ${res.status}`), { status: res.status })
+      }
+
+      // Retry 5xx and 429 (rate limit)
+      if (!res.ok) {
+        throw Object.assign(new Error(`Server error: ${res.status}`), { status: res.status, retryable: true })
+      }
+
+      return await res.json()
+    } catch (err) {
+      lastError = err
+      if (attempt < maxRetries && (err.retryable || err.name === 'TypeError')) {
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)))
+        continue
+      }
+      throw err
     }
-    throw new Error('Unauthorized')
   }
-
-  if (!res.ok) throw new Error(`API error: ${res.status}`)
-  return res.json()
+  throw lastError
 }
 
 export const api = {
@@ -148,6 +173,7 @@ export const api = {
   updatePipeline: (id, data) => request(`/pipelines/${id}`, { method: 'PATCH', body: data }),
   deletePipeline: (id) => request(`/pipelines/${id}`, { method: 'DELETE' }),
   runPipeline: (id) => request(`/pipelines/${id}/run`, { method: 'POST' }),
+  replayPipeline: (id, fromStep, modifiedInput) => request(`/pipelines/${id}/replay`, { method: 'POST', body: { from_step: fromStep, modified_input: modifiedInput } }),
 
   // Revenue
   getRevenue: (params) => request(`/revenue${params ? '?' + new URLSearchParams(params) : ''}`),
@@ -259,6 +285,13 @@ export const api = {
   // Semantic Memory
   searchMemory: (query, agentId, topK) => request(`/memory/search?query=${encodeURIComponent(query)}${agentId ? '&agent_id=' + agentId : ''}${topK ? '&top_k=' + topK : ''}`),
   getMemoryEntries: (agentId, limit) => request(`/memory/entries?${agentId ? 'agent_id=' + agentId + '&' : ''}limit=${limit || 50}`),
+  deleteMemoryEntry: (id) => request(`/memory/${id}`, { method: 'DELETE' }),
+
+  // Scheduled Jobs
+  getScheduledJobs: () => request('/scheduled-jobs'),
+  createScheduledJob: (data) => request('/scheduled-jobs', { method: 'POST', body: data }),
+  updateScheduledJob: (id, data) => request(`/scheduled-jobs/${id}`, { method: 'PATCH', body: data }),
+  deleteScheduledJob: (id) => request(`/scheduled-jobs/${id}`, { method: 'DELETE' }),
 
   // OTLP Trace Export
   getOTLPTrace: (taskId) => request(`/traces/${taskId}/otlp`),
@@ -270,4 +303,12 @@ export const api = {
   exportSkill: (slug) => `${BASE}/skills/${slug}/export?token=${API_KEY}`,
   importSkill: (content) => request('/skills/import', { method: 'POST', body: { content } }),
   importSkillUrl: (url) => request('/skills/import-url', { method: 'POST', body: { url } }),
+
+  // Knowledge Base (RAG)
+  getKnowledge: () => request('/knowledge'),
+  addKnowledge: (data) => request('/knowledge', { method: 'POST', body: data }),
+  deleteKnowledge: (id) => request(`/knowledge/${id}`, { method: 'DELETE' }),
+  getKnowledgeChunks: (id) => request(`/knowledge/${id}/chunks`),
+  searchKnowledge: (query, topK) => request('/knowledge/search', { method: 'POST', body: { query, topK } }),
+  importKnowledgeUrl: (url, title) => request('/knowledge/import-url', { method: 'POST', body: { url, title } }),
 }

@@ -57,7 +57,7 @@ Task created → assigned to agent → auto-queued
 
 ## Tool System
 
-26 real tools in TOOL_REGISTRY, executed via ReAct loop:
+27 real tools in TOOL_REGISTRY, executed via ReAct loop:
 
 | Category | Tools |
 |----------|-------|
@@ -70,6 +70,7 @@ Task created → assigned to agent → auto-queued
 | Workflow | request_approval |
 | Workspace | http_request, list_workspace, execute_code, delete_file |
 | Memory | store_memory, recall_memory, recall_hive_memory |
+| Knowledge | search_knowledge |
 
 Native function calling for Claude/GPT models. Text-based `[TOOL:name]` fallback for DeepSeek/Perplexity.
 
@@ -92,9 +93,11 @@ Limits hit → tasks pause (stay `todo`), don't fail.
 | memory-compaction | 7 days | Compact agent memories >10KB |
 | nexus-retrospective | 7 days | Generate weekly performance review task |
 | weekly-bot-scan | 7 days | Scout researches bot opportunities |
+| db-backup | 24 hrs | Automated SQLite backup with 7-day retention |
 | + 9 more | various | Self-improvement, UX review, feature discovery |
+| scheduled-jobs | 1 min | User-configurable cron scheduler for recurring tasks |
 
-14 total heartbeats registered.
+15 total heartbeats registered + 1 cron scheduler.
 
 ## Database (SQLite — WAL mode, FK ON)
 
@@ -131,12 +134,15 @@ Limits hit → tasks pause (stay `todo`), don't fail.
 | guardrail_events | Blocked/warned tool call audit log |
 | mcp_servers | MCP server connection registry |
 | memory_embeddings | Semantic memory vectors per agent |
+| knowledge_documents | RAG document store with processing status |
+| knowledge_chunks | Chunked + embedded document segments |
+| scheduled_jobs | User-configurable cron job definitions |
 
-31 tables total, 11 performance indexes.
+34 tables total, 16 performance indexes.
 
 ## API Surface
 
-~145 endpoints across:
+~160 endpoints across:
 - `/api/agents`, `/api/tasks`, `/api/chat` — core CRUD + execution
 - `/api/spend`, `/api/settings`, `/api/analytics` — spend controls + analytics
 - `/api/graph`, `/api/intel`, `/api/commands` — graph, intel feed, NL commands
@@ -144,13 +150,17 @@ Limits hit → tasks pause (stay `todo`), don't fail.
 - `/api/memory`, `/api/traces/:id/otlp` — semantic memory, OTLP export
 - `/api/revenue`, `/api/pipelines`, `/api/triggers` — revenue, pipelines, webhooks
 - `/api/trading`, `/api/strategies`, `/api/backtests` — trading system
+- `/api/knowledge` — RAG knowledge base (upload, chunk, search)
+- `/api/scheduled-jobs` — cron-based recurring tasks
+- `/api/events/stream` — SSE real-time event bus
+- `/api/health` — health check with circuit breaker status
 - `/ap/v1/agent/tasks` — Agent Protocol standard API
 
 Auth: Bearer token on all `/api/*` and `/ap/*` routes.
 
-## Frontend Components (33)
+## Frontend Components (38)
 
-AgentCards, AgentGraph, AgentScorecard, ABTestPanel, BotGenerator, ChatPanel, CommandBar, CostTimeline, CreateTaskModal, DeliverablesPanel, EvalHarness, EventTriggers, HistoryPanel, IntelFeed, LiveTraceStream, MobileNav, PipelineBuilder, ProjectsPanel, PromptReviewModal, ProposalsPanel, RevenuePanel, SearchBar, Sidebar, SkillRegistry, SkillRegistryV2, SpendDashboard, TaskBoard, TaskDetail, Toast, TraceView, TradingDashboard
+AgentCards, AgentGraph, AgentScorecard, ABTestPanel, BotGenerator, ChatPanel, CommandBar, ConfirmDialog, CostTimeline, CreateTaskModal, DeliverablesPanel, ErrorBoundary, EvalHarness, EventTriggers, HistoryPanel, IntelFeed, KnowledgeBase, LiveTraceStream, MemoryDashboard, MobileNav, PipelineBuilder, ProjectsPanel, PromptReviewModal, ProposalsPanel, RevenuePanel, ScheduledJobs, SearchBar, Sidebar, Skeleton, SkillRegistry, SkillRegistryV2, SpendDashboard, TaskBoard, TaskDetail, Toast, TraceView, TradingDashboard
 
 ## Services
 

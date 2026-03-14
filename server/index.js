@@ -2,11 +2,12 @@ import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
+import crypto from 'node:crypto'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import db from './db.js'
 import { v4 as uuid } from 'uuid'
-import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync, statSync, copyFileSync, readdirSync, unlinkSync } from 'fs'
 import OpenAI from 'openai'
 import webpush from 'web-push'
 import archiver from 'archiver'
@@ -20,6 +21,69 @@ import sseRoutes from './routes/sse.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
+
+// ── Structured Logging ────────────────────────────
+const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 }
+const LOG_LEVEL = process.env.LOG_LEVEL || 'info'
+
+function log(level, message, meta = {}) {
+  if (LOG_LEVELS[level] < LOG_LEVELS[LOG_LEVEL]) return
+  const entry = {
+    ts: new Date().toISOString(),
+    level,
+    msg: message,
+    ...meta
+  }
+  const fn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log
+  fn(JSON.stringify(entry))
+}
+
+// ── Circuit Breaker for External APIs ─────────────
+class CircuitBreaker {
+  constructor(name, { threshold = 5, resetMs = 60000 } = {}) {
+    this.name = name
+    this.failures = 0
+    this.threshold = threshold
+    this.resetMs = resetMs
+    this.state = 'closed'
+    this.lastFailure = 0
+  }
+
+  async call(fn) {
+    if (this.state === 'open') {
+      if (Date.now() - this.lastFailure > this.resetMs) {
+        this.state = 'half-open'
+      } else {
+        throw new Error(`Circuit breaker "${this.name}" is open — service unavailable, retry after ${Math.ceil((this.resetMs - (Date.now() - this.lastFailure)) / 1000)}s`)
+      }
+    }
+
+    try {
+      const result = await fn()
+      if (this.state === 'half-open') {
+        this.state = 'closed'
+        this.failures = 0
+      }
+      return result
+    } catch (e) {
+      this.failures++
+      this.lastFailure = Date.now()
+      if (this.failures >= this.threshold) {
+        this.state = 'open'
+        log('warn', 'circuit_breaker_opened', { name: this.name, failures: this.failures })
+      }
+      throw e
+    }
+  }
+
+  get status() { return { name: this.name, state: this.state, failures: this.failures } }
+}
+
+const breakers = {
+  openrouter: new CircuitBreaker('openrouter', { threshold: 5, resetMs: 60000 }),
+  alpaca: new CircuitBreaker('alpaca', { threshold: 3, resetMs: 120000 }),
+  yahoo: new CircuitBreaker('yahoo', { threshold: 5, resetMs: 60000 }),
+}
 
 // ── Security headers ─────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false })) // CSP off — SPA serves its own scripts
@@ -70,6 +134,32 @@ function getAgentModel(agentId) {
   return AGENT_MODELS[agentId] || 'anthropic/claude-sonnet-4-5'
 }
 
+// Cost-aware model routing — downgrades expensive models when agent approaches budget
+const MODEL_FALLBACKS = {
+  'anthropic/claude-sonnet-4-5': 'anthropic/claude-haiku-4-5',
+  'anthropic/claude-haiku-4-5': 'anthropic/claude-haiku-4-5',
+  'perplexity/sonar-pro': 'perplexity/sonar-pro',
+  'deepseek/deepseek-r1': 'deepseek/deepseek-r1',
+}
+
+function getSmartModel(agentId) {
+  const baseModel = AGENT_MODELS[agentId] || 'anthropic/claude-haiku-4-5'
+
+  const today = new Date().toISOString().slice(0, 10)
+  const agentSpend = db.prepare("SELECT COALESCE(SUM(cost), 0) as total FROM spend_log WHERE agent_id = ? AND date = ?").get(agentId, today)
+  const dailyLimit = parseFloat(db.prepare("SELECT value FROM settings WHERE key = 'daily_limit_usd'").get()?.value || '5')
+  const agentLimit = dailyLimit / 6
+
+  const spendRatio = agentSpend.total / agentLimit
+
+  if (spendRatio > 0.8 && MODEL_FALLBACKS[baseModel] !== baseModel) {
+    log('info', 'model_downgraded', { agentId, from: baseModel, to: MODEL_FALLBACKS[baseModel], spendRatio: Math.round(spendRatio * 100) })
+    return MODEL_FALLBACKS[baseModel]
+  }
+
+  return baseModel
+}
+
 // Models that support native function calling via OpenRouter
 const SUPPORTS_FUNCTION_CALLING = {
   'anthropic/claude-sonnet-4-5': true,
@@ -118,6 +208,7 @@ function getMonthSpend() {
 function logSpend(agentId, tokensIn, tokensOut, cost, taskId) {
   const today = new Date().toISOString().slice(0, 10)
   db.prepare('INSERT INTO spend_log (date, agent_id, tokens_in, tokens_out, cost, task_id) VALUES (?, ?, ?, ?, ?, ?)').run(today, agentId, tokensIn, tokensOut, cost, taskId)
+  traceBus.emit('spend:update', { agent_id: agentId, cost })
 }
 
 function checkSpendLimit(agentId) {
@@ -150,58 +241,77 @@ function flattenContent(content) {
 }
 
 // Wrapped LLM call that tracks spend (OpenRouter via OpenAI SDK)
-async function callClaude(opts, agentId, taskId, signal) {
+async function callClaude(opts, agentId, taskId, externalSignal) {
   checkSpendLimit(agentId)
 
-  // Convert Anthropic message format → OpenAI messages array
-  const messages = []
-  if (opts.system) {
-    messages.push({ role: 'system', content: flattenContent(opts.system) })
-  }
-  for (const msg of (opts.messages || [])) {
-    messages.push({ role: msg.role, content: flattenContent(msg.content) })
-  }
+  // 5-minute timeout via AbortController
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 300000)
 
-  const createOpts = {
-    model: opts.model,
-    messages,
-    max_tokens: opts.max_tokens,
+  // If caller provided an external signal, abort our controller when it fires
+  if (externalSignal) {
+    if (externalSignal.aborted) { clearTimeout(timeout); controller.abort(); }
+    else externalSignal.addEventListener('abort', () => controller.abort(), { once: true })
   }
 
-  // Native function calling for supported models
-  if (opts.tools && opts.tools.length > 0 && SUPPORTS_FUNCTION_CALLING[opts.model]) {
-    createOpts.tools = opts.tools
-    createOpts.tool_choice = 'auto'
-  }
+  try {
+    // Convert Anthropic message format → OpenAI messages array
+    const messages = []
+    if (opts.system) {
+      messages.push({ role: 'system', content: flattenContent(opts.system) })
+    }
+    for (const msg of (opts.messages || [])) {
+      messages.push({ role: msg.role, content: flattenContent(msg.content) })
+    }
 
-  const response = await openai.chat.completions.create(createOpts, signal ? { signal } : undefined)
+    const createOpts = {
+      model: opts.model,
+      messages,
+      max_tokens: opts.max_tokens,
+    }
 
-  const tokensIn = response.usage?.prompt_tokens || 0
-  const tokensOut = response.usage?.completion_tokens || 0
-  const pricing = MODEL_COSTS[opts.model] || DEFAULT_COST
-  const cost = (tokensIn * pricing.input) + (tokensOut * pricing.output)
+    // Native function calling for supported models
+    if (opts.tools && opts.tools.length > 0 && SUPPORTS_FUNCTION_CALLING[opts.model]) {
+      createOpts.tools = opts.tools
+      createOpts.tool_choice = 'auto'
+    }
 
-  logSpend(agentId, tokensIn, tokensOut, cost, taskId)
+    const response = await breakers.openrouter.call(() => openai.chat.completions.create(createOpts, { signal: controller.signal }))
 
-  if (taskId) {
-    db.prepare('UPDATE tasks SET tokens_used = tokens_used + ?, estimated_cost = estimated_cost + ? WHERE id = ?')
-      .run(tokensIn + tokensOut, cost, taskId)
-  }
+    const tokensIn = response.usage?.prompt_tokens || 0
+    const tokensOut = response.usage?.completion_tokens || 0
+    const pricing = MODEL_COSTS[opts.model] || DEFAULT_COST
+    const cost = (tokensIn * pricing.input) + (tokensOut * pricing.output)
 
-  const msg = response.choices?.[0]?.message || {}
+    logSpend(agentId, tokensIn, tokensOut, cost, taskId)
 
-  // Parse native tool_calls if present
-  const nativeToolCalls = (msg.tool_calls || []).map(tc => ({
-    name: tc.function?.name,
-    args: (() => { try { return JSON.parse(tc.function?.arguments || '{}') } catch { return {} } })(),
-    raw: `${tc.function?.name}(${tc.function?.arguments || '{}'})`,
-    native: true,
-  })).filter(tc => tc.name)
+    if (taskId) {
+      db.prepare('UPDATE tasks SET tokens_used = tokens_used + ?, estimated_cost = estimated_cost + ? WHERE id = ?')
+        .run(tokensIn + tokensOut, cost, taskId)
+    }
 
-  return {
-    content: [{ type: 'text', text: msg.content || '' }],
-    usage: { input_tokens: tokensIn, output_tokens: tokensOut },
-    nativeToolCalls,
+    const msg = response.choices?.[0]?.message || {}
+
+    // Parse native tool_calls if present
+    const nativeToolCalls = (msg.tool_calls || []).map(tc => ({
+      name: tc.function?.name,
+      args: (() => { try { return JSON.parse(tc.function?.arguments || '{}') } catch { return {} } })(),
+      raw: `${tc.function?.name}(${tc.function?.arguments || '{}'})`,
+      native: true,
+    })).filter(tc => tc.name)
+
+    return {
+      content: [{ type: 'text', text: msg.content || '' }],
+      usage: { input_tokens: tokensIn, output_tokens: tokensOut },
+      nativeToolCalls,
+    }
+  } catch (err) {
+    if (err.name === 'AbortError' || err.message?.includes('aborted')) {
+      throw new Error(`LLM_TIMEOUT: ${opts.model} call for ${agentId} timed out after 5 minutes`)
+    }
+    throw err
+  } finally {
+    clearTimeout(timeout)
   }
 }
 
@@ -312,49 +422,49 @@ const TOOL_REGISTRY = [
       strategyId: { type: 'string', required: false, description: 'Strategy ID for attribution' }
     },
     agents: ['oracle'],
-    execute: async (args) => await broker.placeOrder(args)
+    execute: async (args) => await breakers.alpaca.call(() => broker.placeOrder(args))
   },
   {
     name: 'get_positions',
     description: 'Get all open positions with P&L',
     params: {},
     agents: ['oracle'],
-    execute: async () => await broker.getPositions()
+    execute: async () => await breakers.alpaca.call(() => broker.getPositions())
   },
   {
     name: 'get_account',
     description: 'Get account info: equity, buying power, cash, day P&L',
     params: {},
     agents: ['oracle'],
-    execute: async () => await broker.getAccount()
+    execute: async () => await breakers.alpaca.call(() => broker.getAccount())
   },
   {
     name: 'close_position',
     description: 'Close a specific open position',
     params: { symbol: { type: 'string', required: true, description: 'Ticker to close' } },
     agents: ['oracle'],
-    execute: async (args) => await broker.closePosition(args.symbol)
+    execute: async (args) => await breakers.alpaca.call(() => broker.closePosition(args.symbol))
   },
   {
     name: 'close_all_positions',
     description: 'Close ALL open positions immediately',
     params: {},
     agents: ['oracle'],
-    execute: async () => await broker.closeAllPositions()
+    execute: async () => await breakers.alpaca.call(() => broker.closeAllPositions())
   },
   {
     name: 'is_market_open',
     description: 'Check if US stock market is currently open',
     params: {},
     agents: ['oracle'],
-    execute: async () => await broker.isMarketOpen()
+    execute: async () => await breakers.alpaca.call(() => broker.isMarketOpen())
   },
   {
     name: 'get_orders',
     description: 'Get recent orders with status',
     params: { status: { type: 'string', required: false, description: 'Filter: open, closed, all (default: all)' } },
     agents: ['oracle'],
-    execute: async (args) => await broker.getOrders(args.status || 'all')
+    execute: async (args) => await breakers.alpaca.call(() => broker.getOrders(args.status || 'all'))
   },
   {
     name: 'analyze_symbol',
@@ -520,9 +630,12 @@ const TOOL_REGISTRY = [
     },
     agents: ['dealer', 'quill'],
     execute: async (args) => {
+      const sanitize = (str) => String(str || '').replace(/[\r\n]/g, ' ').trim()
+      const to = sanitize(args.to)
+      const subject = sanitize(args.subject)
       try {
-        await email.sendCustomEmail(args.to, args.subject, args.body)
-        return { sent: true, to: args.to, subject: args.subject }
+        await email.sendCustomEmail(to, subject, args.body)
+        return { sent: true, to, subject }
       } catch (e) {
         return { sent: false, error: e.message }
       }
@@ -699,7 +812,15 @@ const TOOL_REGISTRY = [
           timeout: 10000,
           maxBuffer: 1024 * 1024,
           encoding: 'utf-8',
-          env: { ...process.env, NODE_NO_WARNINGS: '1' }
+          env: {
+            PATH: process.env.PATH,
+            NODE_PATH: process.env.NODE_PATH,
+            HOME: wsRoot,
+            NODE_NO_WARNINGS: '1',
+            HTTP_PROXY: 'http://0.0.0.0:1',
+            HTTPS_PROXY: 'http://0.0.0.0:1',
+            NO_PROXY: '',
+          }
         })
         return { stdout: (result || '').slice(0, 10000), exitCode: 0 }
       } catch (e) {
@@ -730,6 +851,20 @@ const TOOL_REGISTRY = [
       } catch (e) {
         return { error: e.message }
       }
+    }
+  },
+  {
+    name: 'search_knowledge',
+    description: 'Search the knowledge base for relevant information on a topic',
+    params: {
+      query: { type: 'string', description: 'Search query', required: true },
+      top_k: { type: 'number', description: 'Number of results (default 5)', required: false }
+    },
+    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus'],
+    execute: async (args) => {
+      if (!args.query) return { error: 'query is required' }
+      const results = await searchKnowledge(args.query, args.top_k || 5)
+      return { results: results.map(r => ({ content: r.content, score: r.score })) }
     }
   }
 ]
@@ -980,7 +1115,7 @@ async function updateAgentMemory(agent, task, output) {
     const currentMemory = readAgentMemory(agent.id)
 
     const response = await callClaude({
-      model: getAgentModel(agent.id),
+      model: getSmartModel(agent.id),
       max_tokens: 1024,
       system: `You are a memory curator for ${agent.name} (${agent.role}). Extract the most important learnings, decisions, and context from completed work that would help this agent perform better on future tasks.
 
@@ -1037,7 +1172,7 @@ async function processAgentQueue(agentId) {
       return
     }
 
-    console.log(`📋 Queue: auto-running "${nextTask.title}" for ${agentId}`)
+    log('info', 'queue_auto_run', { taskId: nextTask.id, agentId, title: nextTask.title })
 
     try {
       const PORT = process.env.API_PORT || process.env.PORT || 3002
@@ -1047,12 +1182,12 @@ async function processAgentQueue(agentId) {
       if (!resp.ok) {
         // Mark task as failed to prevent infinite retry loop
         const errText = await resp.text().catch(() => 'unknown error')
-        console.error(`Queue auto-run failed for "${nextTask.title}": ${resp.status} ${errText.slice(0, 200)}`)
+        log('error', 'queue_auto_run_failed', { taskId: nextTask.id, agentId, title: nextTask.title, status: resp.status, error: errText.slice(0, 200) })
         db.prepare("UPDATE tasks SET status = 'failed', error = ?, updated_at = datetime('now') WHERE id = ? AND status = 'todo'")
           .run(`Queue auto-run failed: ${resp.status}`, nextTask.id)
       }
     } catch (e) {
-      console.error('Queue auto-run failed:', e.message)
+      log('error', 'queue_auto_run_failed', { agentId, error: e.message })
     }
   } finally {
     agentQueues.set(agentId, { processing: false })
@@ -1081,7 +1216,7 @@ async function agentConsult(fromAgent, toAgentId, question, taskContext) {
     const toMemory = readAgentMemory(toAgentId)
 
     const response = await callClaude({
-      model: getAgentModel(toAgentId),
+      model: getSmartModel(toAgentId),
       max_tokens: 1024,
       system: `${toAgent.systemPrompt}
 
@@ -1111,7 +1246,7 @@ ${toMemory.slice(-1500) || '(no prior knowledge)'}`,
 
     return answer
   } catch (err) {
-    console.error(`Consultation ${fromAgent.id} → ${toAgentId} failed:`, err.message)
+    log('error', 'consultation_failed', { fromAgent: fromAgent.id, toAgent: toAgentId, error: err.message })
     return null
   }
 }
@@ -1131,7 +1266,7 @@ async function generateFollowUpTasks(completedTask, agent, output) {
     const taskContext = allTasks.map(t => `- [${t.status}] ${t.title}`).join('\n')
 
     const response = await callClaude({
-      model: getAgentModel('nexus'),
+      model: getSmartModel('nexus'),
       max_tokens: 300,
       system: `You are a task planner for Hive, an AI agent team. Generate exactly 1 follow-up task.
 
@@ -1194,7 +1329,52 @@ Generate 1 follow-up task:`
     console.log(`🧠 Follow-up: "${t.title}" → ${validAgent.name}`)
     setTimeout(() => processAgentQueue(t.agent_id), 5000)
   } catch (err) {
-    console.error('Auto-task generation failed:', err.message)
+    log('error', 'auto_task_generation_failed', { taskId: task.id, agentId: agent.id, error: err.message })
+  }
+}
+
+// ── Cross-Session Task Chains (Auto Follow-Up Scheduling) ──
+async function checkAutoChain(completedTask, output) {
+  try {
+    if (!output || output.length < 100) return
+
+    const chainPatterns = [
+      { match: /research|discover|find|scan/i, followAgent: 'quill', prefix: 'Write content about' },
+      { match: /write|content|blog|post/i, followAgent: 'dealer', prefix: 'Promote and distribute' },
+      { match: /build|create|develop|code/i, followAgent: 'quill', prefix: 'Write documentation for' },
+      { match: /analyze|analysis|review/i, followAgent: 'forge', prefix: 'Build tool based on' },
+    ]
+
+    const title = completedTask.title || ''
+    const matchedPattern = chainPatterns.find(p => p.match.test(title))
+    if (!matchedPattern) return
+
+    const autoChainEnabled = getSetting('auto_chain_enabled')
+    if (autoChainEnabled === 'false') return
+
+    const pendingCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status IN ('backlog','todo')").get(matchedPattern.followAgent)
+    if (pendingCount.c > 5) return
+
+    const chainId = uuid()
+    const chainTitle = `${matchedPattern.prefix}: ${title.slice(0, 80)}`
+    const chainDesc = `Auto-chained from task ${completedTask.id}.\n\nPrevious output summary:\n${output.slice(0, 2000)}`
+
+    db.prepare("INSERT INTO tasks (id, title, description, agent_id, status, spawned_by) VALUES (?, ?, ?, ?, 'backlog', ?)")
+      .run(chainId, chainTitle, chainDesc, matchedPattern.followAgent, completedTask.id)
+
+    log('info', 'auto_chain_created', {
+      sourceTask: completedTask.id,
+      chainTask: chainId,
+      fromAgent: completedTask.agent_id,
+      toAgent: matchedPattern.followAgent
+    })
+
+    db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+      .run('system', '🔗 Auto-Chain', '🔗', '#06b6d4', `Chained: ${chainTitle} → ${matchedPattern.followAgent}`)
+
+    traceBus.emit('task:update', { id: chainId, status: 'backlog', agent_id: matchedPattern.followAgent })
+  } catch (err) {
+    log('error', 'auto_chain_failed', { taskId: completedTask.id, error: err.message })
   }
 }
 
@@ -1283,7 +1463,7 @@ async function reviewCompletedWork(completedTask, agent, output) {
       : 'NO TOOLS USED — text-only output'
 
     const response = await callClaude({
-      model: getAgentModel('nexus'),
+      model: getSmartModel('nexus'),
       max_tokens: 2048,
       system: `You are Nexus, the quality reviewer for Hive. You evaluate agent work PRIMARILY on whether they used tools to produce REAL results.
 
@@ -1375,9 +1555,9 @@ ${output.slice(0, 4000)}`
       }
     }
 
-    console.log(`🛡️ Nexus reviewed "${completedTask.title}": ${verdict} ${score ? `(${score}/10)` : ''}`)
+    log('info', 'qa_review_completed', { taskId: completedTask.id, title: completedTask.title, verdict, score })
   } catch (err) {
-    console.error('QA review failed:', err.message)
+    log('error', 'qa_review_failed', { taskId: completedTask.id, error: err.message })
   }
 }
 
@@ -1401,7 +1581,7 @@ async function troubleshootAndRetry(failedTask, agent, errorMsg) {
       .run(failedTask.id, 'system', `Troubleshooting failure (attempt ${retries + 1}/${MAX_RETRIES})...`, 'info')
 
     const response = await callClaude({
-      model: getAgentModel('nexus'),
+      model: getSmartModel('nexus'),
       max_tokens: 1024,
       system: `You are a troubleshooter for Hive, a personal AI agent team. A task just failed. Your job is to:
 1. Diagnose WHY it failed based on the error message and logs
@@ -1458,7 +1638,7 @@ ${logContext.slice(0, 2000)}`
 
     console.log(`🔧 Troubleshot "${failedTask.title}": ${diagnosis.retryable ? 'retrying' : 'needs manual fix'}`)
   } catch (err) {
-    console.error('Troubleshooting failed:', err.message)
+    log('error', 'troubleshooting_failed', { taskId: failedTask.id, error: err.message })
   }
 }
 
@@ -1468,6 +1648,24 @@ ${logContext.slice(0, 2000)}`
 // ══════════════════════════════════════════════════════
 
 const heartbeatJobs = []
+
+function notifyHeartbeatError(name, error) {
+  log('error', 'heartbeat_failed', { heartbeat: name, error: error.message })
+  try {
+    db.prepare("INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)")
+      .run('system', 'nexus', `Heartbeat "${name}" failed: ${error.message}`, 'error')
+  } catch {}
+  try {
+    const sub = db.prepare("SELECT value FROM settings WHERE key = 'push_subscription'").get()
+    if (sub?.value) {
+      const subscription = JSON.parse(sub.value)
+      webpush.sendNotification(subscription, JSON.stringify({
+        title: `Heartbeat Failed: ${name}`,
+        body: error.message.slice(0, 200)
+      })).catch(() => {})
+    }
+  } catch {}
+}
 
 function registerHeartbeat(name, intervalMs, fn) {
   const id = setInterval(fn, intervalMs)
@@ -1505,7 +1703,7 @@ registerHeartbeat('memory-compaction', 7 * 24 * 60 * 60 * 1000, async () => {
         writeAgentMemory(agent.id, compacted)
         console.log(`🧹 Compacted memory for ${agent.name}: ${memory.length} → ${compacted.length} chars`)
       } catch (e) {
-        console.error(`Memory compaction failed for ${agent.name}:`, e.message)
+        notifyHeartbeatError(`memory-compaction:${agent.name}`, e)
       }
     }
   }
@@ -1532,7 +1730,7 @@ registerHeartbeat('nexus-retrospective', 7 * 24 * 60 * 60 * 1000, async () => {
     setTimeout(() => processAgentQueue('nexus'), 3000)
     console.log('💓 Weekly retrospective queued for Nexus')
   } catch (e) {
-    console.error('Weekly retrospective failed:', e.message)
+    notifyHeartbeatError('nexus-retrospective', e)
   }
 })
 
@@ -1548,7 +1746,7 @@ registerHeartbeat('bot-opportunity-scan', 7 * 24 * 60 * 60 * 1000, async () => {
     setTimeout(() => processAgentQueue('scout'), 3000)
     console.log('💓 Bot opportunity scan queued for Scout')
   } catch (e) {
-    console.error('Bot opportunity scan failed:', e.message)
+    notifyHeartbeatError('bot-opportunity-scan', e)
   }
 })
 
@@ -1571,7 +1769,7 @@ app.get('/api/agents', (req, res) => {
       },
       isRunning: activeRuns.has(agent.id),
       hasMemory: readAgentMemory(agent.id).length > 0,
-      model: getAgentModel(agent.id),
+      model: getSmartModel(agent.id),
       todaySpend: getTodaySpend(agent.id),
     }
   })
@@ -1615,8 +1813,30 @@ app.post('/api/agents/:fromId/consult/:toId', async (req, res) => {
 
 // ── Tasks CRUD ─────────────────────────────────────
 app.get('/api/tasks', (req, res) => {
-  const tasks = db.prepare('SELECT * FROM tasks ORDER BY created_at DESC').all()
-  res.json(tasks)
+  const { page, limit: rawLimit, status, agent_id, search } = req.query
+
+  // Build WHERE clauses
+  const conditions = []
+  const params = []
+  if (status) { conditions.push('status = ?'); params.push(status) }
+  if (agent_id) { conditions.push('agent_id = ?'); params.push(agent_id) }
+  if (search) { conditions.push('(title LIKE ? OR description LIKE ?)'); params.push(`%${search}%`, `%${search}%`) }
+  const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : ''
+
+  // If no page param, return all (capped at 500) for backwards compat
+  if (!page) {
+    const tasks = db.prepare(`SELECT * FROM tasks ${where} ORDER BY created_at DESC LIMIT 500`).all(...params)
+    return res.json(tasks)
+  }
+
+  const limit = Math.min(Math.max(parseInt(rawLimit) || 50, 1), 200)
+  const pageNum = Math.max(parseInt(page) || 1, 1)
+  const offset = (pageNum - 1) * limit
+
+  const total = db.prepare(`SELECT COUNT(*) as c FROM tasks ${where}`).get(...params).c
+  const tasks = db.prepare(`SELECT * FROM tasks ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset)
+
+  res.json({ tasks, total, page: pageNum, limit, hasMore: offset + tasks.length < total })
 })
 
 app.post('/api/tasks', (req, res) => {
@@ -1630,6 +1850,8 @@ app.post('/api/tasks', (req, res) => {
 
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id)
   res.status(201).json(task)
+
+  traceBus.emit('task:update', { id, status: agent_id ? 'todo' : 'backlog', agent_id: agent_id || null })
 
   if (agent_id) {
     setTimeout(() => processAgentQueue(agent_id), 2000)
@@ -1657,6 +1879,10 @@ app.patch('/api/tasks/:id', (req, res) => {
   db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id)
   res.json(task)
+
+  if (fields.status) {
+    traceBus.emit('task:update', { id, status: fields.status, agent_id: task.agent_id })
+  }
 })
 
 app.delete('/api/tasks/:id', (req, res) => {
@@ -1703,6 +1929,8 @@ app.post('/api/tasks/:id/reject-continue', async (req, res) => {
   db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
     .run(task.id, task.agent_id, 'Rejected — task cancelled', 'error')
   activeRuns.delete(task.agent_id)
+  traceBus.emit('task:update', { id: task.id, status: 'failed', agent_id: task.agent_id })
+  traceBus.emit('agent:status', { agent_id: task.agent_id, status: 'idle' })
   res.json({ ok: true })
 })
 
@@ -1720,7 +1948,7 @@ app.post('/api/tasks/:id/optimize', async (req, res) => {
 
   try {
     const response = await callClaude({
-      model: getAgentModel('nexus'),
+      model: getSmartModel('nexus'),
       max_tokens: 1024,
       system: `You are Nexus, prompt optimizer for Hive's AI agent team. Your job is to rewrite task prompts so they are clearer, more structured, and easier for an AI agent to execute — saving tokens and improving output quality.
 
@@ -1801,12 +2029,16 @@ app.post('/api/tasks/:id/run', async (req, res) => {
   const abortController = new AbortController()
   activeRuns.set(agent.id, { taskId: task.id, abort: abortController })
 
+  traceBus.emit('task:update', { id: task.id, status: 'in_progress', agent_id: agent.id })
+  traceBus.emit('agent:status', { agent_id: agent.id, status: 'active', task_id: task.id })
+
   res.json({ ok: true, message: `Agent ${agent.name} is working on it` })
 
   // ── ReAct Loop (with tool execution) ─────────────
   try {
     const agentMemory = readAgentMemory(agent.id)
-    const MAX_STEPS = 8
+    const MAX_STEPS = parseInt(db.prepare("SELECT value FROM settings WHERE key = 'max_react_steps'").get()?.value || '8')
+    const STEP_TIMEOUT = parseInt(db.prepare("SELECT value FROM settings WHERE key = 'step_timeout_ms'").get()?.value || '300000')
     const MAX_TOOLS_PER_STEP = 5
     let messages = []
     let fullOutput = ''
@@ -1814,7 +2046,7 @@ app.post('/api/tasks/:id/run', async (req, res) => {
     const toolUsageCounts = {}
 
     const toolsPrompt = buildToolsPrompt(agent.id)
-    const agentModel = getAgentModel(agent.id)
+    const agentModel = getSmartModel(agent.id)
     const toolsSchema = SUPPORTS_FUNCTION_CALLING[agentModel] ? buildToolsSchema(agent.id) : null
 
     // ── Checkpoint restore: resume from last saved state if available ──
@@ -1827,11 +2059,11 @@ app.post('/api/tasks/:id/run', async (req, res) => {
         Object.assign(toolUsageCounts, JSON.parse(lastCheckpoint.tool_counts_json || '{}'))
         totalToolCalls = Object.values(toolUsageCounts).reduce((a, b) => a + b, 0)
         startStep = lastCheckpoint.step + 1
-        console.log(`♻️ ${agent.name}: resuming from checkpoint step ${lastCheckpoint.step}`)
+        log('info', 'checkpoint_resume', { taskId: task.id, agentId: agent.id, step: lastCheckpoint.step })
         db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
           .run(task.id, agent.id, `Resuming from checkpoint (step ${lastCheckpoint.step})`, 'info')
       } catch (e) {
-        console.error(`Checkpoint restore failed for ${task.id}:`, e.message)
+        log('error', 'checkpoint_restore_failed', { taskId: task.id, error: e.message })
         startStep = 0
       }
     }
@@ -1903,14 +2135,33 @@ START WITH TOOL CALLS NOW.`
         ? '\n\n## Skills\n' + skillsV2.map(s => s.skill_md).join('\n\n---\n\n')
         : ''
 
+      // RAG: inject relevant knowledge base context on step 0
+      let knowledgeContext = ''
+      if (step === startStep) {
+        try {
+          const knowledgeResults = await searchKnowledge(task.description || task.title, 3)
+          if (knowledgeResults.length > 0) {
+            knowledgeContext = '\n\n## Relevant Knowledge Base Context\n' + knowledgeResults.map(r => r.content).join('\n\n---\n\n')
+          }
+        } catch (e) {
+          console.error('Knowledge retrieval failed:', e.message)
+        }
+      }
+
       const traceStart = Date.now()
-      const response = await callClaude({
-        model: agentModel,
-        max_tokens: 4096,
-        system: agent.systemPrompt + toolsPrompt + skillsContext,
-        messages,
-        tools: toolsSchema || undefined,
-      }, agent.id, task.id, abortController.signal)
+      const stepTimeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`Step ${step + 1} timed out after ${STEP_TIMEOUT}ms`)), STEP_TIMEOUT)
+      )
+      const response = await Promise.race([
+        callClaude({
+          model: agentModel,
+          max_tokens: 4096,
+          system: agent.systemPrompt + toolsPrompt + skillsContext + knowledgeContext,
+          messages,
+          tools: toolsSchema || undefined,
+        }, agent.id, task.id, abortController.signal),
+        stepTimeoutPromise
+      ])
 
       const traceDuration = Date.now() - traceStart
       const traceTokensIn = response.usage?.input_tokens || 0
@@ -1944,7 +2195,7 @@ START WITH TOOL CALLS NOW.`
       if (toolCalls.length > 0) {
         const nativeCount = nativeCalls.length
         const textCount = toolCalls.length - nativeCount
-        console.log(`🔧 ${agent.name} step ${step+1}: ${toolCalls.length} tool call(s) [${nativeCount} native, ${textCount} text]: ${toolCalls.map(t => t.name).join(', ')}`)
+        log('info', 'tool_calls_parsed', { agentId: agent.id, taskId: task.id, step: step+1, total: toolCalls.length, native: nativeCount, text: textCount, tools: toolCalls.map(t => t.name) })
       } else if (stepOutput.includes('TOOL') || stepOutput.includes('tool')) {
         console.log(`⚠️ ${agent.name} step ${step+1}: output mentions 'tool' but no calls parsed. First 300 chars: ${stepOutput.slice(0, 300)}`)
       }
@@ -1991,6 +2242,8 @@ START WITH TOOL CALLS NOW.`
         if (taskStatus?.status === 'paused') {
           console.log(`⏸️ ${agent.name}: task paused by request_approval — stopping execution`)
           activeRuns.delete(agent.id)
+          traceBus.emit('task:update', { id: task.id, status: 'paused', agent_id: agent.id })
+          traceBus.emit('agent:status', { agent_id: agent.id, status: 'idle' })
           return
         }
         continue
@@ -2041,6 +2294,7 @@ START WITH TOOL CALLS NOW.`
     }
 
     activeRuns.delete(agent.id)
+    traceBus.emit('agent:status', { agent_id: agent.id, status: 'idle' })
     // Clean up checkpoints on successful completion
     db.prepare('DELETE FROM task_checkpoints WHERE task_id = ?').run(task.id)
 
@@ -2059,6 +2313,7 @@ START WITH TOOL CALLS NOW.`
     db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
       .run(task.id, agent.id, 'Task completed successfully', 'success')
 
+    traceBus.emit('task:update', { id: task.id, status: 'done', agent_id: agent.id })
     traceBus.emitTrace({
       agent_id: agent.id, task_id: task.id, event_type: 'DECISION',
       payload: { content: 'Task completed', step: 'final' }
@@ -2165,6 +2420,7 @@ START WITH TOOL CALLS NOW.`
         const autoTasksEnabled = getSetting('auto_tasks_enabled') !== 'false'
         return autoTasksEnabled ? generateFollowUpTasks(task, agent, fullOutput) : null
       })
+      .then(() => checkAutoChain(task, fullOutput))
       .then(() => {
         // Extract discovered skills from Scout discovery tasks → create proposals
         if (task.agent_id === 'scout' && task.title.startsWith('Discover skills:')) {
@@ -2189,12 +2445,14 @@ START WITH TOOL CALLS NOW.`
 
   } catch (err) {
     activeRuns.delete(agent.id)
+    traceBus.emit('agent:status', { agent_id: agent.id, status: 'idle' })
     const errorMsg = err.name === 'AbortError' || err.message === 'AbortError' ? 'Stopped by user' : err.message
     db.prepare(`UPDATE tasks SET status = 'failed', error = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
       .run(errorMsg, task.id)
     db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
       .run(task.id, agent.id, `Task failed: ${errorMsg}`, 'error')
 
+    traceBus.emit('task:update', { id: task.id, status: 'failed', agent_id: agent.id })
     traceBus.emitTrace({
       agent_id: agent.id, task_id: task.id, event_type: 'ERROR',
       payload: { error: errorMsg }
@@ -2242,6 +2500,9 @@ app.post('/api/agents/:id/stop', (req, res) => {
 
   db.prepare("UPDATE tasks SET status = 'failed', error = 'Stopped by user', completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
     .run(entry.taskId)
+
+  traceBus.emit('task:update', { id: entry.taskId, status: 'failed', agent_id: req.params.id })
+  traceBus.emit('agent:status', { agent_id: req.params.id, status: 'idle' })
 
   res.json({ ok: true })
 })
@@ -2366,51 +2627,105 @@ app.delete('/api/bot-suggestions/:id', (req, res) => {
 // ══════════════════════════════════════════════════════
 
 app.get('/api/scorecards', (req, res) => {
-  const scorecards = agents.map(a => buildScorecard(a.id))
+  const scorecards = buildAllScorecards()
   res.json(scorecards)
 })
 
 app.get('/api/agents/:id/scorecard', (req, res) => {
   const agent = agents.find(a => a.id === req.params.id)
   if (!agent) return res.status(404).json({ error: 'Agent not found' })
-  res.json(buildScorecard(req.params.id))
+  const all = buildAllScorecards()
+  const card = all.find(s => s.agent_id === req.params.id)
+  res.json(card || buildScorecardFallback(req.params.id))
 })
 
-function buildScorecard(agentId) {
-  const done = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status = 'done'").get(agentId)?.c || 0
-  const failed = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status = 'failed'").get(agentId)?.c || 0
-  const inProgress = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status = 'in_progress'").get(agentId)?.c || 0
-  const todo = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status = 'todo'").get(agentId)?.c || 0
-  const successRate = (done + failed) > 0 ? Math.round((done / (done + failed)) * 100) : 0
+function buildAllScorecards() {
+  // Single aggregated query for all task stats — eliminates N+1
+  const taskStats = db.prepare(`
+    SELECT agent_id,
+      COUNT(CASE WHEN status = 'done' THEN 1 END) as done,
+      COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed,
+      COUNT(CASE WHEN status = 'in_progress' THEN 1 END) as in_progress,
+      COUNT(CASE WHEN status = 'todo' THEN 1 END) as todo,
+      AVG(CASE WHEN status = 'done' AND started_at IS NOT NULL AND completed_at IS NOT NULL
+        THEN CAST((julianday(completed_at) - julianday(started_at)) * 86400 AS INTEGER) END) as avg_duration,
+      AVG(CASE WHEN status = 'done' AND tokens_used > 0 THEN tokens_used END) as avg_tokens,
+      AVG(CASE WHEN status = 'done' AND estimated_cost > 0 THEN estimated_cost END) as avg_cost
+    FROM tasks WHERE agent_id IS NOT NULL GROUP BY agent_id
+  `).all()
+  const taskMap = Object.fromEntries(taskStats.map(r => [r.agent_id, r]))
 
-  const avgDuration = db.prepare("SELECT AVG(CAST((julianday(completed_at) - julianday(started_at)) * 86400 AS INTEGER)) as avg_sec FROM tasks WHERE agent_id = ? AND status = 'done' AND started_at IS NOT NULL AND completed_at IS NOT NULL").get(agentId)?.avg_sec || 0
-  const avgTokens = db.prepare("SELECT AVG(tokens_used) as avg FROM tasks WHERE agent_id = ? AND status = 'done' AND tokens_used > 0").get(agentId)?.avg || 0
-  const avgCost = db.prepare("SELECT AVG(estimated_cost) as avg FROM tasks WHERE agent_id = ? AND status = 'done' AND estimated_cost > 0").get(agentId)?.avg || 0
-  const totalSpend = db.prepare("SELECT COALESCE(SUM(cost), 0) as total FROM spend_log WHERE agent_id = ?").get(agentId)?.total || 0
+  // Single query for all agent spend
+  const spendStats = db.prepare(`
+    SELECT agent_id, COALESCE(SUM(cost), 0) as total FROM spend_log GROUP BY agent_id
+  `).all()
+  const spendMap = Object.fromEntries(spendStats.map(r => [r.agent_id, r.total]))
 
-  // QA pass rate from Nexus reviews
-  const qaTotal = db.prepare("SELECT COUNT(*) as c FROM task_logs WHERE agent_id = 'nexus' AND task_id IN (SELECT id FROM tasks WHERE agent_id = ?) AND (message LIKE '%PASS%' OR message LIKE '%FAIL%' OR message LIKE '%NEEDS WORK%')").get(agentId)?.c || 0
-  const qaPassed = db.prepare("SELECT COUNT(*) as c FROM task_logs WHERE agent_id = 'nexus' AND task_id IN (SELECT id FROM tasks WHERE agent_id = ?) AND message LIKE '%PASS%'").get(agentId)?.c || 0
-  const qaPassRate = qaTotal > 0 ? Math.round((qaPassed / qaTotal) * 100) : 100
+  // Single query for all QA reviews
+  const qaStats = db.prepare(`
+    SELECT t.agent_id,
+      COUNT(*) as qa_total,
+      COUNT(CASE WHEN tl.message LIKE '%PASS%' THEN 1 END) as qa_passed
+    FROM task_logs tl
+    JOIN tasks t ON tl.task_id = t.id
+    WHERE tl.agent_id = 'nexus'
+      AND (tl.message LIKE '%PASS%' OR tl.message LIKE '%FAIL%' OR tl.message LIKE '%NEEDS WORK%')
+    GROUP BY t.agent_id
+  `).all()
+  const qaMap = Object.fromEntries(qaStats.map(r => [r.agent_id, r]))
 
-  // 7-day trend
-  const weekTrend = db.prepare("SELECT date(completed_at) as date, COUNT(*) as count FROM tasks WHERE agent_id = ? AND status = 'done' AND completed_at >= date('now', '-7 days') GROUP BY date(completed_at) ORDER BY date ASC").all(agentId)
+  // Single query for all 7-day trends
+  const weekTrends = db.prepare(`
+    SELECT agent_id, date(completed_at) as date, COUNT(*) as count
+    FROM tasks WHERE status = 'done' AND completed_at >= date('now', '-7 days')
+    GROUP BY agent_id, date(completed_at) ORDER BY date ASC
+  `).all()
+  const trendMap = {}
+  for (const r of weekTrends) {
+    if (!trendMap[r.agent_id]) trendMap[r.agent_id] = []
+    trendMap[r.agent_id].push({ date: r.date, count: r.count })
+  }
 
-  // Revenue attribution
-  const revenue = db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM revenue_entries WHERE agent_id = ?").get(agentId)?.total || 0
+  // Single query for all revenue
+  const revenueStats = db.prepare(`
+    SELECT agent_id, COALESCE(SUM(amount), 0) as total FROM revenue_entries WHERE agent_id IS NOT NULL GROUP BY agent_id
+  `).all()
+  const revenueMap = Object.fromEntries(revenueStats.map(r => [r.agent_id, r.total]))
 
-  return {
-    agent_id: agentId,
-    tasks: { done, failed, in_progress: inProgress, todo, total: done + failed + inProgress + todo },
-    successRate,
-    avgDurationSec: Math.round(avgDuration),
-    avgTokens: Math.round(avgTokens),
-    avgCost: parseFloat(avgCost.toFixed(4)),
-    totalSpend: parseFloat(totalSpend.toFixed(4)),
-    qaPassRate,
-    weekTrend,
-    revenue: parseFloat(revenue.toFixed(2)),
-    roi: parseFloat((revenue - totalSpend).toFixed(2))
+  return agents.map(a => {
+    const ts = taskMap[a.id] || {}
+    const done = ts.done || 0
+    const failed = ts.failed || 0
+    const inProgress = ts.in_progress || 0
+    const todo = ts.todo || 0
+    const totalSpend = spendMap[a.id] || 0
+    const qa = qaMap[a.id] || {}
+    const qaPassRate = qa.qa_total > 0 ? Math.round((qa.qa_passed / qa.qa_total) * 100) : 100
+    const revenue = revenueMap[a.id] || 0
+
+    return {
+      agent_id: a.id,
+      tasks: { done, failed, in_progress: inProgress, todo, total: done + failed + inProgress + todo },
+      successRate: (done + failed) > 0 ? Math.round((done / (done + failed)) * 100) : 0,
+      avgDurationSec: Math.round(ts.avg_duration || 0),
+      avgTokens: Math.round(ts.avg_tokens || 0),
+      avgCost: parseFloat((ts.avg_cost || 0).toFixed(4)),
+      totalSpend: parseFloat(totalSpend.toFixed(4)),
+      qaPassRate,
+      weekTrend: trendMap[a.id] || [],
+      revenue: parseFloat(revenue.toFixed(2)),
+      roi: parseFloat((revenue - totalSpend).toFixed(2))
+    }
+  })
+}
+
+// Fallback for single agent not in agents.json
+function buildScorecardFallback(agentId) {
+  const all = buildAllScorecards()
+  return all.find(s => s.agent_id === agentId) || {
+    agent_id: agentId, tasks: { done: 0, failed: 0, in_progress: 0, todo: 0, total: 0 },
+    successRate: 0, avgDurationSec: 0, avgTokens: 0, avgCost: 0, totalSpend: 0,
+    qaPassRate: 100, weekTrend: [], revenue: 0, roi: 0
   }
 }
 
@@ -2511,6 +2826,33 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
   res.status(201).json({ taskId, pipeline: pipeline.name, totalSteps: steps.length })
 })
 
+// Pipeline Replay from Checkpoint
+app.post('/api/pipelines/:id/replay', authenticateRequest, async (req, res) => {
+  const { from_step = 0, modified_input = '' } = req.body
+  const pipeline = db.prepare('SELECT * FROM pipelines WHERE id = ?').get(req.params.id)
+  if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' })
+
+  let steps
+  try { steps = JSON.parse(pipeline.steps || '[]') } catch { steps = [] }
+  const sorted = steps.sort((a, b) => (a.position || 0) - (b.position || 0))
+  if (from_step >= sorted.length) return res.status(400).json({ error: 'Invalid step index' })
+
+  const replaySteps = sorted.slice(from_step)
+  const firstStep = replaySteps[0]
+  const id = uuid()
+  const description = modified_input || firstStep.prompt_template || ''
+
+  db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status, pipeline_id, pipeline_step) VALUES (?, ?, ?, 'high', ?, 'todo', ?, ?)`)
+    .run(id, `[Replay] ${pipeline.name} — Step ${from_step + 1}`, description, firstStep.agent_id, pipeline.id, firstStep.position || from_step + 1)
+
+  db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+    .run('system', '🔗 Pipeline', '🔗', '#8b5cf6', `Replaying pipeline "${pipeline.name}" from step ${from_step + 1} of ${sorted.length}`)
+
+  traceBus.emit('task:update', { id, status: 'todo', agent_id: firstStep.agent_id })
+  setTimeout(() => processAgentQueue(firstStep.agent_id), 2000)
+  res.json({ task_id: id, replay_from: from_step, total_steps: sorted.length })
+})
+
 // ══════════════════════════════════════════════════════
 // ██ Revenue Attribution                               ██
 // ══════════════════════════════════════════════════════
@@ -2599,14 +2941,31 @@ app.delete('/api/triggers/:id', (req, res) => {
   res.json({ ok: true })
 })
 
-// Webhook receiver (public — no auth, validates secret)
+// Webhook receiver (public — no auth, validates HMAC-SHA256 signature)
 app.post('/api/webhooks/:triggerId', (req, res) => {
   const trigger = db.prepare('SELECT * FROM event_triggers WHERE id = ? AND enabled = 1').get(req.params.triggerId)
   if (!trigger) return res.status(404).json({ error: 'Trigger not found or disabled' })
 
   const config = JSON.parse(trigger.config)
-  const secret = req.headers['x-webhook-secret']
-  if (config.secret && secret !== config.secret) return res.status(403).json({ error: 'Invalid secret' })
+
+  // HMAC-SHA256 validation when trigger has a secret configured
+  if (config.secret) {
+    const signature = req.headers['x-hub-signature-256']
+    if (!signature) return res.status(403).json({ error: 'Missing X-Hub-Signature-256 header' })
+
+    const body = JSON.stringify(req.body)
+    const expected = 'sha256=' + crypto.createHmac('sha256', config.secret).update(body).digest('hex')
+
+    try {
+      const sigBuf = Buffer.from(signature)
+      const expBuf = Buffer.from(expected)
+      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+        return res.status(403).json({ error: 'Invalid signature' })
+      }
+    } catch {
+      return res.status(403).json({ error: 'Invalid signature' })
+    }
+  }
 
   const action = JSON.parse(trigger.action)
   const payload = JSON.stringify(req.body).slice(0, 2000)
@@ -2648,7 +3007,7 @@ app.post('/api/tasks/:id/ab-test', async (req, res) => {
   if (!promptA || !promptB) return res.status(400).json({ error: 'Both promptA and promptB required' })
 
   try {
-    const abModel = getAgentModel(agent.id)
+    const abModel = getSmartModel(agent.id)
     const [responseA, responseB] = await Promise.all([
       callClaude({
         model: abModel,
@@ -3176,11 +3535,11 @@ registerHeartbeat('strategy-executor', 5 * 60 * 1000, async () => {
           }
         }
       } catch (e) {
-        console.error(`Strategy executor failed for deployment ${dep.id}:`, e.message)
+        log('error', 'strategy_executor_failed', { deploymentId: dep.id, error: e.message })
       }
     }
   } catch (e) {
-    console.error('Strategy executor heartbeat failed:', e.message)
+    notifyHeartbeatError('strategy-executor', e)
   }
 })
 
@@ -3190,7 +3549,7 @@ registerHeartbeat('order-sync', 5 * 60 * 1000, async () => {
     const result = await broker.syncOrderFills()
     if (result.synced > 0) console.log(`🔄 Synced ${result.synced} order fills`)
   } catch (e) {
-    console.error('Order sync failed:', e.message)
+    notifyHeartbeatError('order-sync', e)
   }
 })
 
@@ -3202,7 +3561,7 @@ registerHeartbeat('portfolio-snapshot', 60 * 60 * 1000, async () => {
     await broker.takePortfolioSnapshot()
     console.log('📸 Portfolio snapshot taken')
   } catch (e) {
-    console.error('Portfolio snapshot failed:', e.message)
+    notifyHeartbeatError('portfolio-snapshot', e)
   }
 })
 
@@ -3302,7 +3661,7 @@ Find 3-5 promising strategies with specific, testable rules. Prefer strategies w
     setTimeout(() => processAgentQueue('scout'), 3000)
     console.log(`💓 Strategy discovery queued — search: "${query.slice(0, 50)}..."`)
   } catch (e) {
-    console.error('Strategy discovery heartbeat failed:', e.message)
+    notifyHeartbeatError('strategy-discovery', e)
   }
 })
 
@@ -3408,7 +3767,7 @@ registerHeartbeat('auto-backtest', 2 * 60 * 60 * 1000, async () => {
       }
     }
   } catch (e) {
-    console.error('Auto-backtest heartbeat failed:', e.message)
+    notifyHeartbeatError('auto-backtest', e)
   }
 })
 
@@ -3471,7 +3830,7 @@ registerHeartbeat('paper-graduation', 6 * 60 * 60 * 1000, async () => {
       }
     }
   } catch (e) {
-    console.error('Paper graduation heartbeat failed:', e.message)
+    notifyHeartbeatError('paper-graduation', e)
   }
 })
 
@@ -3507,7 +3866,7 @@ Output your findings as a JSON array of proposals:
 Be specific and actionable. Focus on the highest-impact improvements.`)
     console.log('🎨 Created UX design review task')
     setTimeout(() => processAgentQueue('nexus'), 5000)
-  } catch (e) { console.error('UX review heartbeat failed:', e.message) }
+  } catch (e) { notifyHeartbeatError('ux-design-review', e) }
 })
 
 // Feature Discovery — Scout researches competing dashboards weekly
@@ -3536,7 +3895,7 @@ Output your findings as a JSON array of proposals:
 Focus on features that would make Hive more powerful and useful. Be creative but practical.`)
     console.log('🔍 Created feature discovery task')
     setTimeout(() => processAgentQueue('scout'), 5000)
-  } catch (e) { console.error('Feature discovery heartbeat failed:', e.message) }
+  } catch (e) { notifyHeartbeatError('feature-discovery', e) }
 })
 
 // Self-Assessment — Nexus reviews performance weekly + sends weekly summary email
@@ -3578,7 +3937,7 @@ Also include a brief summary paragraph at the top (before the JSON) for the week
       completedTasks, failedTasks, totalSpend, pendingProposals, nexusAnalysis
     }).catch(() => {})
     console.log('📧 Sent weekly summary email')
-  } catch (e) { console.error('Self-assessment heartbeat failed:', e.message) }
+  } catch (e) { notifyHeartbeatError('self-assessment', e) }
 })
 
 // ── Daily Project Summary (9am local) ─────────────
@@ -3608,7 +3967,7 @@ const dailyProjectSummaryFn = () => {
     db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
       .run('nexus', nexus.name, nexus.avatar, nexus.color, summaryText)
     console.log('📊 Daily project summary posted by Nexus')
-  } catch (e) { console.error('Daily project summary failed:', e.message) }
+  } catch (e) { notifyHeartbeatError('daily-project-summary', e) }
 }
 // Schedule for 9am local time
 const _now = new Date(), _next9am = new Date(_now)
@@ -3726,7 +4085,7 @@ app.post('/api/chat/standup', async (req, res) => {
 
   try {
     const response = await callClaude({
-      model: getAgentModel('nexus'),
+      model: getSmartModel('nexus'),
       max_tokens: 1024,
       messages: [{
         role: 'user',
@@ -4152,6 +4511,45 @@ When asked about trading, strategies, or making money with stocks, use these act
 ## Current System State
 `
 
+// ── Global SSE Event Stream — real-time dashboard updates ────────
+const sseClients = new Set()
+
+app.get('/api/events/stream', authenticateRequest, (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  })
+
+  const send = (event, data) => {
+    try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) } catch {}
+  }
+
+  send('connected', { time: new Date().toISOString() })
+  sseClients.add(send)
+
+  const onTaskUpdate = (data) => send('task_update', data)
+  const onAgentStatus = (data) => send('agent_status', data)
+  const onSpendUpdate = (data) => send('spend_update', data)
+
+  traceBus.on('task:update', onTaskUpdate)
+  traceBus.on('agent:status', onAgentStatus)
+  traceBus.on('spend:update', onSpendUpdate)
+
+  const heartbeat = setInterval(() => {
+    try { res.write(': keepalive\n\n') } catch {}
+  }, 15000)
+
+  req.on('close', () => {
+    clearInterval(heartbeat)
+    sseClients.delete(send)
+    traceBus.off('task:update', onTaskUpdate)
+    traceBus.off('agent:status', onAgentStatus)
+    traceBus.off('spend:update', onSpendUpdate)
+  })
+})
+
 app.post('/api/chat/ask', async (req, res) => {
   const { message } = req.body
   if (!message?.trim()) return res.status(400).json({ error: 'Message required' })
@@ -4552,7 +4950,7 @@ app.post('/api/commands/parse', async (req, res) => {
   try {
     const agentList = agents.map(a => `${a.id}: ${a.name} (${a.role})`).join('\n')
     const response = await callClaude({
-      model: getAgentModel('quill'),
+      model: getSmartModel('quill'),
       max_tokens: 512,
       system: `You parse natural language commands into structured task data for an AI agent team.
 
@@ -4599,7 +4997,7 @@ For queries, add a "query_type" field: "spend"|"tasks"|"intel"|"general".`,
     )
     res.json({ is_query: false, task: { id: taskId, ...parsed } })
   } catch (err) {
-    console.error('Command parse error:', err.message)
+    log('error', 'command_parse_failed', { error: err.message })
     res.status(500).json({ error: 'Failed to parse command' })
   }
 })
@@ -4698,12 +5096,14 @@ app.patch('/api/agents/:agentId/skills-v2/:skillSlug', (req, res) => {
 // ── Health check ──────────────────────────────────
 app.get('/api/health', (req, res) => {
   res.json({
-    ok: true,
+    status: 'ok',
     uptime: process.uptime(),
     agents: agents.length,
     activeRuns: activeRuns.size,
     heartbeats: heartbeatJobs.length,
-    memoryDir: MEMORY_DIR
+    circuits: Object.values(breakers).map(b => b.status),
+    memory: process.memoryUsage(),
+    dbSize: (() => { try { return statSync('hive.db').size } catch { return 0 } })()
   })
 })
 
@@ -4734,6 +5134,33 @@ if (pipelineCount === 0) {
 registerHeartbeat('trace-prune', 6 * 60 * 60 * 1000, () => {
   const deleted = db.prepare("DELETE FROM task_traces WHERE created_at < datetime('now', '-7 days')").run()
   if (deleted.changes > 0) console.log(`🧹 Pruned ${deleted.changes} old trace rows`)
+})
+
+// ── Automated database backup (every 24 hours) ───
+registerHeartbeat('db-backup', 24 * 60 * 60 * 1000, async () => {
+  const backupDir = join(__dirname, '..', 'backups')
+  try { mkdirSync(backupDir, { recursive: true }) } catch {}
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const backupPath = join(backupDir, `hive-${timestamp}.db`)
+
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)')
+    copyFileSync(join(__dirname, '..', 'hive.db'), backupPath)
+    log('info', 'db_backup_created', { path: backupPath })
+
+    // Keep only last 7 backups
+    const backups = readdirSync(backupDir)
+      .filter(f => f.startsWith('hive-') && f.endsWith('.db'))
+      .sort()
+
+    while (backups.length > 7) {
+      const old = backups.shift()
+      try { unlinkSync(join(backupDir, old)) } catch {}
+    }
+  } catch (e) {
+    notifyHeartbeatError('db-backup', e)
+  }
 })
 
 // ── Seed Core Trading Skills ─────────────────────
@@ -4787,11 +5214,11 @@ app.post('/api/eval/run/:caseId', async (req, res) => {
     // Run 3 steps max for eval
     for (let step = 0; step < 3; step++) {
       const response = await callClaude({
-        model: getAgentModel(agent.id),
+        model: getSmartModel(agent.id),
         max_tokens: 2048,
         system: agent.systemPrompt + toolsPrompt,
         messages: evalMessages,
-        tools: SUPPORTS_FUNCTION_CALLING[getAgentModel(agent.id)] ? buildToolsSchema(agent.id) : undefined,
+        tools: SUPPORTS_FUNCTION_CALLING[getSmartModel(agent.id)] ? buildToolsSchema(agent.id) : undefined,
       }, agent.id, taskId)
 
       const text = response.content.map(b => b.text || '').join('')
@@ -5009,6 +5436,65 @@ async function searchMemoryEmbeddings(agentId, query, topK = 5) {
   }))
 }
 
+// ══════════════════════════════════════════════════════
+// ██ RAG KNOWLEDGE BASE — Document chunking + search   ██
+// ══════════════════════════════════════════════════════
+
+function chunkText(text, maxTokens = 500) {
+  const words = text.split(/\s+/)
+  const chunks = []
+  const wordsPerChunk = Math.floor(maxTokens * 0.75)
+  const overlap = Math.floor(wordsPerChunk * 0.1)
+
+  for (let i = 0; i < words.length; i += wordsPerChunk - overlap) {
+    const chunk = words.slice(i, i + wordsPerChunk).join(' ')
+    if (chunk.trim()) chunks.push(chunk.trim())
+  }
+  return chunks
+}
+
+async function processDocument(docId) {
+  const doc = db.prepare('SELECT * FROM knowledge_documents WHERE id = ?').get(docId)
+  if (!doc) return
+
+  db.prepare("UPDATE knowledge_documents SET status = 'processing' WHERE id = ?").run(docId)
+
+  try {
+    const chunks = chunkText(doc.content)
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkId = uuid()
+      const embedding = await embedText(chunks[i])
+
+      db.prepare('INSERT INTO knowledge_chunks (id, document_id, content, embedding, chunk_index, token_count) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(chunkId, docId, chunks[i], embedding ? JSON.stringify(embedding) : '', i, Math.ceil(chunks[i].split(/\s+/).length * 1.3))
+    }
+
+    db.prepare("UPDATE knowledge_documents SET status = 'ready', chunk_count = ? WHERE id = ?").run(chunks.length, docId)
+    console.log(`📚 Document "${doc.title}" processed: ${chunks.length} chunks`)
+  } catch (e) {
+    db.prepare("UPDATE knowledge_documents SET status = 'failed' WHERE id = ?").run(docId)
+    console.error('Document processing failed:', e.message)
+  }
+}
+
+async function searchKnowledge(query, topK = 5) {
+  const queryEmbed = await embedText(query)
+  if (!queryEmbed) return []
+
+  const chunks = db.prepare("SELECT id, document_id, content, embedding FROM knowledge_chunks WHERE embedding != ''").all()
+
+  const scored = chunks.map(chunk => {
+    try {
+      const embedding = JSON.parse(chunk.embedding)
+      return { ...chunk, score: cosineSimilarity(queryEmbed, embedding) }
+    } catch { return null }
+  }).filter(Boolean)
+
+  scored.sort((a, b) => b.score - a.score)
+  return scored.slice(0, topK).filter(s => s.score > 0.3).map(({ id, document_id, content, score }) => ({ id, document_id, content, score: Math.round(score * 100) / 100 }))
+}
+
 app.get('/api/memory/search', async (req, res) => {
   const { query, agent_id, top_k } = req.query
   if (!query) return res.status(400).json({ error: 'query required' })
@@ -5022,6 +5508,75 @@ app.get('/api/memory/entries', (req, res) => {
   const params = agent_id ? [agent_id] : []
   const entries = db.prepare(`SELECT id, agent_id, content, tags, source_task_id, created_at FROM memory_embeddings ${where} ORDER BY created_at DESC LIMIT ?`).all(...params, parseInt(limit) || 50)
   res.json(entries)
+})
+
+// ── Knowledge Base CRUD ──────────────────────────────
+app.get('/api/knowledge', (req, res) => {
+  const docs = db.prepare('SELECT * FROM knowledge_documents ORDER BY created_at DESC').all()
+  res.json(docs)
+})
+
+app.post('/api/knowledge', async (req, res) => {
+  try {
+    const { title, content, source_type = 'text', source_url = '' } = req.body
+    if (!title || !content) return res.status(400).json({ error: 'Title and content required' })
+
+    const id = uuid()
+    db.prepare('INSERT INTO knowledge_documents (id, title, source_type, source_url, content) VALUES (?, ?, ?, ?, ?)')
+      .run(id, title, source_type, source_url, content)
+
+    processDocument(id).catch(e => console.error('Async doc processing failed:', e.message))
+
+    res.json({ id, status: 'pending' })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.delete('/api/knowledge/:id', (req, res) => {
+  db.prepare('DELETE FROM knowledge_documents WHERE id = ?').run(req.params.id)
+  res.json({ deleted: true })
+})
+
+app.get('/api/knowledge/:id/chunks', (req, res) => {
+  const chunks = db.prepare('SELECT id, content, chunk_index, token_count FROM knowledge_chunks WHERE document_id = ? ORDER BY chunk_index').all(req.params.id)
+  res.json(chunks)
+})
+
+app.post('/api/knowledge/search', async (req, res) => {
+  try {
+    const { query, topK = 5 } = req.body
+    if (!query) return res.status(400).json({ error: 'Query required' })
+    const results = await searchKnowledge(query, topK)
+    res.json(results)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/knowledge/import-url', async (req, res) => {
+  try {
+    const { url, title } = req.body
+    if (!url) return res.status(400).json({ error: 'URL required' })
+
+    const response = await fetch(url, { signal: AbortSignal.timeout(30000) })
+    const text = await response.text()
+    const content = text.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 100000)
+
+    const id = uuid()
+    db.prepare('INSERT INTO knowledge_documents (id, title, source_type, source_url, content) VALUES (?, ?, ?, ?, ?)')
+      .run(id, title || url, 'url', url, content)
+
+    processDocument(id).catch(e => console.error('URL doc processing failed:', e.message))
+    res.json({ id, status: 'pending' })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
 })
 
 // ══════════════════════════════════════════════════════
@@ -5611,6 +6166,90 @@ Every strategy MUST have:
 }
 
 seedTradingSkills()
+
+// ── Scheduled Jobs — Cron Scheduler ──────────────────
+function matchesCron(expression, date) {
+  const [min, hour, dom, month, dow] = expression.split(' ')
+  const matchField = (field, value) => {
+    if (field === '*') return true
+    if (field.includes(',')) return field.split(',').some(f => matchField(f, value))
+    if (field.includes('-')) {
+      const [a, b] = field.split('-').map(Number)
+      return value >= a && value <= b
+    }
+    if (field.includes('/')) {
+      const [, step] = field.split('/')
+      return value % parseInt(step) === 0
+    }
+    return parseInt(field) === value
+  }
+  return matchField(min, date.getMinutes()) && matchField(hour, date.getHours()) &&
+    matchField(dom, date.getDate()) && matchField(month, date.getMonth() + 1) &&
+    matchField(dow, date.getDay())
+}
+
+setInterval(() => {
+  const now = new Date()
+  const jobs = db.prepare("SELECT * FROM scheduled_jobs WHERE enabled = 1").all()
+
+  for (const job of jobs) {
+    if (matchesCron(job.cron_expression, now)) {
+      const lastRun = job.last_run ? new Date(job.last_run) : null
+      if (lastRun && (now - lastRun) < 60000) continue
+
+      const id = uuid()
+      db.prepare("INSERT INTO tasks (id, title, description, agent_id, status) VALUES (?, ?, ?, ?, 'todo')")
+        .run(id, job.task_title, job.task_description || '', job.agent_id)
+
+      db.prepare("UPDATE scheduled_jobs SET last_run = ? WHERE id = ?").run(now.toISOString(), job.id)
+
+      log('info', 'scheduled_job_triggered', { jobId: job.id, jobName: job.name, taskId: id, agentId: job.agent_id })
+      traceBus.emit('task:update', { id, status: 'todo', agent_id: job.agent_id })
+
+      setTimeout(() => processAgentQueue(job.agent_id), 500)
+    }
+  }
+}, 60000)
+
+app.get('/api/scheduled-jobs', (req, res) => {
+  const jobs = db.prepare('SELECT * FROM scheduled_jobs ORDER BY created_at DESC').all()
+  res.json(jobs)
+})
+
+app.post('/api/scheduled-jobs', (req, res) => {
+  const { name, agent_id, task_title, task_description, cron_expression, enabled } = req.body
+  if (!name || !agent_id || !task_title || !cron_expression) {
+    return res.status(400).json({ error: 'name, agent_id, task_title, and cron_expression required' })
+  }
+  const id = uuid()
+  db.prepare('INSERT INTO scheduled_jobs (id, name, agent_id, task_title, task_description, cron_expression, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(id, name, agent_id, task_title, task_description || '', cron_expression, enabled !== false ? 1 : 0)
+  res.json({ id })
+})
+
+app.patch('/api/scheduled-jobs/:id', (req, res) => {
+  const job = db.prepare('SELECT * FROM scheduled_jobs WHERE id = ?').get(req.params.id)
+  if (!job) return res.status(404).json({ error: 'Job not found' })
+  const fields = ['name', 'agent_id', 'task_title', 'task_description', 'cron_expression', 'enabled']
+  for (const f of fields) {
+    if (req.body[f] !== undefined) {
+      const val = f === 'enabled' ? (req.body[f] ? 1 : 0) : req.body[f]
+      db.prepare(`UPDATE scheduled_jobs SET ${f} = ? WHERE id = ?`).run(val, req.params.id)
+    }
+  }
+  res.json({ updated: true })
+})
+
+app.delete('/api/scheduled-jobs/:id', (req, res) => {
+  db.prepare('DELETE FROM scheduled_jobs WHERE id = ?').run(req.params.id)
+  res.json({ deleted: true })
+})
+
+// ── Memory Dashboard — DELETE endpoint ──────────────
+app.delete('/api/memory/:id', (req, res) => {
+  db.prepare('DELETE FROM memory_embeddings WHERE id = ?').run(req.params.id)
+  res.json({ deleted: true })
+})
 
 // One-time cleanup: purge excessive todo tasks (keep newest 15)
 const todoCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'todo'").get().c

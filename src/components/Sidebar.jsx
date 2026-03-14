@@ -25,7 +25,10 @@ const NAV_ITEMS = [
   { key: 'revenue', icon: '💵', label: 'Revenue' },
   { key: 'history', icon: '📜', label: 'History' },
   { key: 'trace', icon: '📡', label: 'Live Trace' },
+  { key: 'knowledge', icon: '📚', label: 'Knowledge' },
   { key: 'eval', icon: '🧪', label: 'Eval Harness' },
+  { key: 'schedule', icon: '⏰', label: 'Schedule' },
+  { key: 'memory', icon: '🧠', label: 'Memory' },
   { key: 'triggers', icon: '⚡', label: 'Triggers' },
   { key: 'botGen', icon: '⚒️', label: 'Bot Generator' },
   { key: 'spend', icon: '💰', label: 'Spend Limits' },
@@ -38,7 +41,7 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
   if (collapsed) {
     return (
       <aside className="w-16 bg-hive-800 border-r border-hive-700 flex flex-col items-center py-4 gap-3">
-        <button onClick={() => setCollapsed(false)} className="text-xl mb-2 hover:text-honey transition-colors">🔥</button>
+        <button onClick={() => setCollapsed(false)} className="text-xl mb-2 hover:text-honey transition-colors" aria-label="Expand sidebar">🔥</button>
         <div className="w-8 h-px bg-hive-700" />
         {agents.map(agent => (
           <button
@@ -85,7 +88,7 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
           <span className="text-xl">🔥</span>
           <span className="font-semibold text-honey">Hive</span>
         </div>
-        <button onClick={() => setCollapsed(true)} className="text-hive-400 hover:text-hive-200 text-sm">
+        <button onClick={() => setCollapsed(true)} className="text-hive-400 hover:text-hive-200 text-sm" aria-label="Collapse sidebar">
           ‹‹
         </button>
       </div>

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api'
+import { SkeletonList } from './Skeleton'
 
 const TABS = ['overview', 'analysis', 'positions', 'strategies', 'trades', 'watchlist']
 
@@ -170,7 +171,7 @@ export default function TradingDashboard({ agents, onClose }) {
             <button onClick={handleToggleTrading} className={`px-3 py-1 rounded-lg text-xs font-medium ${config.trading_enabled === 'true' ? 'bg-green-500/20 text-green-400 border border-green-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'}`}>
               {config.trading_enabled === 'true' ? '🟢 Trading On' : '🔴 Trading Off'}
             </button>
-            <button onClick={onClose} className="text-hive-400 hover:text-hive-200 text-xl">&times;</button>
+            <button onClick={onClose} className="text-hive-400 hover:text-hive-200 text-xl" aria-label="Close trading dashboard">&times;</button>
           </div>
         </div>
 
@@ -185,7 +186,7 @@ export default function TradingDashboard({ agents, onClose }) {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-5">
-          {loading ? <div className="text-center text-hive-400 py-8">Loading trading data...</div> :
+          {loading ? <SkeletonList count={3} /> :
            error ? <div className="text-center text-red-400 py-8">Error: {error}<br/><span className="text-xs text-hive-500">Make sure ALPACA_API_KEY is set on the server</span></div> :
 
           tab === 'overview' ? (
@@ -388,8 +389,8 @@ export default function TradingDashboard({ agents, onClose }) {
               {positions.length === 0 ? (
                 <p className="text-center text-hive-500 py-8">No open positions</p>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
+                <div className="overflow-x-auto -mx-5 px-5">
+                  <table className="min-w-full text-xs sm:text-sm">
                     <thead>
                       <tr className="text-xs text-hive-400 border-b border-hive-700">
                         <th className="text-left py-2">Symbol</th>
@@ -461,8 +462,8 @@ export default function TradingDashboard({ agents, onClose }) {
               {trades.length === 0 ? (
                 <p className="text-center text-hive-500 py-8">No trades yet</p>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
+                <div className="overflow-x-auto -mx-5 px-5">
+                  <table className="min-w-full text-xs sm:text-sm">
                     <thead>
                       <tr className="text-xs text-hive-400 border-b border-hive-700">
                         <th className="text-left py-2">Time</th>

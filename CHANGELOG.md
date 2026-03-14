@@ -1,5 +1,44 @@
 # Hive Changelog
 
+## 2026-03-14 — Production-Grade Platform Hardening (28 Features)
+
+### Phase 1: Critical Foundation Fixes
+- LLM call timeout: 5-minute AbortController on all OpenRouter calls (no more infinite hangs)
+- Webhook authentication: HMAC-SHA256 validation with `X-Hub-Signature-256` header
+- Task pagination: `?page=&limit=&status=&agent_id=&search=` with total count and hasMore
+- N+1 query fix: `buildAllScorecards()` — 5 queries total instead of 42
+- Composite indexes: 5 new indexes on hot query paths (spend_log, tasks, proposals, memory)
+- React error boundary: catches component crashes, shows recovery UI, keeps nav working
+- SSE event bus: `GET /api/events/stream` replaces 3s polling with real-time push (task updates, agent status, spend changes). Green/red connection indicator in header. 30s fallback poll.
+- Confirmation dialogs: destructive actions (delete task, delete skill) now require confirmation
+
+### Phase 2: Production Reliability
+- API retry logic: exponential backoff (1s, 2s) for 5xx and 429 errors, immediate fail for 4xx
+- Heartbeat error notifications: `notifyHeartbeatError()` logs to task_logs + sends push notification on failure
+- execute_code sandbox: stripped env vars (no API keys leaked), proxy set to dead address
+- Email header injection prevention: `\r\n` stripped from to/subject fields
+- Configurable MAX_STEPS: read from settings (default 8), per-step 5-minute timeout
+
+### Phase 3: Core Infrastructure
+- **RAG Knowledge Base**: Upload documents (text/URL), auto-chunk into ~500-token segments with overlap, embed via OpenRouter, cosine similarity search. `search_knowledge` tool available to all agents. Auto-injects relevant context into ReAct loop. 6 API endpoints + full KnowledgeBase.jsx panel.
+- Structured logging: JSON-formatted `log(level, message, meta)` replacing 14 key console.log calls
+- Circuit breakers: OpenRouter (5 failures/60s), Alpaca (3 failures/120s), Yahoo (5 failures/60s) — auto-open on repeated failures, half-open test after reset period
+- Automated DB backups: daily heartbeat, WAL checkpoint + file copy, 7-day retention
+
+### Phase 4: Competitive Differentiators
+- **Cost-aware model routing**: `getSmartModel()` auto-downgrades from Sonnet to Haiku when agent exceeds 80% of daily budget share. All 14 callClaude sites updated.
+- **Scheduled agent jobs**: User-configurable cron (`0 9 * * 1-5` = weekdays 9am). Full cron parser with wildcards/ranges/steps. ScheduledJobs.jsx panel with preset chips.
+- **Cognitive memory dashboard**: MemoryDashboard.jsx — browse/search/delete agent memories with per-agent tabs, semantic search, tag display, source task links.
+- **Pipeline replay**: Replay completed pipelines from any step with modified inputs. ReplayModal in PipelineBuilder.
+- **Cross-session task chains**: `checkAutoChain()` auto-creates follow-up tasks (research→write, write→promote, build→document, analyze→build). Respects per-agent queue limits.
+
+### Phase 5: Polish
+- Loading skeletons: `SkeletonCard`, `SkeletonList`, `SkeletonChart` replacing "Loading..." text
+- Keyboard shortcuts: `N` new task, `Esc` close panels, `?` shortcuts help overlay
+- Responsive tables: horizontal scroll wrappers on TradingDashboard tables
+- PWA manifest: installable on mobile with bee icon, Hive theme colors
+- Accessibility: ARIA labels on 7 icon-only buttons, `role="search"` on command bar
+
 ## 2026-03-14 — Agent Effectiveness Upgrade
 
 ### Agent Prompt Overhaul (all 6 agents)

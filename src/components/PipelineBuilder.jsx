@@ -140,6 +140,86 @@ function PromptEditor({ node, onSave, onClose }) {
   )
 }
 
+// ── Replay Modal ──
+
+function ReplayModal({ pipeline, agents, onClose, onReplay }) {
+  const [selectedStep, setSelectedStep] = useState(null)
+  const [modifiedInput, setModifiedInput] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const steps = (pipeline.steps || []).sort((a, b) => (a.position || 0) - (b.position || 0))
+
+  const handleReplay = async () => {
+    if (selectedStep === null) return
+    setSubmitting(true)
+    try {
+      await onReplay(pipeline.id, selectedStep, modifiedInput)
+      onClose()
+    } catch (e) {
+      alert(e.message)
+    }
+    setSubmitting(false)
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-hive-800 border border-hive-700 rounded-xl w-full max-w-lg p-5 max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-semibold text-hive-100 flex items-center gap-2">
+            <span>🔄</span> Replay: {pipeline.name}
+          </h3>
+          <button onClick={onClose} className="text-hive-400 hover:text-hive-200 text-xl">&times;</button>
+        </div>
+
+        <div className="text-xs text-hive-400 mb-3">Select a step to replay from. All subsequent steps will re-run.</div>
+
+        <div className="flex-1 overflow-y-auto space-y-2 mb-4">
+          {steps.map((step, i) => {
+            const agent = agents.find(a => a.id === step.agent_id)
+            const isSelected = selectedStep === i
+            return (
+              <button key={i} onClick={() => { setSelectedStep(i); setModifiedInput(step.prompt_template || '') }}
+                className={`w-full text-left p-3 rounded-lg border transition-all ${
+                  isSelected ? 'border-honey bg-honey/10' : 'border-hive-700 bg-hive-700/30 hover:border-hive-500'
+                }`}>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-hive-500 w-6">#{i + 1}</span>
+                  <span>{agent?.avatar || '🤖'}</span>
+                  <span className="text-sm text-hive-200">{agent?.name || step.agent_id}</span>
+                  {isSelected && <span className="ml-auto text-xs text-honey font-medium">Replay from here</span>}
+                </div>
+                {step.prompt_template && (
+                  <div className="text-[11px] text-hive-400 mt-1 ml-8 line-clamp-1">{step.prompt_template}</div>
+                )}
+              </button>
+            )
+          })}
+        </div>
+
+        {selectedStep !== null && (
+          <div className="mb-4">
+            <label className="text-xs text-hive-400 block mb-1">Modified input (optional):</label>
+            <textarea
+              value={modifiedInput}
+              onChange={e => setModifiedInput(e.target.value)}
+              placeholder="Override the step prompt, or leave as-is..."
+              rows={3}
+              className="w-full bg-hive-900 border border-hive-600 rounded-lg px-3 py-2 text-sm text-hive-100 placeholder:text-hive-500 focus:outline-none focus:ring-2 focus:ring-honey/50 resize-none"
+            />
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm text-hive-400 hover:text-hive-200">Cancel</button>
+          <button onClick={handleReplay} disabled={selectedStep === null || submitting}
+            className="px-4 py-1.5 bg-honey text-white rounded-lg text-sm font-medium hover:bg-honey-dim disabled:opacity-40 transition-colors">
+            {submitting ? 'Starting...' : `Replay from Step ${selectedStep !== null ? selectedStep + 1 : '...'}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Main Component ──
 
 export default function PipelineBuilder({ agents, onClose }) {
@@ -150,6 +230,7 @@ export default function PipelineBuilder({ agents, onClose }) {
   const [running, setRunning] = useState(null)
   const [editingNode, setEditingNode] = useState(null)
   const [pipelineStatuses, setPipelineStatuses] = useState({})
+  const [replayingPipeline, setReplayingPipeline] = useState(null)
   const [isMobile] = useState(() => window.innerWidth < 768)
 
   // List-based fallback state (for mobile + simple editing)
@@ -234,6 +315,10 @@ export default function PipelineBuilder({ agents, onClose }) {
     refresh()
   }
 
+  const handleReplay = async (pipelineId, fromStep, modifiedInput) => {
+    await api.replayPipeline(pipelineId, fromStep, modifiedInput)
+  }
+
   const addAgentToCanvas = (agentId) => {
     const agent = agents.find(a => a.id === agentId)
     const agentNodes = nodes.filter(n => n.type === 'agentNode')
@@ -302,6 +387,7 @@ export default function PipelineBuilder({ agents, onClose }) {
                         className="px-3 py-1 bg-honey text-white rounded text-xs font-medium hover:bg-honey-dim transition-colors disabled:opacity-50">
                         {running === p.id ? 'Starting...' : '▶ Run'}
                       </button>
+                      <button onClick={() => setReplayingPipeline(p)} className="px-2 py-1 text-xs text-purple-400 hover:text-purple-300">🔄 Replay</button>
                       <button onClick={() => editPipeline(p)} className="px-2 py-1 text-xs text-hive-400 hover:text-hive-200">Edit</button>
                       <button onClick={() => handleDelete(p.id)} className="px-2 py-1 text-xs text-red-400 hover:text-red-300">Del</button>
                     </div>
@@ -437,6 +523,16 @@ export default function PipelineBuilder({ agents, onClose }) {
       {/* Prompt editor modal */}
       {editingNode && (
         <PromptEditor node={editingNode} onSave={handlePromptSave} onClose={() => setEditingNode(null)} />
+      )}
+
+      {/* Replay modal */}
+      {replayingPipeline && (
+        <ReplayModal
+          pipeline={replayingPipeline}
+          agents={agents}
+          onClose={() => setReplayingPipeline(null)}
+          onReplay={handleReplay}
+        />
       )}
     </div>
   )
