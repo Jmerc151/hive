@@ -13,6 +13,7 @@ const MODEL_SHORT = {
 }
 
 const NAV_ITEMS = [
+  { key: 'deliverables', icon: '📦', label: 'Deliverables' },
   { key: 'graph', icon: '🕸️', label: 'Agent Graph' },
   { key: 'analytics', icon: '📊', label: 'Analytics' },
   { key: 'intel', icon: '🔍', label: 'Intel Feed' },

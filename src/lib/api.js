@@ -218,6 +218,9 @@ export const api = {
   // Projects
   getProjects: () => request('/projects'),
 
+  // Deliverables
+  getDeliverables: (params) => request(`/deliverables${params ? '?' + new URLSearchParams(params) : ''}`),
+
   // History
   getHistory: (params) => request(`/history${params ? '?' + new URLSearchParams(params) : ''}`),
 

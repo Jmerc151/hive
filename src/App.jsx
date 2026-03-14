@@ -29,6 +29,7 @@ import CostTimeline from './components/CostTimeline'
 import IntelFeed from './components/IntelFeed'
 import CommandBar from './components/CommandBar'
 import SkillRegistryV2 from './components/SkillRegistryV2'
+import DeliverablesPanel from './components/DeliverablesPanel'
 
 export default function App() {
   const { toasts, addToast, removeToast } = useToast()
@@ -57,6 +58,7 @@ export default function App() {
   const [showCostTimeline, setShowCostTimeline] = useState(false)
   const [showIntel, setShowIntel] = useState(false)
   const [showSkillsV2, setShowSkillsV2] = useState(false)
+  const [showDeliverables, setShowDeliverables] = useState(false)
 
   const refresh = useCallback(async () => {
     const [a, t] = await Promise.all([api.getAgents(), api.getTasks()])
@@ -143,6 +145,7 @@ export default function App() {
           onSkills={(agent) => setShowSkills(agent)}
           onNav={(key) => {
             const navMap = {
+              deliverables: () => setShowDeliverables(true),
               graph: () => setShowGraph(true),
               analytics: () => setShowCostTimeline(true),
               intel: () => setShowIntel(true),
@@ -426,6 +429,13 @@ export default function App() {
 
       {showSkillsV2 && (
         <SkillRegistryV2 onClose={() => setShowSkillsV2(false)} />
+      )}
+
+      {showDeliverables && (
+        <DeliverablesPanel
+          agents={agents}
+          onClose={() => setShowDeliverables(false)}
+        />
       )}
 
       {/* Mobile CommandBar — hide when chat is open since chat has its own input */}

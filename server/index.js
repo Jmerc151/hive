@@ -3846,6 +3846,59 @@ app.get('/api/history', (req, res) => {
   res.json({ tasks: enriched, total, limit: parseInt(limit), offset: parseInt(offset) })
 })
 
+// ── Deliverables — finished agent work with real output ──
+app.get('/api/deliverables', (req, res) => {
+  const { agent, limit = 30, offset = 0 } = req.query
+  let where = "WHERE status = 'done' AND LENGTH(output) > 200"
+  const params = []
+  if (agent) { where += ' AND agent_id = ?'; params.push(agent) }
+
+  const total = db.prepare(`SELECT COUNT(*) as c FROM tasks ${where}`).get(...params).c
+  const tasks = db.prepare(`SELECT id, title, agent_id, output, tokens_used, estimated_cost, nexus_score, completed_at FROM tasks ${where} ORDER BY completed_at DESC LIMIT ? OFFSET ?`).all(...params, parseInt(limit), parseInt(offset))
+
+  const deliverables = tasks.map(t => {
+    const output = t.output || ''
+    const hasTools = output.includes('[TOOL_RESULT')
+    const hasCode = output.includes('```')
+    const hasFiles = /(?:^#{1,3}\s+`?[\w\-/.]+\.\w+`?\s*$)/m.test(output)
+
+    // Determine type
+    let type = 'text'
+    if (hasFiles || hasCode) type = 'code'
+    if (t.agent_id === 'quill') type = 'content'
+    if (t.agent_id === 'oracle' && hasTools) type = 'analysis'
+    if (t.agent_id === 'scout') type = 'research'
+    if (t.agent_id === 'dealer') type = 'outreach'
+
+    // Clean output for display — strip ReAct step headers
+    let cleanOutput = output
+      .replace(/^--- Step \d+ ---$/gm, '')
+      .replace(/\[TOOL:[\w]+\][\s\S]*?\[\/TOOL\]/g, '')
+      .replace(/\[TOOL_RESULT:[\w]+\]([\s\S]*?)\[\/TOOL_RESULT\]/g, '**Tool Result:** $1')
+      .replace(/\[TOOL_ERROR:[\w]+\][\s\S]*?\[\/TOOL_ERROR\]/g, '')
+      .replace(/\[CONSULT:\w+\]\s*/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+
+    return {
+      id: t.id,
+      title: t.title,
+      agent_id: t.agent_id,
+      type,
+      has_tools: hasTools,
+      has_code: hasCode,
+      output_length: output.length,
+      output: cleanOutput,
+      tokens_used: t.tokens_used,
+      cost: t.estimated_cost,
+      score: t.nexus_score,
+      completed_at: t.completed_at
+    }
+  })
+
+  res.json({ deliverables, total })
+})
+
 // ── Global Search ─────────────────────────────────
 app.get('/api/search', (req, res) => {
   const { q } = req.query
