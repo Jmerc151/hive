@@ -214,7 +214,7 @@ export default function App() {
           </div>
         )}
         {mobileView === 'chat' && (
-          <div className="md:hidden flex-1 overflow-hidden">
+          <div className="md:hidden flex-1 overflow-hidden flex flex-col pb-16">
             <ChatPanel agents={agents} embedded onToast={addToast} />
           </div>
         )}
@@ -428,10 +428,12 @@ export default function App() {
         <SkillRegistryV2 onClose={() => setShowSkillsV2(false)} />
       )}
 
-      {/* Mobile CommandBar — chat handles input on desktop */}
-      <div className="md:hidden">
-        <CommandBar agents={agents} onTaskCreated={() => refresh()} />
-      </div>
+      {/* Mobile CommandBar — hide when chat is open since chat has its own input */}
+      {mobileView !== 'chat' && (
+        <div className="md:hidden">
+          <CommandBar agents={agents} onTaskCreated={() => refresh()} />
+        </div>
+      )}
 
       {/* Toasts */}
       <ToastContainer toasts={toasts} onRemove={removeToast} />

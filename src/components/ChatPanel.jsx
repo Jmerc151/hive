@@ -283,7 +283,7 @@ export default function ChatPanel({ agents, onClose, embedded, onToast }) {
       )}
 
       {/* Messages area */}
-      <div className={`flex-1 overflow-y-auto ${embedded ? 'pb-20' : ''}`}>
+      <div className="flex-1 overflow-y-auto">
         {showWelcome ? (
           <WelcomeCard agents={agents} onSuggestionClick={handleSuggestionClick} />
         ) : hasNoMessages && mode === 'feed' ? (
@@ -394,7 +394,7 @@ export default function ChatPanel({ agents, onClose, embedded, onToast }) {
       </div>
 
       {/* Input */}
-      <div className={`p-3 border-t border-hive-700/50 bg-hive-900/80 backdrop-blur-xl ${embedded ? 'safe-bottom pb-20' : ''}`}>
+      <div className="p-3 border-t border-hive-700/50 bg-hive-900/80 backdrop-blur-xl shrink-0">
         <div className="flex gap-2">
           <input
             value={input}
