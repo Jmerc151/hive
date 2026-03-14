@@ -163,6 +163,10 @@ function wrapHtml(title, body) {
 </body></html>`
 }
 
+export async function sendCustomEmail(to, subject, body) {
+  await sendEmail({ to, subject, html: `<div style="color:#e5e7eb;font-size:14px;line-height:1.6">${body}</div>` })
+}
+
 function statCard(label, value, color) {
   return `<div style="background:#1e1e3a;border:1px solid #374151;border-radius:8px;padding:12px 16px;min-width:120px;flex:1">
     <div style="color:#9ca3af;font-size:12px">${label}</div>

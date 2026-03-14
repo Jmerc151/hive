@@ -387,6 +387,30 @@ const TOOL_REGISTRY = [
     }
   },
   {
+    name: 'web_search',
+    description: 'Search the web for information. Returns summarized results with source URLs. Use this for ANY research task.',
+    params: {
+      query: { type: 'string', required: true, description: 'Search query (be specific and detailed)' },
+      focus: { type: 'string', required: false, description: 'Focus area: general, trading, github, reddit (default: general)' }
+    },
+    agents: ['scout', 'nexus', 'forge'],
+    execute: async (args) => {
+      try {
+        const searchResponse = await openai.chat.completions.create({
+          model: 'perplexity/sonar-pro',
+          messages: [
+            { role: 'system', content: 'You are a research assistant. Search the web and return factual, detailed results. Include source URLs when available. Format as structured data.' },
+            { role: 'user', content: `Search for: ${args.query}${args.focus ? ` (focus on ${args.focus})` : ''}\n\nReturn the top findings as a JSON array: [{"title":"...","summary":"...","url":"...","relevance":"high/medium/low"}]` }
+          ],
+          max_tokens: 2000,
+        })
+        return { query: args.query, results: searchResponse.choices?.[0]?.message?.content || 'No results' }
+      } catch (e) {
+        return { query: args.query, error: e.message }
+      }
+    }
+  },
+  {
     name: 'create_task',
     description: 'Create a new task for any agent',
     params: {
@@ -424,6 +448,56 @@ const TOOL_REGISTRY = [
     }
   },
   {
+    name: 'write_file',
+    description: 'Write content to a file in the workspace. For building code, scripts, templates, content.',
+    params: {
+      path: { type: 'string', required: true, description: 'File path relative to workspace (e.g. "output/landing-page.html")' },
+      content: { type: 'string', required: true, description: 'File content to write' }
+    },
+    agents: ['forge', 'quill'],
+    execute: async (args) => {
+      const safePath = args.path.replace(/\.\./g, '').replace(/^\//, '')
+      const outputDir = join(__dirname, '..', 'workspace')
+      const fullPath = join(outputDir, safePath)
+      const dir = dirname(fullPath)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(fullPath, args.content, 'utf8')
+      return { path: safePath, size: args.content.length, message: `File written: ${safePath}` }
+    }
+  },
+  {
+    name: 'read_file',
+    description: 'Read a file from the workspace.',
+    params: { path: { type: 'string', required: true, description: 'File path relative to workspace' } },
+    agents: ['forge', 'quill', 'nexus'],
+    execute: async (args) => {
+      const safePath = args.path.replace(/\.\./g, '').replace(/^\//, '')
+      const fullPath = join(__dirname, '..', 'workspace', safePath)
+      try {
+        const content = readFileSync(fullPath, 'utf8')
+        return { path: safePath, content: content.slice(0, 10000) }
+      } catch { return { error: `File not found: ${safePath}` } }
+    }
+  },
+  {
+    name: 'send_email',
+    description: 'Send an email (for outreach, notifications, reports)',
+    params: {
+      to: { type: 'string', required: true, description: 'Recipient email address' },
+      subject: { type: 'string', required: true, description: 'Email subject line' },
+      body: { type: 'string', required: true, description: 'Email body (HTML or plain text)' }
+    },
+    agents: ['dealer', 'quill'],
+    execute: async (args) => {
+      try {
+        await email.sendCustomEmail(args.to, args.subject, args.body)
+        return { sent: true, to: args.to, subject: args.subject }
+      } catch (e) {
+        return { sent: false, error: e.message }
+      }
+    }
+  },
+  {
     name: 'read_memory',
     description: 'Read an agent\'s persistent memory/learnings file',
     params: { agent_id: { type: 'string', required: true, description: 'Agent ID to read memory for' } },
@@ -443,37 +517,102 @@ function buildToolsPrompt(agentId) {
   const tools = getAgentTools(agentId)
   if (tools.length === 0) return ''
 
-  let prompt = '\n\n## Available Tools\n\nYou have REAL tools that execute actual actions. USE THEM. Do not just describe what you would do — call the tools and work with real data.\n\nTo call a tool, use this exact syntax:\n[TOOL:tool_name]{"param":"value"}[/TOOL]\n\nYou will receive the result in a [TOOL_RESULT:tool_name] block. Read the result and continue your work.\nYou can call multiple tools in one response. Each on its own line.\n\n### Tools:\n'
+  let prompt = `\n\n## Available Tools
+
+You have REAL tools. USE THEM to get real data and take real actions.
+
+**SYNTAX — you MUST use this EXACT format:**
+[TOOL:tool_name]{"param":"value"}[/TOOL]
+
+**Example calls:**
+[TOOL:get_quote]{"symbol":"AAPL"}[/TOOL]
+[TOOL:list_strategies]{"status":"discovered"}[/TOOL]
+[TOOL:save_strategy]{"name":"RSI Divergence","type":"mean_reversion","description":"Buy on bullish RSI divergence","entry_conditions":"[{\\"indicator\\":\\"rsi\\",\\"op\\":\\"<\\",\\"value\\":30}]","exit_conditions":"[{\\"indicator\\":\\"rsi\\",\\"op\\":\\">\\",\\"value\\":70}]","indicators":"RSI","source":"reddit"}[/TOOL]
+
+After each tool call, you will receive a result like:
+[TOOL_RESULT:get_quote]{"symbol":"AAPL","price":182.50,"change":1.2}[/TOOL_RESULT]
+
+Then continue working with that data.
+
+### Your Tools:\n`
 
   for (const tool of tools) {
     const paramList = Object.entries(tool.params).map(([k, v]) => `${k} (${v.type}${v.required ? ', required' : ''}) — ${v.description}`).join('; ')
     prompt += `- **${tool.name}** — ${tool.description}\n  Params: ${paramList || 'none'}\n`
   }
 
-  prompt += '\n### Rules:\n- ALWAYS use tools when you need data. Never make up market data, prices, or indicators.\n- Wait for tool results before drawing conclusions.\n- If a tool returns an error, adapt your approach.\n- You can call multiple tools per step.\n'
+  prompt += `
+### CRITICAL Rules:
+- ALWAYS start your response with [TOOL:...] calls. Do NOT just write text — call tools first.
+- The format is [TOOL:name]{"key":"value"}[/TOOL] — square brackets, colon, name, then JSON args, then [/TOOL].
+- Wait for tool results before drawing conclusions. Never make up data.
+- You can call multiple tools per step, each on its own line.
+`
 
   return prompt
 }
 
 function parseToolCalls(text) {
   const toolCalls = []
-  const regex = /\[TOOL:(\w+)\]([\s\S]*?)\[\/TOOL\]/g
+
+  // Primary pattern: [TOOL:name]{"param":"value"}[/TOOL]
+  const regex = /\[TOOL:\s*(\w+)\s*\]([\s\S]*?)\[\/TOOL\]/g
   let match
   while ((match = regex.exec(text)) !== null) {
-    try {
-      const args = JSON.parse(match[2].trim())
-      toolCalls.push({ name: match[1], args, raw: match[0] })
-    } catch (e) {
-      try {
-        const cleaned = match[2].trim().replace(/'/g, '"')
-        const args = JSON.parse(cleaned)
-        toolCalls.push({ name: match[1], args, raw: match[0] })
-      } catch {
-        toolCalls.push({ name: match[1], args: {}, raw: match[0], parseError: e.message })
+    const parsed = tryParseArgs(match[2])
+    toolCalls.push({ name: match[1], args: parsed.args, raw: match[0], parseError: parsed.error })
+  }
+
+  // Fallback: some models use ```tool or <tool> syntax
+  if (toolCalls.length === 0) {
+    // Try: TOOL:name followed by JSON on next line
+    const altRegex = /TOOL:\s*(\w+)\s*[\]\)>}]?\s*[\n\r]*\s*(\{[^}]+\})/g
+    while ((match = altRegex.exec(text)) !== null) {
+      const parsed = tryParseArgs(match[2])
+      if (!parsed.error) toolCalls.push({ name: match[1], args: parsed.args, raw: match[0] })
+    }
+  }
+
+  // Second fallback: detect tool names in text + nearby JSON objects
+  if (toolCalls.length === 0) {
+    const toolNames = TOOL_REGISTRY.map(t => t.name)
+    for (const toolName of toolNames) {
+      // Look for patterns like: get_quote({"symbol":"AAPL"}) or get_quote {"symbol":"AAPL"}
+      const fnRegex = new RegExp(`\\b${toolName}\\s*[\\(\\{]`, 'g')
+      let fnMatch
+      while ((fnMatch = fnRegex.exec(text)) !== null) {
+        // Find the JSON object starting near this position
+        const searchStart = fnMatch.index + toolName.length
+        const rest = text.slice(searchStart)
+        const jsonMatch = rest.match(/\{[^{}]*\}/)
+        if (jsonMatch) {
+          const parsed = tryParseArgs(jsonMatch[0])
+          if (!parsed.error) {
+            // Avoid duplicates
+            const isDup = toolCalls.some(tc => tc.name === toolName && JSON.stringify(tc.args) === JSON.stringify(parsed.args))
+            if (!isDup) toolCalls.push({ name: toolName, args: parsed.args, raw: `${toolName}(${jsonMatch[0]})` })
+          }
+        }
       }
     }
   }
+
   return toolCalls
+}
+
+function tryParseArgs(text) {
+  const trimmed = (text || '').trim()
+  if (!trimmed || trimmed === '{}') return { args: {}, error: null }
+  try {
+    return { args: JSON.parse(trimmed), error: null }
+  } catch (e) {
+    try {
+      const cleaned = trimmed.replace(/'/g, '"').replace(/,\s*\}/g, '}')
+      return { args: JSON.parse(cleaned), error: null }
+    } catch {
+      return { args: {}, error: e.message }
+    }
+  }
 }
 
 async function executeTool(toolCall, agentId, taskId) {
@@ -1338,6 +1477,11 @@ Start by analyzing the task and calling any tools you need.`
 
       // ── Parse tool calls ──
       const toolCalls = parseToolCalls(stepOutput)
+      if (toolCalls.length > 0) {
+        console.log(`🔧 ${agent.name} step ${step+1}: parsed ${toolCalls.length} tool call(s): ${toolCalls.map(t => t.name).join(', ')}`)
+      } else if (stepOutput.includes('TOOL') || stepOutput.includes('tool')) {
+        console.log(`⚠️ ${agent.name} step ${step+1}: output mentions 'tool' but no calls parsed. First 300 chars: ${stepOutput.slice(0, 300)}`)
+      }
       const consultMatch = stepOutput.match(/\[CONSULT:(\w+)\]\s*(.+)/s)
 
       let hadAction = false
