@@ -114,7 +114,29 @@ export default function TaskBoard({ tasks, agents, onSelectTask, onRunTask, onUp
   )
 }
 
+function getOutputPreview(output) {
+  if (!output) return null
+  // Strip step headers and tool syntax to get the "human" content
+  let clean = output
+    .replace(/^--- Step \d+ ---$/gm, '')
+    .replace(/\[TOOL:\w+\][\s\S]*?\[\/TOOL\]/g, '')
+    .replace(/\[TOOL_RESULT:\w+\][\s\S]*?\[\/TOOL_RESULT\]/g, '[used real data]')
+    .replace(/\[TOOL_ERROR:\w+\][\s\S]*?\[\/TOOL_ERROR\]/g, '')
+    .replace(/\[CONSULT:\w+\][\s\S]*$/gm, '')
+    .replace(/```[\s\S]*?```/g, '[code block]')
+    .replace(/#{1,3}\s+/g, '')
+    .replace(/\*\*/g, '')
+    .trim()
+  // Get first meaningful line (skip empty lines)
+  const lines = clean.split('\n').filter(l => l.trim().length > 10)
+  return lines.length > 0 ? lines[0].trim().slice(0, 120) : null
+}
+
 function TaskCard({ task, agent, onSelect, onRun }) {
+  const outputPreview = task.status === 'done' ? getOutputPreview(task.output) : null
+  const hasToolResults = task.output?.includes('[TOOL_RESULT')
+  const outputLen = (task.output || '').length
+
   return (
     <div
       onClick={onSelect}
@@ -127,8 +149,33 @@ function TaskCard({ task, agent, onSelect, onRun }) {
         </span>
       </div>
 
-      {task.description && (
+      {task.status !== 'done' && task.description && (
         <p className="text-xs text-hive-500 line-clamp-2 mb-3 leading-relaxed">{task.description}</p>
+      )}
+
+      {/* Output preview for done tasks */}
+      {task.status === 'done' && (
+        <div className="mb-3">
+          {outputPreview ? (
+            <p className="text-xs text-hive-400 line-clamp-2 leading-relaxed italic">
+              "{outputPreview}{outputPreview.length >= 120 ? '...' : ''}"
+            </p>
+          ) : outputLen > 0 ? (
+            <p className="text-[10px] text-hive-600 italic">Output too short or malformed</p>
+          ) : (
+            <p className="text-[10px] text-red-400/60 italic">No output produced</p>
+          )}
+          <div className="flex items-center gap-2 mt-1.5">
+            {hasToolResults && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-400 border border-green-500/20">
+                used real tools
+              </span>
+            )}
+            {outputLen > 1000 && (
+              <span className="text-[10px] text-hive-600">{Math.round(outputLen / 1000)}k chars</span>
+            )}
+          </div>
+        </div>
       )}
 
       <div className="flex items-center justify-between">
