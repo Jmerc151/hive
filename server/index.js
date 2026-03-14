@@ -3292,18 +3292,37 @@ function buildChatSnapshot() {
   const monthlyLimit = getSetting('monthly_limit_usd') || '100'
   sections.push(`## Spend\nToday: $${todayTotal.toFixed(4)} / $${dailyLimit} | Month: $${monthTotal.toFixed(4)} / $${monthlyLimit}`)
 
-  const inProgress = db.prepare("SELECT title, agent_id FROM tasks WHERE status = 'in_progress' ORDER BY updated_at DESC LIMIT 5").all()
+  const inProgress = db.prepare("SELECT title, agent_id, updated_at FROM tasks WHERE status = 'in_progress' ORDER BY updated_at DESC LIMIT 5").all()
   if (inProgress.length) {
-    sections.push('## Currently Working On\n' + inProgress.map(t => `- ${t.agent_id}: "${t.title}"`).join('\n'))
+    sections.push('## Currently Working On\n' + inProgress.map(t => `- ${t.agent_id}: "${t.title}" (since ${t.updated_at})`).join('\n'))
   }
 
-  const recentDone = db.prepare("SELECT title, agent_id, completed_at FROM tasks WHERE status = 'done' ORDER BY completed_at DESC LIMIT 5").all()
+  // Recently completed WITH evidence — show what actually happened
+  const recentDone = db.prepare("SELECT title, agent_id, output, completed_at FROM tasks WHERE status = 'done' ORDER BY completed_at DESC LIMIT 5").all()
   if (recentDone.length) {
-    sections.push('## Recently Completed\n' + recentDone.map(t => `- ${t.agent_id}: "${t.title}"`).join('\n'))
+    const doneLines = recentDone.map(t => {
+      const output = t.output || ''
+      const hasToolResults = output.includes('[TOOL_RESULT')
+      const outputLen = output.length
+      // Summarize what actually happened
+      let evidence = 'NO OUTPUT'
+      if (outputLen > 500 && hasToolResults) evidence = `REAL WORK — used tools, ${outputLen} chars output`
+      else if (outputLen > 500) evidence = `text output only (${outputLen} chars, no tool execution)`
+      else if (outputLen > 0) evidence = `minimal output (${outputLen} chars — likely failed to execute)`
+      return `- ${t.agent_id}: "${t.title}" | ${evidence}`
+    })
+    sections.push('## Recently Completed (with evidence)\n' + doneLines.join('\n'))
+  }
+
+  // Stuck tasks — anything in_progress for more than 30 min
+  const stuckTasks = db.prepare("SELECT title, agent_id, updated_at FROM tasks WHERE status = 'in_progress' AND updated_at < datetime('now', '-30 minutes') ORDER BY updated_at ASC LIMIT 5").all()
+  if (stuckTasks.length) {
+    sections.push('## STUCK Tasks (in_progress > 30 min)\n' + stuckTasks.map(t => `- ${t.agent_id}: "${t.title}" (since ${t.updated_at})`).join('\n'))
   }
 
   const todoCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'todo'").get().c
-  sections.push(`## Queue: ${todoCount} tasks waiting`)
+  const failedCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'failed'").get().c
+  sections.push(`## Queue: ${todoCount} tasks waiting, ${failedCount} failed`)
 
   const paused = getSetting('pause_all_agents') || 'false'
   const qa = getSetting('qa_reviews_enabled') || 'true'
@@ -3513,6 +3532,44 @@ Find 3-5 strategies with specific, testable rules.`, 'high', 'scout', 'todo')
       }
       return { ok: true, message: `**Trading Report**\n- Pipeline: ${JSON.stringify(pipeline)}\n- Active deployments: ${activeDeployments.length} (${activeDeployments.map(d => d.strategy_name).join(', ') || 'none'})\n- Total P&L: $${report.total_pnl}\n- Open positions: ${positions.length}\n- Account equity: $${report.account_equity}`, data: report }
     }
+    case 'execution_report': {
+      // Pull REAL execution evidence — tasks with actual tool results
+      const realWork = db.prepare("SELECT agent_id, title, output, completed_at FROM tasks WHERE status = 'done' AND output LIKE '%TOOL_RESULT%' ORDER BY completed_at DESC LIMIT 10").all()
+      const textOnly = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'done' AND (output IS NULL OR output NOT LIKE '%TOOL_RESULT%')").get().c
+      const totalDone = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'done'").get().c
+      const stuck = db.prepare("SELECT agent_id, title, updated_at FROM tasks WHERE status = 'in_progress' ORDER BY updated_at ASC LIMIT 5").all()
+      const failed = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'failed'").get().c
+
+      let msg = `**Execution Report — The Real Picture**\n`
+      msg += `- Total completed: ${totalDone} tasks\n`
+      msg += `- Tasks with REAL tool execution: ${realWork.length} (these actually did something)\n`
+      msg += `- Tasks with text-only output: ${textOnly} (wrote text but didn't use tools)\n`
+      msg += `- Failed: ${failed}\n`
+      msg += `- Currently stuck: ${stuck.length}\n\n`
+
+      if (realWork.length > 0) {
+        msg += `**Tasks that actually executed tools:**\n`
+        for (const t of realWork.slice(0, 5)) {
+          msg += `- ${t.agent_id}: "${t.title}" (${t.completed_at})\n`
+        }
+      }
+      if (stuck.length > 0) {
+        msg += `\n**Stuck tasks (need attention):**\n`
+        for (const t of stuck) {
+          msg += `- ${t.agent_id}: "${t.title}" (stuck since ${t.updated_at})\n`
+        }
+      }
+      return { ok: true, message: msg }
+    }
+    case 'unstick_agents': {
+      // Reset stuck in_progress tasks back to todo
+      const stuck = db.prepare("SELECT id, agent_id, title FROM tasks WHERE status = 'in_progress' AND updated_at < datetime('now', '-30 minutes')").all()
+      for (const t of stuck) {
+        db.prepare("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ?").run(t.id)
+        activeRuns.delete(t.agent_id)
+      }
+      return { ok: true, message: `Reset ${stuck.length} stuck tasks back to queue: ${stuck.map(t => `${t.agent_id}:"${t.title}"`).join(', ') || 'none stuck'}` }
+    }
     default:
       return { ok: false, message: `Unknown action: ${type}` }
   }
@@ -3523,12 +3580,18 @@ const CHAT_SYSTEM_PROMPT = `You are Hive — the user's AI operations manager. T
 Your personality:
 - Talk naturally like a sharp, friendly manager giving status updates over coffee
 - Say "we" not "the agents" — you're part of the team
-- Be honest about what's working and what's not
-- Give opinions and recommendations, don't just report facts
 - Keep it brief — 2-4 sentences for simple questions, short bullet lists for complex ones
 - Use casual language: "Scout's been grinding on..." not "Scout has been executing..."
-- If something isn't going well, say so directly: "Oracle's been spinning its wheels" not "Oracle has encountered challenges"
-- When the user says hi or asks what's up, give a quick natural summary of what's happening right now
+
+## CRITICAL HONESTY RULES — DO NOT BREAK THESE:
+- NEVER claim an agent did something unless you see EVIDENCE in the data below (tool results, output content, real metrics)
+- If a task has "minimal output" or "text output only" — that means it did NOT actually execute. Be honest: "that task ran but didn't produce real results"
+- If a task says "NO OUTPUT" — it failed silently. Say so.
+- If you see STUCK tasks — flag them immediately
+- When asked "what have the bots done?" — ONLY report tasks with "REAL WORK" evidence. Everything else is just text the agent wrote, not actual work.
+- NEVER make up claims about agents sending emails, executing trades, deploying code, or publishing content unless you see real tool execution results proving it
+- If things aren't working, say so DIRECTLY: "honestly most recent tasks failed to execute properly" is better than inventing success stories
+- The user can handle the truth. Lying loses trust.
 
 ## Actions
 When the user asks you to DO something, output an action block:
@@ -3544,8 +3607,12 @@ When the user asks you to DO something, output an action block:
 [ACTION:backtest_all]{}[/ACTION]
 [ACTION:deploy_strategy]{"strategy_id":"uuid-here"}[/ACTION]
 [ACTION:trading_report]{}[/ACTION]
+[ACTION:execution_report]{}[/ACTION]
+[ACTION:unstick_agents]{}[/ACTION]
 
 Rules: One action per response. Confirm what you'll do before the action block. Never invent task IDs.
+When the user asks "what have the bots done" or "show me results" — use execution_report FIRST to get real data, then summarize honestly.
+When tasks are stuck in_progress for too long — use unstick_agents to reset them.
 
 ## Skill Management
 Skills are SKILL.md instruction packages that inject into agent prompts at runtime — they make agents better at specific tasks.
