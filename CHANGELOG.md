@@ -1,5 +1,22 @@
 # Hive Changelog
 
+## 2026-03-14 — Ember Marketing Skills & Sales Pipeline
+
+### Feature: Ember/Kitchen Bible Marketing Skills
+- **Ember Marketing & Sales** skill — complete playbook with product overview, pricing, cold email templates, SEO topics, competitive positioning, Honey Belly case study (assigned to Scout, Quill, Dealer)
+- **Restaurant Lead Research** skill — how to find and qualify restaurant leads by city, cuisine, growth signals, with qualification tiers and output format (assigned to Scout)
+- **Ember Content Strategy** skill — SEO blog topics ranked by value, email sequences by restaurant segment, social media ideas, tone guidelines (assigned to Quill)
+
+### Feature: Ember Sales Pipeline
+- 3-step automated pipeline: Scout finds restaurant leads → Quill writes personalized outreach → Dealer sends and tracks responses
+- Seeded on server startup if not already present
+
+### Feature: Intel Auto-Extraction from Scout Tasks
+- `extractIntelItems()` function extracts structured opportunities from Scout research output after QA review
+- Uses Claude to parse output into `{title, summary, source_url, confidence, tags}` intel items
+- Auto-inserts into `intel_items` table with task reference
+- Logged to task_logs for traceability
+
 ## 2026-03-14 — Agent Sandbox, A2A Protocol, Multi-User Auth
 
 ### Feature: Agent Sandbox Mode
