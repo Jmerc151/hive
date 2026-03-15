@@ -6967,6 +6967,387 @@ function seedEmberPipeline() {
 
 seedEmberPipeline()
 
+// ── Seed Commercial Product Skills ────────────────────
+function seedCommercialProductSkills() {
+  const PRODUCT_SKILLS = [
+    {
+      slug: 'product-market-research',
+      name: 'Product Market Research',
+      description: 'Research competitor AI agent platforms, pricing, features, reviews, and market positioning',
+      agents: ['scout'],
+      tags: ['research', 'competitors', 'market', 'commercial'],
+      skill_md: `---
+name: product-market-research
+description: Research competitor AI agent platforms for commercial product development
+version: 1.0.0
+author: john
+agents: [scout]
+tags: [research, competitors, market, commercial]
+requires_tools: [web_search]
+---
+
+# Product Market Research
+
+You are researching the AI agent orchestration market for our commercial product launch. The product is a plug-and-play AI agent team platform (working name: AgentForge).
+
+## Competitors to Track
+- CrewAI (crewai.com) — multi-agent framework, Python
+- LangGraph (LangChain) — stateful agent workflows
+- AutoGPT / AgentGPT — autonomous agents
+- Dify (dify.ai) — LLM app development platform
+- Relevance AI — no-code AI agents
+- Flowise — drag-and-drop LLM flows
+- n8n AI — workflow automation with AI
+- OpenAI Assistants API — first-party agent API
+- Dust.tt — custom AI assistants for teams
+
+## Research Output Format
+Always structure findings as:
+1. **Platform**: Name, URL, funding status
+2. **Pricing**: Free tier, paid tiers, enterprise
+3. **Key Features**: What they do well
+4. **Weaknesses**: Gaps, complaints, missing features
+5. **Market Position**: Who they target, how they position
+6. **Our Advantage**: Where our product is better
+
+## Key Questions to Answer
+- What do users complain about most? (Reddit, Twitter, GitHub issues)
+- What pricing model works best? (per-seat, per-run, credits, flat)
+- What features do users request most?
+- How do self-hosted vs hosted options compare?
+- What onboarding flows work? What's friction?
+
+Store all findings using store_memory for cross-agent access.
+Create follow-up tasks for specific deep-dives.`
+    },
+    {
+      slug: 'brand-development',
+      name: 'Brand Development',
+      description: 'Research product names, check domains, draft brand messaging and positioning',
+      agents: ['scout', 'quill'],
+      tags: ['branding', 'naming', 'commercial'],
+      skill_md: `---
+name: brand-development
+description: Develop brand identity for the commercial AI agent platform
+version: 1.0.0
+author: john
+agents: [scout, quill]
+tags: [branding, naming, commercial]
+requires_tools: [web_search]
+---
+
+# Brand Development
+
+Help develop the brand for our commercial AI agent orchestration platform.
+
+## For Scout — Name Research
+When researching product names:
+1. Check if the .com domain is available (search "[name].com" and check registrars)
+2. Search for existing products/companies with that name
+3. Check trademark databases (USPTO TESS)
+4. Evaluate: Is it memorable? Easy to spell? Does it convey AI/agents/teams?
+5. Rate each name 1-10 on: memorability, domain availability, uniqueness, relevance
+
+## Name Candidates to Research
+SwarmOS, AgentForge, CrewDeck, Hivemind, Orchestr8, Synth, Cortex, Axiom, Lattice, Daemon, Colony, Collective, Quorum, Flux, Conductor, Meridian, Agentic, AutoCrew, AgentKit, Swarmly
+
+## For Quill — Messaging
+When writing brand copy:
+- **Tagline**: One line that captures the value prop (< 8 words)
+- **Elevator pitch**: 2 sentences explaining what we do and why it matters
+- **Value props**: 3-4 bullet points for the landing page
+- **Positioning statement**: "For [target], [product] is the [category] that [differentiator]"
+
+## Tone
+Professional but approachable. Technical but not intimidating. Ambitious but not hype-y. Think Linear, Vercel, Supabase — not enterprise-speak.`
+    },
+    {
+      slug: 'commercial-codebase',
+      name: 'Commercial Codebase Development',
+      description: 'Build and maintain the commercial product repo with multi-tenant architecture',
+      agents: ['forge'],
+      tags: ['development', 'commercial', 'multi-tenant'],
+      skill_md: `---
+name: commercial-codebase
+description: Build the commercial AI agent platform codebase
+version: 1.0.0
+author: john
+agents: [forge]
+tags: [development, commercial, multi-tenant]
+requires_tools: [github_list_files, github_read_file, github_write_file, github_create_branch, github_create_pr]
+---
+
+# Commercial Codebase Development
+
+You are building the commercial version of Hive in the repo: **Jmerc151/agentforge**
+
+## Architecture
+- **Database**: PostgreSQL (not SQLite) — all tables have workspace_id
+- **Backend**: Express 5 with ES modules
+- **Frontend**: React 19 + Vite + Tailwind 4
+- **Auth**: JWT + OAuth (Google, GitHub)
+- **Billing**: Stripe (subscriptions + metered credits)
+- **Deploy**: Docker (docker-compose.yml)
+
+## Key Differences from Personal Hive
+1. Every table has a workspace_id FK
+2. All queries scoped by workspace from auth context
+3. Credit metering middleware on LLM calls
+4. BYO API key support (user provides their own OpenRouter key)
+5. Onboarding flow (signup → workspace → agent pack → first task)
+6. No trading dashboard (that's a paid add-on)
+7. No personal revenue tracking
+
+## GitHub Workflow
+1. Always read existing code first with github_list_files and github_read_file
+2. Create feature branches: feature/[name]
+3. Write clean, modular code
+4. Create PRs with clear descriptions
+5. Never push to main directly
+
+## Code Standards
+- ES modules (import/export)
+- Async/await with try/catch
+- PostgreSQL with parameterized queries ($1, $2)
+- Tailwind 4 for styling
+- Mobile-first responsive design`
+    },
+    {
+      slug: 'landing-page-builder',
+      name: 'Landing Page Builder',
+      description: 'Build and iterate on the commercial product landing page',
+      agents: ['forge', 'quill'],
+      tags: ['landing-page', 'marketing', 'commercial'],
+      skill_md: `---
+name: landing-page-builder
+description: Build the commercial product landing page
+version: 1.0.0
+author: john
+agents: [forge, quill]
+tags: [landing-page, marketing, commercial]
+requires_tools: [github_write_file, github_create_branch, github_create_pr, web_search]
+---
+
+# Landing Page Builder
+
+Build the landing page for our commercial AI agent platform.
+
+## Page Sections
+1. **Hero**: Headline + subhead + CTA + product screenshot/demo
+2. **Social proof**: "Trusted by X teams" or early metrics
+3. **Features**: 4-6 key features with icons and descriptions
+4. **How it works**: 3-step visual flow (Sign up → Pick agents → Watch them work)
+5. **Agent packs**: Show the pre-built packs (Content Agency, Dev Team, etc.)
+6. **Pricing**: 5 tiers (Free, Starter, Pro, Team, Enterprise)
+7. **FAQ**: Common questions
+8. **CTA**: Final call to action
+
+## For Quill — Copy
+- Hero headline should be 5-8 words, benefit-focused
+- Subhead explains the what in 1-2 sentences
+- Feature descriptions are 1-2 sentences each
+- All copy should be clear, not clever
+
+## For Forge — Code
+- React + Tailwind 4
+- Dark theme primary (with light mode toggle)
+- Mobile-first responsive
+- Smooth scroll animations
+- Fast load (no heavy images initially)
+- Deploy target: Vercel
+
+## Design Reference
+Study: linear.app, vercel.com, supabase.com, cursor.com for design quality benchmarks.`
+    },
+    {
+      slug: 'go-to-market',
+      name: 'Go-to-Market Strategy',
+      description: 'Research distribution, outreach, beta program, and launch strategy',
+      agents: ['dealer'],
+      tags: ['marketing', 'sales', 'launch', 'commercial'],
+      skill_md: `---
+name: go-to-market
+description: Go-to-market research and execution for commercial product launch
+version: 1.0.0
+author: john
+agents: [dealer]
+tags: [marketing, sales, launch, commercial]
+requires_tools: [web_search, send_email]
+---
+
+# Go-to-Market Strategy
+
+Plan and execute the go-to-market for our AI agent orchestration platform.
+
+## Phase 1: Research (Month 1-2)
+- Identify target communities: Reddit (r/artificial, r/SaaS, r/indiehackers), Twitter AI accounts, Discord servers, Hacker News
+- Research successful AI product launches (what worked, what didn't)
+- Find 50+ potential beta testers (AI enthusiasts, indie hackers, agency owners)
+- Draft cold outreach templates (email, Twitter DM, Reddit post)
+- Research partnership opportunities (OpenRouter, model providers, dev tools)
+
+## Phase 2: Beta Program (Month 3-4)
+- Draft beta invite email sequence (3 emails)
+- Create feedback collection questions
+- Identify key metrics to track during beta
+- Plan community building (Discord server structure)
+
+## Phase 3: Launch (Month 5-6)
+- Product Hunt launch checklist
+- Hacker News "Show HN" post draft
+- Social media content calendar (2 weeks pre-launch + launch week)
+- Press/media outreach list (AI newsletters, tech blogs)
+- Partnership activation plans
+
+## Output Format
+Always provide actionable deliverables:
+- Lists with names, links, contact info
+- Draft copy ready to use
+- Timelines with specific dates
+- Metrics to track with targets`
+    },
+    {
+      slug: 'financial-modeling',
+      name: 'Financial Modeling',
+      description: 'Build cost/revenue projections, pricing analysis, and unit economics',
+      agents: ['oracle'],
+      tags: ['finance', 'pricing', 'commercial'],
+      skill_md: `---
+name: financial-modeling
+description: Financial modeling for commercial AI agent platform
+version: 1.0.0
+author: john
+agents: [oracle]
+tags: [finance, pricing, commercial]
+requires_tools: [web_search]
+---
+
+# Financial Modeling
+
+Build financial models for the commercial AI agent platform.
+
+## Key Analyses
+1. **Unit Economics**: Cost per user (API calls, hosting, support) vs revenue per user at each tier
+2. **Credit Pricing**: What markup on LLM API costs is competitive but profitable?
+   - OpenRouter rates for Claude Haiku, Sonnet, GPT-4o, DeepSeek
+   - Competitor pricing per API call/credit
+   - Target: 2-3x markup minimum
+3. **Growth Projections**: Users × ARPU × months for 6/12/24 month horizons
+4. **Infrastructure Costs**: Server costs at 100, 1K, 10K, 100K users
+5. **Break-even Analysis**: When does revenue cover costs?
+
+## Competitor Pricing Research
+- CrewAI: pricing tiers and what's included
+- Dify: cloud pricing vs self-hosted
+- Relevance AI: per-credit pricing model
+- n8n: cloud vs self-hosted pricing
+- Cursor: credit-based model analysis
+
+## Output Format
+Provide clear tables with:
+- Monthly projections (Month 1-12)
+- Per-tier revenue calculations
+- Cost breakdowns (fixed vs variable)
+- Sensitivity analysis (what if credits cost more/less?)
+
+Store all models using store_memory for reference.`
+    },
+    {
+      slug: 'product-sprint-manager',
+      name: 'Product Sprint Manager',
+      description: 'Manage the 6-month product development sprint across all agents',
+      agents: ['nexus'],
+      tags: ['management', 'sprint', 'commercial'],
+      skill_md: `---
+name: product-sprint-manager
+description: Manage the commercial product development sprint
+version: 1.0.0
+author: john
+agents: [nexus]
+tags: [management, sprint, commercial]
+requires_tools: [list_tasks, create_task]
+---
+
+# Product Sprint Manager
+
+You manage the 6-month development sprint for the commercial AI agent platform (repo: Jmerc151/agentforge).
+
+## Your Responsibilities
+1. Review completed tasks from all agents weekly
+2. Score quality of deliverables (1-10)
+3. Identify blockers and dependencies
+4. Create follow-up tasks to keep momentum
+5. Ensure all 6 agents have assigned work
+6. Track milestone progress
+
+## Sprint Structure
+- **Phase 1 (Month 1-2)**: Foundation — research, branding, codebase fork, landing page
+- **Phase 2 (Month 3-4)**: Product — features, beta, billing, marketplace
+- **Phase 3 (Month 5-6)**: Launch — optimization, testing, launch prep
+
+## Weekly Review Checklist
+1. How many tasks completed vs created this week?
+2. What did each agent accomplish?
+3. Are we on track for the current phase milestone?
+4. What's blocking progress?
+5. What should each agent work on next week?
+
+## Task Creation Rules
+- Always tag tasks with "commercial" or "agentforge" in description
+- Assign to the right agent based on the skill needed
+- Set priority: high for blockers, medium for features, low for nice-to-haves
+- Keep task titles clear and actionable ("Research CrewAI pricing model" not "Do research")
+
+## Milestone Targets
+- Month 2: Name chosen, repo with basic structure, landing page draft, competitor report
+- Month 4: Working multi-tenant MVP, Stripe billing, 10 beta users, docs site
+- Month 6: Production launch, 50+ users, Product Hunt submission`
+    }
+  ]
+
+  const insertSkill = db.prepare('INSERT OR IGNORE INTO skills (id, slug, name, description, skill_md, tags, source) VALUES (?, ?, ?, ?, ?, ?, ?)')
+  const assignSkill = db.prepare('INSERT OR IGNORE INTO agent_skills_v2 (agent_id, skill_id) VALUES (?, ?)')
+
+  for (const skill of PRODUCT_SKILLS) {
+    const id = uuid()
+    insertSkill.run(id, skill.slug, skill.name, skill.description, skill.skill_md, JSON.stringify(skill.tags), 'custom')
+    const savedSkill = db.prepare('SELECT id FROM skills WHERE slug = ?').get(skill.slug)
+    if (savedSkill) {
+      for (const agentId of skill.agents) {
+        assignSkill.run(agentId, savedSkill.id)
+      }
+    }
+  }
+  console.log('🚀 Seeded 7 commercial product development skills')
+}
+
+seedCommercialProductSkills()
+
+// ── Seed Product Development Pipeline ────────────────────
+function seedProductPipeline() {
+  const existing = db.prepare("SELECT id FROM pipelines WHERE name = 'Product Development Sprint'").get()
+  if (existing) return
+
+  const pipelineId = uuid()
+  const steps = [
+    { position: 1, agent_id: 'nexus', prompt_template: 'Review current sprint status for the commercial AI agent platform (AgentForge). Check what tasks have been completed recently, what is in progress, and what blockers exist. Create a prioritized list of what each agent should work on next. Focus on Phase 1 goals: competitor research, naming/branding, codebase setup, and landing page.' },
+    { position: 2, agent_id: 'scout', prompt_template: 'Based on the sprint priorities, research the assigned topics for the commercial product. Focus on competitor analysis, market research, or name/domain research as directed. Store all findings using store_memory. Create follow-up tasks for deeper investigation.\n\nSprint Priorities:\n{{previous_output}}' },
+    { position: 3, agent_id: 'forge', prompt_template: 'Based on sprint priorities, build the next features in the Jmerc151/agentforge repo using GitHub tools. Read existing code first, create a feature branch, write clean code, and create a PR. Follow the commercial-codebase skill guidelines.\n\nSprint Priorities & Research:\n{{previous_output}}' },
+    { position: 4, agent_id: 'quill', prompt_template: 'Based on sprint priorities, write the assigned content — landing page copy, documentation, blog posts, or brand messaging. Follow the brand-development and landing-page-builder skill guidelines. Output clean, ready-to-use copy.\n\nSprint Context:\n{{previous_output}}' },
+    { position: 5, agent_id: 'nexus', prompt_template: 'Review all outputs from this sprint cycle. Score each deliverable 1-10 for quality and completeness. Identify gaps, issues, or improvements needed. Create follow-up tasks for the next sprint cycle. Update the sprint status.\n\nSprint Outputs:\n{{previous_output}}' }
+  ]
+
+  db.prepare('INSERT INTO pipelines (id, name, description, steps) VALUES (?, ?, ?, ?)').run(
+    pipelineId,
+    'Product Development Sprint',
+    'Nexus plans → Scout researches → Forge builds → Quill writes → Nexus reviews. Runs weekly for commercial product development.',
+    JSON.stringify(steps)
+  )
+  console.log('🔗 Seeded Product Development Sprint pipeline')
+}
+
+seedProductPipeline()
+
 // ── Scheduled Jobs — Cron Scheduler ──────────────────
 function matchesCron(expression, date) {
   const [min, hour, dom, month, dow] = expression.split(' ')
