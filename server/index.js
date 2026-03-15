@@ -1168,6 +1168,223 @@ const TOOL_REGISTRY = [
         return { total: data.total_count, items: data.items?.map(i => ({ name: i.name, path: i.path, repo: i.repository?.full_name })) }
       } catch (e) { return { error: e.message } }
     }
+  },
+  // ═══════════════════════════════════════════
+  // ██ GUMROAD — Digital product publishing  ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'gumroad_create_product',
+    description: 'Create and publish a digital product on Gumroad. Returns the product URL.',
+    params: {
+      name: { type: 'string', required: true, description: 'Product name' },
+      description: { type: 'string', required: true, description: 'Product description (supports markdown)' },
+      price: { type: 'number', required: true, description: 'Price in cents (e.g. 999 = $9.99, 0 = free)' },
+      tags: { type: 'string', required: false, description: 'Comma-separated tags' }
+    },
+    agents: ['forge', 'dealer'],
+    execute: async (args) => {
+      const token = process.env.GUMROAD_ACCESS_TOKEN
+      if (!token) return { error: 'GUMROAD_ACCESS_TOKEN not configured. Add it to .env on the server.' }
+      try {
+        const form = new URLSearchParams()
+        form.append('access_token', token)
+        form.append('name', args.name)
+        form.append('description', args.description)
+        form.append('price', String(args.price))
+        if (args.tags) form.append('tags', args.tags)
+        form.append('published', 'true')
+        const res = await fetch('https://api.gumroad.com/v2/products', { method: 'POST', body: form })
+        const data = await res.json()
+        if (!data.success) return { error: data.message || 'Gumroad API error' }
+        return { success: true, url: data.product?.short_url, id: data.product?.id, name: data.product?.name, price: data.product?.price }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'gumroad_list_products',
+    description: 'List all Gumroad products with sales data',
+    params: {},
+    agents: ['forge', 'dealer', 'nexus'],
+    execute: async () => {
+      const token = process.env.GUMROAD_ACCESS_TOKEN
+      if (!token) return { error: 'GUMROAD_ACCESS_TOKEN not configured' }
+      try {
+        const res = await fetch(`https://api.gumroad.com/v2/products?access_token=${token}`)
+        const data = await res.json()
+        if (!data.success) return { error: data.message }
+        return { products: data.products?.map(p => ({ id: p.id, name: p.name, price: p.price, sales_count: p.sales_count, revenue: p.revenue, url: p.short_url, published: p.published })) }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'gumroad_get_sales',
+    description: 'Get recent Gumroad sales with revenue data',
+    params: { after: { type: 'string', required: false, description: 'ISO date to get sales after (e.g. 2026-03-01)' } },
+    agents: ['dealer', 'nexus'],
+    execute: async (args) => {
+      const token = process.env.GUMROAD_ACCESS_TOKEN
+      if (!token) return { error: 'GUMROAD_ACCESS_TOKEN not configured' }
+      try {
+        let url = `https://api.gumroad.com/v2/sales?access_token=${token}`
+        if (args.after) url += `&after=${args.after}`
+        const res = await fetch(url)
+        const data = await res.json()
+        if (!data.success) return { error: data.message }
+        return { sales: data.sales?.slice(0, 50).map(s => ({ id: s.id, product: s.product_name, price: s.price, email: s.email, created_at: s.created_at })), total: data.sales?.length }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  // ═══════════════════════════════════════════
+  // ██ DEV.TO — Blog post publishing         ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'devto_publish',
+    description: 'Publish a blog post on Dev.to. Returns the post URL.',
+    params: {
+      title: { type: 'string', required: true, description: 'Article title' },
+      body_markdown: { type: 'string', required: true, description: 'Article content in markdown' },
+      tags: { type: 'string', required: false, description: 'Comma-separated tags (max 4, e.g. "ai,productivity,webdev")' },
+      published: { type: 'boolean', required: false, description: 'Publish immediately (default true)' }
+    },
+    agents: ['quill'],
+    execute: async (args) => {
+      const token = process.env.DEVTO_API_KEY
+      if (!token) return { error: 'DEVTO_API_KEY not configured. Add it to .env on the server.' }
+      try {
+        const tags = args.tags ? args.tags.split(',').map(t => t.trim()).slice(0, 4) : []
+        const res = await fetch('https://dev.to/api/articles', {
+          method: 'POST',
+          headers: { 'api-key': token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ article: { title: args.title, body_markdown: args.body_markdown, tags, published: args.published !== false } })
+        })
+        const data = await res.json()
+        if (data.error) return { error: data.error }
+        return { success: true, url: data.url, id: data.id, title: data.title }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'devto_list_articles',
+    description: 'List your published Dev.to articles with view/reaction stats',
+    params: {},
+    agents: ['quill', 'nexus'],
+    execute: async () => {
+      const token = process.env.DEVTO_API_KEY
+      if (!token) return { error: 'DEVTO_API_KEY not configured' }
+      try {
+        const res = await fetch('https://dev.to/api/articles/me/published?per_page=30', { headers: { 'api-key': token } })
+        const data = await res.json()
+        return { articles: data.map(a => ({ id: a.id, title: a.title, url: a.url, views: a.page_views_count, reactions: a.positive_reactions_count, comments: a.comments_count, published_at: a.published_at })) }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  // ═══════════════════════════════════════════
+  // ██ BEEHIIV — Newsletter publishing       ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'beehiiv_create_post',
+    description: 'Create and optionally send a newsletter post via Beehiiv',
+    params: {
+      title: { type: 'string', required: true, description: 'Newsletter subject/title' },
+      content: { type: 'string', required: true, description: 'Newsletter content in HTML' },
+      send: { type: 'boolean', required: false, description: 'Send to subscribers immediately (default false = draft)' }
+    },
+    agents: ['quill'],
+    execute: async (args) => {
+      const token = process.env.BEEHIIV_API_KEY
+      const pubId = process.env.BEEHIIV_PUBLICATION_ID
+      if (!token || !pubId) return { error: 'BEEHIIV_API_KEY and BEEHIIV_PUBLICATION_ID not configured. Add to .env.' }
+      try {
+        const res = await fetch(`https://api.beehiiv.com/v2/publications/${pubId}/posts`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: args.title, subtitle: '', content: [{ type: 'html', html: args.content }], status: args.send ? 'confirmed' : 'draft' })
+        })
+        const data = await res.json()
+        if (data.errors) return { error: JSON.stringify(data.errors) }
+        return { success: true, id: data.data?.id, status: data.data?.status, url: data.data?.web_url }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'beehiiv_get_subscribers',
+    description: 'Get subscriber count and recent subscribers from Beehiiv',
+    params: {},
+    agents: ['quill', 'dealer', 'nexus'],
+    execute: async () => {
+      const token = process.env.BEEHIIV_API_KEY
+      const pubId = process.env.BEEHIIV_PUBLICATION_ID
+      if (!token || !pubId) return { error: 'BEEHIIV_API_KEY and BEEHIIV_PUBLICATION_ID not configured' }
+      try {
+        const res = await fetch(`https://api.beehiiv.com/v2/publications/${pubId}/subscriptions?limit=10&order_by=created&direction=desc`, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        const data = await res.json()
+        return { total: data.total_results, recent: data.data?.map(s => ({ email: s.email, status: s.status, created: s.created })) }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  // ═══════════════════════════════════════════
+  // ██ TWITTER/X — Social posting            ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'twitter_post',
+    description: 'Post a tweet on Twitter/X. Returns the tweet URL.',
+    params: {
+      text: { type: 'string', required: true, description: 'Tweet text (max 280 chars)' },
+      reply_to: { type: 'string', required: false, description: 'Tweet ID to reply to' }
+    },
+    agents: ['quill', 'dealer'],
+    execute: async (args) => {
+      const apiKey = process.env.TWITTER_API_KEY
+      const apiSecret = process.env.TWITTER_API_SECRET
+      const accessToken = process.env.TWITTER_ACCESS_TOKEN
+      const accessSecret = process.env.TWITTER_ACCESS_SECRET
+      if (!accessToken || !accessSecret || !apiKey || !apiSecret) return { error: 'Twitter API keys not configured. Need TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET in .env.' }
+      try {
+        const { createHmac, randomBytes } = await import('crypto')
+        const timestamp = Math.floor(Date.now() / 1000).toString()
+        const nonce = randomBytes(16).toString('hex')
+        const url = 'https://api.twitter.com/2/tweets'
+        const body = { text: args.text.slice(0, 280) }
+        if (args.reply_to) body.reply = { in_reply_to_tweet_id: args.reply_to }
+        const params = { oauth_consumer_key: apiKey, oauth_nonce: nonce, oauth_signature_method: 'HMAC-SHA1', oauth_timestamp: timestamp, oauth_token: accessToken, oauth_version: '1.0' }
+        const paramStr = Object.keys(params).sort().map(k => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`).join('&')
+        const baseStr = `POST&${encodeURIComponent(url)}&${encodeURIComponent(paramStr)}`
+        const sigKey = `${encodeURIComponent(apiSecret)}&${encodeURIComponent(accessSecret)}`
+        const sig = createHmac('sha1', sigKey).update(baseStr).digest('base64')
+        params.oauth_signature = sig
+        const authHeader = 'OAuth ' + Object.keys(params).sort().map(k => `${encodeURIComponent(k)}="${encodeURIComponent(params[k])}"`).join(', ')
+        const res = await fetch(url, { method: 'POST', headers: { Authorization: authHeader, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        const data = await res.json()
+        if (data.errors) return { error: JSON.stringify(data.errors) }
+        return { success: true, tweet_id: data.data?.id, text: data.data?.text, url: `https://x.com/i/status/${data.data?.id}` }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'twitter_thread',
+    description: 'Post a thread (multiple tweets) on Twitter/X. Returns URLs of all tweets.',
+    params: {
+      tweets: { type: 'string', required: true, description: 'JSON array of tweet texts, e.g. ["First tweet","Second tweet","Third tweet"]' }
+    },
+    agents: ['quill'],
+    execute: async (args) => {
+      let tweets
+      try { tweets = JSON.parse(args.tweets) } catch { return { error: 'tweets must be a JSON array of strings' } }
+      if (!Array.isArray(tweets) || tweets.length < 2) return { error: 'Need at least 2 tweets for a thread' }
+      if (tweets.length > 15) return { error: 'Max 15 tweets per thread' }
+      const results = []
+      let replyTo = null
+      for (const text of tweets) {
+        const tool = TOOL_REGISTRY.find(t => t.name === 'twitter_post')
+        const result = await tool.execute({ text, reply_to: replyTo })
+        if (result.error) return { error: `Thread failed at tweet ${results.length + 1}: ${result.error}`, posted: results }
+        results.push(result)
+        replyTo = result.tweet_id
+      }
+      return { success: true, thread: results }
+    }
   }
 ]
 
@@ -3920,15 +4137,17 @@ app.get('/api/performance/leaderboard', (req, res) => {
 registerHeartbeat('strategy-executor', 5 * 60 * 1000, async () => {
   try {
     const enabled = getSetting('trading_enabled')
-    if (enabled === 'false') return
+    if (enabled === 'false') { console.log('[strategy-executor] Trading disabled'); return }
 
     const marketStatus = await broker.isMarketOpen()
-    if (!marketStatus.isOpen) return
+    if (!marketStatus.isOpen) { console.log('[strategy-executor] Market closed'); return }
 
     const deployments = db.prepare("SELECT * FROM bot_deployments WHERE status = 'active'").all()
+    console.log(`[strategy-executor] Checking ${deployments.length} active deployments`)
     for (const dep of deployments) {
       try {
         const signals = await backtest.evaluateDeploymentSignals(dep)
+        console.log(`[strategy-executor] ${dep.strategy_name}: ${signals.length} signals — ${signals.map(s => `${s.signal} ${s.symbol}`).join(', ') || 'none'}`)
         for (const sig of signals) {
           if (sig.signal === 'buy') {
             const result = await broker.placeOrder({ symbol: sig.symbol, qty: 1, side: 'buy', strategyId: dep.strategy_id })
