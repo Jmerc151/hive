@@ -5,77 +5,86 @@ const STATUS_COLORS = {
   idle: 'bg-hive-500'
 }
 
-const MODEL_SHORT = {
-  'perplexity/sonar-pro': 'Sonar',
-  'deepseek/deepseek-r1': 'R1',
-  'anthropic/claude-haiku-4-5': 'Haiku',
-  'anthropic/claude-sonnet-4-5': 'Sonnet',
-}
-
-const NAV_ITEMS = [
-  { key: 'mission', icon: '🎯', label: 'Mission Control' },
-  { key: 'deliverables', icon: '📦', label: 'Deliverables' },
-  { key: 'graph', icon: '🕸️', label: 'Agent Graph' },
-  { key: 'analytics', icon: '📊', label: 'Analytics' },
-  { key: 'intel', icon: '🔍', label: 'Intel Feed' },
-  { key: 'trading', icon: '📈', label: 'Trading' },
-  { key: 'skillsV2', icon: '🧩', label: 'Skills' },
-  { key: 'projects', icon: '📁', label: 'Projects' },
-  { key: 'pipelines', icon: '🔗', label: 'Pipelines' },
-  { key: 'proposals', icon: '💡', label: 'Proposals' },
-  { key: 'revenue', icon: '💵', label: 'Revenue' },
-  { key: 'history', icon: '📜', label: 'History' },
-  { key: 'trace', icon: '📡', label: 'Live Trace' },
-  { key: 'knowledge', icon: '📚', label: 'Knowledge' },
-  { key: 'sandbox', icon: '🧫', label: 'Sandbox' },
-  { key: 'eval', icon: '🧪', label: 'Eval Harness' },
-  { key: 'schedule', icon: '⏰', label: 'Schedule' },
-  { key: 'memory', icon: '🧠', label: 'Memory' },
-  { key: 'triggers', icon: '⚡', label: 'Triggers' },
-  { key: 'botGen', icon: '⚒️', label: 'Bot Generator' },
-  { key: 'spend', icon: '💰', label: 'Spend Limits' },
-  { key: 'chat', icon: '💬', label: 'Chat' },
+const NAV_GROUPS = [
+  {
+    label: null, // no header — always visible
+    items: [
+      { key: 'mission', icon: '\uD83C\uDFAF', label: 'Mission Control' },
+      { key: 'proposals', icon: '\uD83D\uDCA1', label: 'Proposals' },
+      { key: 'intel', icon: '\uD83D\uDD0D', label: 'Intel Feed' },
+    ]
+  },
+  {
+    label: 'Work',
+    items: [
+      { key: 'deliverables', icon: '\uD83D\uDCE6', label: 'Deliverables' },
+      { key: 'projects', icon: '\uD83D\uDCC1', label: 'Projects' },
+      { key: 'pipelines', icon: '\uD83D\uDD17', label: 'Pipelines' },
+      { key: 'schedule', icon: '\u23F0', label: 'Schedule' },
+    ]
+  },
+  {
+    label: 'Insights',
+    items: [
+      { key: 'analytics', icon: '\uD83D\uDCCA', label: 'Analytics' },
+      { key: 'revenue', icon: '\uD83D\uDCB5', label: 'Revenue' },
+      { key: 'trading', icon: '\uD83D\uDCC8', label: 'Trading' },
+      { key: 'graph', icon: '\uD83D\uDD78\uFE0F', label: 'Agent Graph' },
+    ]
+  },
+  {
+    label: 'Tools',
+    collapsed: true,
+    items: [
+      { key: 'skillsV2', icon: '\uD83E\uDDE9', label: 'Skills' },
+      { key: 'knowledge', icon: '\uD83D\uDCDA', label: 'Knowledge' },
+      { key: 'memory', icon: '\uD83E\uDDE0', label: 'Memory' },
+      { key: 'triggers', icon: '\u26A1', label: 'Triggers' },
+      { key: 'botGen', icon: '\u2692\uFE0F', label: 'Bot Generator' },
+    ]
+  },
+  {
+    label: 'Developer',
+    collapsed: true,
+    items: [
+      { key: 'trace', icon: '\uD83D\uDCE1', label: 'Live Trace' },
+      { key: 'sandbox', icon: '\uD83E\uDDEB', label: 'Sandbox' },
+      { key: 'eval', icon: '\uD83E\uDDEA', label: 'Eval Harness' },
+      { key: 'history', icon: '\uD83D\uDCDC', label: 'History' },
+      { key: 'spend', icon: '\uD83D\uDCB0', label: 'Spend Limits' },
+      { key: 'chat', icon: '\uD83D\uDCAC', label: 'Chat' },
+    ]
+  }
 ]
 
 export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgent, onNewTask, taskCount, onScorecard, onSkills, onNav, currentUser, onLogout }) {
   const [collapsed, setCollapsed] = useState(false)
+  const [expandedGroups, setExpandedGroups] = useState({})
+
+  const toggleGroup = (label) => {
+    setExpandedGroups(prev => ({ ...prev, [label]: !prev[label] }))
+  }
 
   if (collapsed) {
     return (
-      <aside className="w-16 bg-hive-800 border-r border-hive-700 flex flex-col items-center py-4 gap-3">
-        <button onClick={() => setCollapsed(false)} className="text-xl mb-2 hover:text-honey transition-colors" aria-label="Expand sidebar">🔥</button>
-        <div className="w-8 h-px bg-hive-700" />
+      <aside className="w-14 bg-hive-800 border-r border-hive-700 flex flex-col items-center py-4 gap-2">
+        <button onClick={() => setCollapsed(false)} className="text-lg mb-1 hover:text-honey transition-colors" aria-label="Expand">&#x1F41D;</button>
+        <div className="w-7 h-px bg-hive-700" />
         {agents.map(agent => (
           <button
             key={agent.id}
             onClick={() => onFilterAgent(filterAgent === agent.id ? null : agent.id)}
-            className={`w-10 h-10 rounded-lg flex items-center justify-center text-lg transition-all ${
+            className={`w-9 h-9 rounded-lg flex items-center justify-center text-base transition-all relative ${
               filterAgent === agent.id ? 'ring-2 ring-honey bg-hive-700' : 'hover:bg-hive-700'
             }`}
-            title={`${agent.name} — ${agent.role}`}
+            title={agent.name}
           >
             {agent.avatar}
-          </button>
-        ))}
-        <div className="w-8 h-px bg-hive-700 my-1" />
-        {[
-          { key: 'graph', icon: '🕸️', label: 'Graph' },
-          { key: 'analytics', icon: '📊', label: 'Analytics' },
-          { key: 'trading', icon: '📈', label: 'Trading' },
-          { key: 'intel', icon: '🔍', label: 'Intel' },
-          { key: 'proposals', icon: '💡', label: 'Proposals' },
-        ].map(item => (
-          <button
-            key={item.key}
-            onClick={() => onNav?.(item.key)}
-            className="w-10 h-10 rounded-lg flex items-center justify-center text-lg hover:bg-hive-700 transition-all"
-            title={item.label}
-          >
-            {item.icon}
+            {agent.isRunning && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-green-500 rounded-full" />}
           </button>
         ))}
         <div className="flex-1" />
-        <button onClick={onNewTask} className="w-10 h-10 rounded-lg bg-honey text-white flex items-center justify-center text-lg hover:bg-honey-dim transition-colors" title="New Task">
+        <button onClick={onNewTask} className="w-9 h-9 rounded-lg bg-honey text-white flex items-center justify-center text-base hover:bg-honey-dim transition-colors" title="New Task">
           +
         </button>
       </aside>
@@ -83,139 +92,115 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
   }
 
   return (
-    <aside className="w-72 bg-hive-800 border-r border-hive-700 flex flex-col overflow-hidden">
+    <aside className="w-64 bg-hive-800 border-r border-hive-700 flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="p-4 border-b border-hive-700 flex items-center justify-between">
+      <div className="px-4 py-3 border-b border-hive-700 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
-          <span className="text-xl">🔥</span>
-          <span className="font-semibold text-honey">Hive</span>
+          <span className="text-lg">&#x1F41D;</span>
+          <span className="font-semibold text-honey text-sm">Hive</span>
+          <span className="text-xs text-hive-500 bg-hive-700/50 px-1.5 py-0.5 rounded">{taskCount}</span>
         </div>
-        <button onClick={() => setCollapsed(true)} className="text-hive-400 hover:text-hive-200 text-sm" aria-label="Collapse sidebar">
-          ‹‹
+        <button onClick={() => setCollapsed(true)} className="text-hive-500 hover:text-hive-300 text-xs">
+          &#x2039;&#x2039;
         </button>
       </div>
 
-      {/* Stats */}
-      <div className="p-4 border-b border-hive-700">
-        <div className="grid grid-cols-2 gap-2 text-center">
-          <div className="bg-hive-700/50 rounded-lg p-2">
-            <div className="text-lg font-semibold">{taskCount}</div>
-            <div className="text-xs text-hive-400">Tasks</div>
-          </div>
-          <div className="bg-hive-700/50 rounded-lg p-2">
-            <div className="text-lg font-semibold">{agents.filter(a => a.isRunning).length}</div>
-            <div className="text-xs text-hive-400">Active</div>
-          </div>
-        </div>
-      </div>
-
-      {/* Agent List */}
-      <div className="flex-1 overflow-y-auto p-3">
-        <div className="text-xs font-medium text-hive-400 uppercase tracking-wider mb-2 px-1">Agent Team</div>
-        <div className="space-y-1">
+      {/* Agents — compact */}
+      <div className="px-3 py-2 border-b border-hive-700 shrink-0">
+        <div className="space-y-0.5">
           {agents.map(agent => (
             <div
               key={agent.id}
               onClick={() => onFilterAgent(filterAgent === agent.id ? null : agent.id)}
-              className={`w-full text-left p-3 rounded-lg transition-all group cursor-pointer ${
+              className={`flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer transition-all ${
                 filterAgent === agent.id
                   ? 'bg-hive-700 ring-1 ring-honey/30'
-                  : 'hover:bg-hive-700/50'
+                  : 'hover:bg-hive-700/40'
               }`}
             >
-              <div className="flex items-center gap-3">
-                <div className="text-2xl">{agent.avatar}</div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm">{agent.name}</span>
-                    <span className={`w-2 h-2 rounded-full ${agent.isRunning ? STATUS_COLORS.running : STATUS_COLORS.idle}`} />
-                  </div>
-                  <div className="text-xs text-hive-400 truncate">{agent.role}</div>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    {agent.model && (
-                      <span className="text-[10px] px-1.5 py-0.5 bg-hive-700/80 text-hive-400 rounded font-mono">
-                        {MODEL_SHORT[agent.model] || agent.model.split('/').pop()}
-                      </span>
-                    )}
-                    {agent.todaySpend != null && (
-                      <span className={`text-[10px] font-medium ${agent.todaySpend > 1 ? 'text-amber-400' : 'text-hive-500'}`}>
-                        ${agent.todaySpend.toFixed(2)}
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onScorecard?.(agent) }}
-                    className="text-xs text-hive-500 hover:text-honey transition-colors"
-                    title="Scorecard"
-                  >📊</button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onSkills?.(agent) }}
-                    className="text-xs text-hive-500 hover:text-honey transition-colors"
-                    title="Skills"
-                  >⚙️</button>
-                </div>
+              <span className="text-base">{agent.avatar}</span>
+              <span className="text-sm text-hive-200 flex-1 truncate">{agent.name}</span>
+              <div className="flex items-center gap-1.5">
+                {agent.isRunning ? (
+                  <>
+                    <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onStopAgent(agent.id) }}
+                      className="text-[10px] text-red-400/70 hover:text-red-400 px-1"
+                    >Stop</button>
+                  </>
+                ) : (
+                  <span className="w-1.5 h-1.5 bg-hive-600 rounded-full" />
+                )}
               </div>
-              {agent.isRunning && (
-                <div className="mt-2 flex items-center gap-2">
-                  <div className="flex-1 h-1 bg-hive-600 rounded-full overflow-hidden">
-                    <div className="h-full rounded-full animate-pulse" style={{ background: agent.color, width: '60%' }} />
-                  </div>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onStopAgent(agent.id) }}
-                    className="text-xs text-red-400 hover:text-red-300"
-                  >
-                    Stop
-                  </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Navigation — grouped */}
+      <div className="flex-1 overflow-y-auto px-3 py-2">
+        {NAV_GROUPS.map((group, gi) => {
+          const isCollapsible = !!group.label
+          const defaultOpen = !group.collapsed
+          const isOpen = group.label ? (expandedGroups[group.label] ?? defaultOpen) : true
+
+          return (
+            <div key={gi} className="mb-1">
+              {group.label && (
+                <button
+                  onClick={() => toggleGroup(group.label)}
+                  className="flex items-center gap-1 w-full px-2 py-1.5 text-[10px] font-semibold text-hive-500 uppercase tracking-wider hover:text-hive-300 transition-colors"
+                >
+                  <span className="text-[9px] transition-transform" style={{ transform: isOpen ? 'rotate(90deg)' : '' }}>&#x25B6;</span>
+                  {group.label}
+                </button>
+              )}
+              {isOpen && (
+                <div className="space-y-0.5">
+                  {group.items.map(item => (
+                    <button
+                      key={item.key}
+                      onClick={() => onNav?.(item.key)}
+                      className="flex items-center gap-2 w-full px-2 py-1.5 rounded-lg text-sm text-hive-300 hover:bg-hive-700/50 hover:text-hive-100 transition-colors text-left"
+                    >
+                      <span className="text-sm w-5 text-center">{item.icon}</span>
+                      <span className="truncate">{item.label}</span>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
-          ))}
-        </div>
+          )
+        })}
+        {currentUser?.role === 'admin' && (
+          <button
+            onClick={() => onNav?.('users')}
+            className="flex items-center gap-2 w-full px-2 py-1.5 rounded-lg text-sm text-hive-300 hover:bg-hive-700/50 hover:text-hive-100 transition-colors text-left"
+          >
+            <span className="text-sm w-5 text-center">&#x1F465;</span>
+            <span>Users</span>
+          </button>
+        )}
       </div>
 
-      {/* Navigation */}
-      <div className="border-t border-hive-700 p-3 overflow-y-auto" style={{ maxHeight: '40%' }}>
-        <div className="text-xs font-medium text-hive-400 uppercase tracking-wider mb-2 px-1">Panels</div>
-        <div className="grid grid-cols-2 gap-1">
-          {NAV_ITEMS.map(item => (
-            <button
-              key={item.key}
-              onClick={() => onNav?.(item.key)}
-              className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs text-hive-300 hover:bg-hive-700/50 hover:text-hive-100 transition-colors text-left"
-            >
-              <span>{item.icon}</span>
-              <span className="truncate">{item.label}</span>
-            </button>
-          ))}
-          {currentUser?.role === 'admin' && (
-            <button
-              onClick={() => onNav?.('users')}
-              className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs text-hive-300 hover:bg-hive-700/50 hover:text-hive-100 transition-colors text-left"
-            >
-              <span>👥</span>
-              <span className="truncate">Users</span>
-            </button>
-          )}
-        </div>
+      {/* + New Task button */}
+      <div className="px-3 py-2 border-t border-hive-700 shrink-0">
+        <button onClick={onNewTask} className="w-full py-2 rounded-lg bg-honey hover:bg-honey-dim text-white text-sm font-medium transition-colors">
+          + New Task
+        </button>
       </div>
 
-      {/* Current user */}
+      {/* User */}
       {currentUser && currentUser.username !== 'api' && currentUser.username !== 'anonymous' && (
-        <div className="border-t border-hive-700 p-3">
+        <div className="px-3 py-2 border-t border-hive-700 shrink-0">
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full bg-hive-700 flex items-center justify-center text-xs font-bold text-hive-300">
+            <div className="w-6 h-6 rounded-full bg-hive-700 flex items-center justify-center text-[10px] font-bold text-hive-300">
               {(currentUser.display_name || currentUser.username).charAt(0).toUpperCase()}
             </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-xs font-medium text-hive-200 truncate">{currentUser.display_name || currentUser.username}</div>
-              <div className="text-[10px] text-hive-500">{currentUser.role}</div>
-            </div>
+            <span className="text-xs text-hive-300 flex-1 truncate">{currentUser.display_name || currentUser.username}</span>
             {onLogout && (
-              <button onClick={onLogout} className="text-[10px] text-hive-500 hover:text-hive-300" title="Sign out">
-                Sign out
-              </button>
+              <button onClick={onLogout} className="text-[10px] text-hive-500 hover:text-hive-300">Sign out</button>
             )}
           </div>
         </div>
@@ -223,12 +208,9 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
 
       {/* Filter indicator */}
       {filterAgent && (
-        <div className="p-3 border-t border-hive-700">
-          <button
-            onClick={() => onFilterAgent(null)}
-            className="w-full text-center text-xs text-hive-400 hover:text-hive-200 py-1"
-          >
-            Clear filter — Show all tasks
+        <div className="px-3 py-2 border-t border-honey/20 bg-honey/5 shrink-0">
+          <button onClick={() => onFilterAgent(null)} className="w-full text-center text-xs text-honey/70 hover:text-honey py-0.5">
+            &#x2715; Clear agent filter
           </button>
         </div>
       )}
