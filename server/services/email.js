@@ -44,9 +44,26 @@ export async function sendEmail({ to, subject, html }) {
   })
 }
 
+// ── Rate limiting — prevent email spam ───────────
+const emailCooldowns = new Map() // key → timestamp
+const EMAIL_COOLDOWN_MS = 30 * 60 * 1000 // 30 min cooldown per unique subject
+
+function isRateLimited(key) {
+  const lastSent = emailCooldowns.get(key)
+  if (lastSent && Date.now() - lastSent < EMAIL_COOLDOWN_MS) return true
+  emailCooldowns.set(key, Date.now())
+  // Clean old entries every 100 inserts
+  if (emailCooldowns.size > 200) {
+    const cutoff = Date.now() - EMAIL_COOLDOWN_MS
+    for (const [k, v] of emailCooldowns) { if (v < cutoff) emailCooldowns.delete(k) }
+  }
+  return false
+}
+
 // ── Approval needed ──────────────────────────────
 export async function sendApprovalEmail(task, agent) {
   if (getSetting('email_on_approval') === 'false') return
+  if (isRateLimited(`approval:${task.title.slice(0, 50)}`)) return
   await sendEmail({
     subject: `⏸️ Approval Required — ${task.title}`,
     html: `
@@ -72,6 +89,7 @@ export async function sendApprovalEmail(task, agent) {
 // ── New proposal ─────────────────────────────────
 export async function sendProposalEmail(proposal) {
   if (getSetting('email_on_proposal') === 'false') return
+  if (isRateLimited(`proposal:${proposal.title.slice(0, 50)}`)) return
   const typeIcons = { feature: '✨', design: '🎨', code: '💻', prompt: '📝', workflow: '⚙️' }
   await sendEmail({
     subject: `💡 New Proposal — ${proposal.title}`,
