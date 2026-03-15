@@ -3248,18 +3248,28 @@ START WITH TOOL CALLS NOW.`
         }
       }
 
-      // No tools, no consults — nudge the agent to use tools on first attempt
+      // No tools, no consults — force agent to use tools
       if (!hadAction) {
-        if (step === 0 && totalToolCalls === 0) {
-          // Agent produced text-only on step 1. Push it to use tools.
-          console.log(`⚠️ ${agent.name}: text-only response on step 1, nudging to use tools`)
+        if (totalToolCalls === 0 && step < MAX_STEPS - 1) {
+          // Agent hasn't used ANY tools yet. Keep pushing.
+          const nudgeNum = step + 1
+          console.log(`⚠️ ${agent.name}: text-only response on step ${nudgeNum}/${MAX_STEPS}, nudging to use tools (attempt ${nudgeNum})`)
           db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
-            .run(task.id, agent.id, 'Nudging agent — text-only response, no tools used', 'warning')
+            .run(task.id, agent.id, `Nudging agent (attempt ${nudgeNum}) — text-only response, no tools used`, 'warning')
+          const toolList = getAgentTools(agent.id).map(t => `${t.name}: ${t.description?.slice(0, 60) || ''}`).join('\n- ')
           messages.push({
             role: 'user',
-            content: `STOP. You wrote a text response without using any tools. This is not acceptable. You MUST use your tools to take REAL actions. Do NOT write plans or descriptions — call tools NOW.\n\nReminder of syntax: [TOOL:tool_name]{"param":"value"}[/TOOL]\n\nYour available tools include: ${getAgentTools(agent.id).map(t => t.name).join(', ')}\n\nCall at least one tool right now.`
+            content: step === 0
+              ? `STOP. You wrote a text response without using any tools. This is not acceptable. You MUST use your tools to take REAL actions. Do NOT write plans, analyses, or descriptions — call tools NOW.\n\nSyntax: [TOOL:tool_name]{"param":"value"}[/TOOL]\n\nYour available tools:\n- ${toolList}\n\nCall at least one tool right now. If a tool requires an API key you don't have, use web_search or write_file instead.`
+              : `You STILL haven't called any tools. This is your LAST CHANCE. If you cannot complete this task with tools, call [TOOL:web_search]{"query":"${task.title}"}[/TOOL] at minimum to gather real data. Text-only responses are FAILURES.`
           })
           continue
+        }
+        // If we exhausted nudges and still no tools, log it as a quality issue
+        if (totalToolCalls === 0) {
+          console.log(`❌ ${agent.name}: completed task "${task.title}" with ZERO tool calls — text-only output`)
+          db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+            .run(task.id, agent.id, 'Task completed with ZERO tool usage — text-only output flagged as low quality', 'warning')
         }
         break
       }
