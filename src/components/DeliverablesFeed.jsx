@@ -146,37 +146,6 @@ export default function DeliverablesFeed({ agents = [], tasks = [], filterAgent,
           )}
 
           {/* Output cards (completed deliverables first) */}
-          {/* Generating cards (max 3 shown) */}
-          {activeTasks.length > 0 && (
-            <>
-              {activeTasks.slice(0, 3).map(task => {
-                const tile = AGENT_TILES[task.agent_id] || { letter: '?', class: 'tile-nexus' }
-                const agentName = agents.find(a => a.id === task.agent_id)?.name || task.agent_id
-                return (
-                  <div key={task.id} className="hive-card mb-[9px] p-[13px] relative overflow-hidden gen-shimmer-top" style={{ borderColor: 'rgba(40,167,69,0.22)' }}>
-                    <div className="flex items-center gap-2 mb-3">
-                      <div className={`agent-tile w-[27px] h-[27px] rounded-lg text-sm ${tile.class}`}>{tile.letter}</div>
-                      <span className="text-[13px] font-semibold text-t1">{agentName}</span>
-                      <span className="text-[11px] text-t4 flex-1 truncate">{task.title}</span>
-                      <div className="flex items-center gap-1 text-[10px] font-medium text-success px-2 py-[2px] rounded-[7px]" style={{ background: 'rgba(40,167,69,0.09)', border: '0.5px solid rgba(40,167,69,0.18)' }}>
-                        <span className="w-[5px] h-[5px] rounded-full bg-success dot-pulse" />
-                        Generating
-                      </div>
-                    </div>
-                    <div className="shimmer-line w-[90%] mb-1.5" />
-                    <div className="shimmer-line w-[74%] mb-1.5" />
-                    <div className="shimmer-line w-[54%]" />
-                  </div>
-                )
-              })}
-              {activeTasks.length > 3 && (
-                <div className="text-center text-t4 text-[11px] py-2 mb-2">
-                  +{activeTasks.length - 3} more generating...
-                </div>
-              )}
-            </>
-          )}
-
           {filtered.map(item => {
             const tile = AGENT_TILES[item.agent_id] || { letter: '?', class: 'tile-nexus' }
             const agentName = agents.find(a => a.id === item.agent_id)?.name || item.agent_id
@@ -255,6 +224,37 @@ export default function DeliverablesFeed({ agents = [], tasks = [], filterAgent,
               </div>
             )
           })}
+
+          {/* Generating cards (after deliverables, max 3) */}
+          {activeTasks.length > 0 && (
+            <>
+              {activeTasks.slice(0, 3).map(task => {
+                const tile = AGENT_TILES[task.agent_id] || { letter: '?', class: 'tile-nexus' }
+                const agentName = agents.find(a => a.id === task.agent_id)?.name || task.agent_id
+                return (
+                  <div key={task.id} className="hive-card mb-[9px] p-[13px] relative overflow-hidden gen-shimmer-top" style={{ borderColor: 'rgba(40,167,69,0.22)' }}>
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className={`agent-tile w-[27px] h-[27px] rounded-lg text-sm ${tile.class}`}>{tile.letter}</div>
+                      <span className="text-[13px] font-semibold text-t1">{agentName}</span>
+                      <span className="text-[11px] text-t4 flex-1 truncate">{task.title}</span>
+                      <div className="flex items-center gap-1 text-[10px] font-medium text-success px-2 py-[2px] rounded-[7px]" style={{ background: 'rgba(40,167,69,0.09)', border: '0.5px solid rgba(40,167,69,0.18)' }}>
+                        <span className="w-[5px] h-[5px] rounded-full bg-success dot-pulse" />
+                        Generating
+                      </div>
+                    </div>
+                    <div className="shimmer-line w-[90%] mb-1.5" />
+                    <div className="shimmer-line w-[74%] mb-1.5" />
+                    <div className="shimmer-line w-[54%]" />
+                  </div>
+                )
+              })}
+              {activeTasks.length > 3 && (
+                <div className="text-center text-t4 text-[11px] py-2 mb-2">
+                  +{activeTasks.length - 3} more generating...
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
 
