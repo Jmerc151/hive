@@ -927,6 +927,223 @@ const TOOL_REGISTRY = [
       const results = await searchKnowledge(args.query, args.top_k || 5)
       return { results: results.map(r => ({ content: r.content, score: r.score })) }
     }
+  },
+
+  // === GitHub Tools — Autonomous Development ===
+  {
+    name: 'github_list_files',
+    description: 'List files and directories in a GitHub repository path. Use to explore codebases.',
+    params: {
+      repo: { type: 'string', description: 'Repository in owner/name format (e.g. Jmerc151/sous-frontend)', required: true },
+      path: { type: 'string', description: 'Directory path to list (default: root)', required: false },
+      branch: { type: 'string', description: 'Branch name (default: main)', required: false }
+    },
+    agents: ['scout', 'forge', 'quill', 'nexus'],
+    execute: async (args) => {
+      const token = process.env.GITHUB_TOKEN
+      if (!token) return { error: 'GITHUB_TOKEN not configured' }
+      const repo = args.repo
+      const path = args.path || ''
+      const branch = args.branch || 'main'
+      try {
+        const res = await fetch(`https://api.github.com/repos/${repo}/contents/${path}?ref=${branch}`, {
+          headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Hive-Agent' }
+        })
+        if (!res.ok) return { error: `GitHub API ${res.status}: ${await res.text()}` }
+        const items = await res.json()
+        if (!Array.isArray(items)) return { name: items.name, type: items.type, size: items.size }
+        return items.map(i => ({ name: i.name, type: i.type, size: i.size, path: i.path }))
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'github_read_file',
+    description: 'Read file contents from a GitHub repository. Returns decoded file content.',
+    params: {
+      repo: { type: 'string', description: 'Repository in owner/name format', required: true },
+      path: { type: 'string', description: 'File path in the repository', required: true },
+      branch: { type: 'string', description: 'Branch name (default: main)', required: false }
+    },
+    agents: ['scout', 'forge', 'quill', 'nexus'],
+    execute: async (args) => {
+      const token = process.env.GITHUB_TOKEN
+      if (!token) return { error: 'GITHUB_TOKEN not configured' }
+      const branch = args.branch || 'main'
+      try {
+        const res = await fetch(`https://api.github.com/repos/${args.repo}/contents/${args.path}?ref=${branch}`, {
+          headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Hive-Agent' }
+        })
+        if (!res.ok) return { error: `GitHub API ${res.status}: ${await res.text()}` }
+        const data = await res.json()
+        if (data.type !== 'file') return { error: 'Path is not a file' }
+        const content = Buffer.from(data.content, 'base64').toString('utf-8')
+        const truncated = content.length > 15000 ? content.slice(0, 15000) + '\n...(truncated)' : content
+        return { path: data.path, sha: data.sha, size: data.size, content: truncated }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'github_write_file',
+    description: 'Create or update a file in a GitHub repository. Commits directly to a branch.',
+    params: {
+      repo: { type: 'string', description: 'Repository in owner/name format', required: true },
+      path: { type: 'string', description: 'File path to create/update', required: true },
+      content: { type: 'string', description: 'File content to write', required: true },
+      message: { type: 'string', description: 'Commit message', required: true },
+      branch: { type: 'string', description: 'Branch name (default: main)', required: false },
+      sha: { type: 'string', description: 'SHA of file being replaced (required for updates, get from github_read_file)', required: false }
+    },
+    agents: ['forge'],
+    execute: async (args) => {
+      const token = process.env.GITHUB_TOKEN
+      if (!token) return { error: 'GITHUB_TOKEN not configured' }
+      const branch = args.branch || 'main'
+      const body = {
+        message: args.message,
+        content: Buffer.from(args.content).toString('base64'),
+        branch
+      }
+      if (args.sha) body.sha = args.sha
+      try {
+        const res = await fetch(`https://api.github.com/repos/${args.repo}/contents/${args.path}`, {
+          method: 'PUT',
+          headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Hive-Agent', 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        })
+        if (!res.ok) return { error: `GitHub API ${res.status}: ${await res.text()}` }
+        const data = await res.json()
+        return { committed: true, sha: data.content.sha, commit_sha: data.commit.sha, path: args.path, branch }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'github_create_branch',
+    description: 'Create a new branch in a GitHub repository from an existing branch.',
+    params: {
+      repo: { type: 'string', description: 'Repository in owner/name format', required: true },
+      branch: { type: 'string', description: 'New branch name to create', required: true },
+      from: { type: 'string', description: 'Source branch (default: main)', required: false }
+    },
+    agents: ['forge', 'nexus'],
+    execute: async (args) => {
+      const token = process.env.GITHUB_TOKEN
+      if (!token) return { error: 'GITHUB_TOKEN not configured' }
+      const from = args.from || 'main'
+      try {
+        const refRes = await fetch(`https://api.github.com/repos/${args.repo}/git/ref/heads/${from}`, {
+          headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Hive-Agent' }
+        })
+        if (!refRes.ok) return { error: `Cannot find branch ${from}: ${refRes.status}` }
+        const refData = await refRes.json()
+        const sha = refData.object.sha
+        const createRes = await fetch(`https://api.github.com/repos/${args.repo}/git/refs`, {
+          method: 'POST',
+          headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Hive-Agent', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ref: `refs/heads/${args.branch}`, sha })
+        })
+        if (!createRes.ok) return { error: `Failed to create branch: ${await createRes.text()}` }
+        return { created: true, branch: args.branch, from, sha }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'github_create_pr',
+    description: 'Create a pull request in a GitHub repository.',
+    params: {
+      repo: { type: 'string', description: 'Repository in owner/name format', required: true },
+      title: { type: 'string', description: 'PR title', required: true },
+      body: { type: 'string', description: 'PR description', required: true },
+      head: { type: 'string', description: 'Branch with changes', required: true },
+      base: { type: 'string', description: 'Target branch (default: main)', required: false }
+    },
+    agents: ['forge', 'nexus'],
+    execute: async (args) => {
+      const token = process.env.GITHUB_TOKEN
+      if (!token) return { error: 'GITHUB_TOKEN not configured' }
+      try {
+        const res = await fetch(`https://api.github.com/repos/${args.repo}/pulls`, {
+          method: 'POST',
+          headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Hive-Agent', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: args.title, body: args.body, head: args.head, base: args.base || 'main' })
+        })
+        if (!res.ok) return { error: `GitHub API ${res.status}: ${await res.text()}` }
+        const data = await res.json()
+        return { created: true, pr_number: data.number, url: data.html_url, branch: args.head }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'github_get_issues',
+    description: 'List open issues from a GitHub repository, or read a specific issue.',
+    params: {
+      repo: { type: 'string', description: 'Repository in owner/name format', required: true },
+      issue_number: { type: 'number', description: 'Specific issue number to read (optional)', required: false },
+      labels: { type: 'string', description: 'Filter by labels (comma-separated)', required: false }
+    },
+    agents: ['scout', 'forge', 'nexus'],
+    execute: async (args) => {
+      const token = process.env.GITHUB_TOKEN
+      if (!token) return { error: 'GITHUB_TOKEN not configured' }
+      try {
+        let url = args.issue_number
+          ? `https://api.github.com/repos/${args.repo}/issues/${args.issue_number}`
+          : `https://api.github.com/repos/${args.repo}/issues?state=open&per_page=30${args.labels ? '&labels=' + args.labels : ''}`
+        const res = await fetch(url, {
+          headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Hive-Agent' }
+        })
+        if (!res.ok) return { error: `GitHub API ${res.status}: ${await res.text()}` }
+        const data = await res.json()
+        if (!Array.isArray(data)) return { number: data.number, title: data.title, body: data.body?.slice(0, 5000), labels: data.labels?.map(l => l.name), state: data.state }
+        return data.map(i => ({ number: i.number, title: i.title, labels: i.labels?.map(l => l.name), created: i.created_at }))
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'github_create_issue',
+    description: 'Create a new issue in a GitHub repository for tracking work.',
+    params: {
+      repo: { type: 'string', description: 'Repository in owner/name format', required: true },
+      title: { type: 'string', description: 'Issue title', required: true },
+      body: { type: 'string', description: 'Issue description', required: true },
+      labels: { type: 'string', description: 'Comma-separated labels to apply', required: false }
+    },
+    agents: ['scout', 'forge', 'nexus'],
+    execute: async (args) => {
+      const token = process.env.GITHUB_TOKEN
+      if (!token) return { error: 'GITHUB_TOKEN not configured' }
+      const payload = { title: args.title, body: args.body }
+      if (args.labels) payload.labels = args.labels.split(',').map(l => l.trim())
+      try {
+        const res = await fetch(`https://api.github.com/repos/${args.repo}/issues`, {
+          method: 'POST',
+          headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Hive-Agent', 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        })
+        if (!res.ok) return { error: `GitHub API ${res.status}: ${await res.text()}` }
+        const data = await res.json()
+        return { created: true, number: data.number, url: data.html_url }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'github_search_code',
+    description: 'Search for code across GitHub repositories. Use to find specific patterns, functions, or content.',
+    params: {
+      query: { type: 'string', description: 'Search query (e.g. "useState repo:Jmerc151/sous-frontend")', required: true }
+    },
+    agents: ['scout', 'forge', 'nexus'],
+    execute: async (args) => {
+      const token = process.env.GITHUB_TOKEN
+      if (!token) return { error: 'GITHUB_TOKEN not configured' }
+      try {
+        const res = await fetch(`https://api.github.com/search/code?q=${encodeURIComponent(args.query)}&per_page=15`, {
+          headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Hive-Agent' }
+        })
+        if (!res.ok) return { error: `GitHub API ${res.status}: ${await res.text()}` }
+        const data = await res.json()
+        return { total: data.total_count, items: data.items?.map(i => ({ name: i.name, path: i.path, repo: i.repository?.full_name })) }
+      } catch (e) { return { error: e.message } }
+    }
   }
 ]
 
@@ -1093,6 +1310,21 @@ function validateToolCall(toolCall, agentId, taskId) {
     }
     if (/\.(env|key|pem|crt|p12|pfx)$/i.test(path)) {
       rules.push({ rule: 'sensitive_file', action: 'blocked', details: `Sensitive file type: ${path}` })
+    }
+  }
+
+  // GitHub guardrails — only allow writes to owner's repos
+  if (toolCall.name === 'github_write_file' || toolCall.name === 'github_create_pr' || toolCall.name === 'github_create_branch' || toolCall.name === 'github_create_issue') {
+    const repo = (toolCall.args.repo || '').toLowerCase()
+    const allowedOwner = (process.env.GITHUB_OWNER || 'jmerc151').toLowerCase()
+    if (!repo.startsWith(allowedOwner + '/')) {
+      rules.push({ rule: 'github_owner', action: 'blocked', details: `Cannot write to repo ${repo} — only ${allowedOwner}/* allowed` })
+    }
+  }
+  if (toolCall.name === 'github_write_file') {
+    const path = (toolCall.args.path || '').toLowerCase()
+    if (path.includes('.env') || path.includes('secret') || path.includes('.key') || path.includes('.pem')) {
+      rules.push({ rule: 'github_sensitive_file', action: 'blocked', details: `Cannot write sensitive file via GitHub: ${path}` })
     }
   }
 
@@ -1860,6 +2092,38 @@ registerHeartbeat('bot-opportunity-scan', 7 * 24 * 60 * 60 * 1000, async () => {
     console.log('💓 Bot opportunity scan queued for Scout')
   } catch (e) {
     notifyHeartbeatError('bot-opportunity-scan', e)
+  }
+})
+
+// Ember auto-development: every 6 hours, pick next P0 task and start working
+registerHeartbeat('ember-auto-dev', 6 * 60 * 60 * 1000, async () => {
+  try {
+    if (!process.env.GITHUB_TOKEN) return
+    // Check spend budget first — only dev when under 80% daily limit
+    const dailyLimit = parseFloat(getSetting('daily_spend_limit') || '5')
+    const todaySpend = Object.values(agents.reduce((acc, a) => { acc[a.id] = getTodaySpend(a.id); return acc }, {})).reduce((s, v) => s + v, 0)
+    if (todaySpend > dailyLimit * 0.8) return
+
+    // Check no Ember tasks already running
+    const running = db.prepare("SELECT id FROM tasks WHERE status = 'in_progress' AND title LIKE '%Ember%'").get()
+    if (running) return
+
+    // Pick a development task — rotate between repos
+    const devTasks = [
+      { agent: 'scout', title: 'Ember: Audit sous-frontend for issues', desc: 'Use github_list_files and github_read_file to explore Jmerc151/sous-frontend. Look for: missing mobile responsiveness, broken imports, inconsistent styling, unused code, missing error handling. Create GitHub issues for each problem found using github_create_issue with appropriate labels (bug, enhancement, frontend, p0/p1/p2).' },
+      { agent: 'scout', title: 'Ember: Audit sous-backend for issues', desc: 'Use github_list_files and github_read_file to explore Jmerc151/sous-backend. Look for: missing input validation, SQL injection risks, missing error handling, hardcoded values, missing indexes, API inconsistencies. Create GitHub issues for each problem found using github_create_issue.' },
+      { agent: 'forge', title: 'Ember: Fix next open issue', desc: 'Use github_get_issues on Jmerc151/sous-frontend and Jmerc151/sous-backend to find the highest priority open issue. Read the relevant code with github_read_file, create a feature branch with github_create_branch, implement the fix with github_write_file, and create a PR with github_create_pr. Pick bugs and p0 issues first.' },
+      { agent: 'nexus', title: 'Ember: Review recent PRs and plan next sprint', desc: 'Check Jmerc151/sous-frontend and Jmerc151/sous-backend for open issues using github_get_issues. Prioritize them, identify dependencies, and create a task for Forge to implement the highest-impact item. Also review if any existing issues can be closed or are duplicates.' },
+    ]
+
+    const pick = devTasks[Math.floor(Math.random() * devTasks.length)]
+    const taskId = uuid()
+    db.prepare("INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, 'high', ?, 'todo')")
+      .run(taskId, pick.title, pick.desc, pick.agent)
+    setTimeout(() => processAgentQueue(pick.agent), 3000)
+    console.log(`💓 Ember auto-dev: queued "${pick.title}" for ${pick.agent}`)
+  } catch (e) {
+    notifyHeartbeatError('ember-auto-dev', e)
   }
 })
 
@@ -6578,6 +6842,81 @@ src/
 5. Customer complaints about competitors (opportunities for Ember)
 6. Pricing changes from competitors
 7. New entrants in the restaurant kitchen ops space`
+    },
+    {
+      slug: 'ember-github-dev-workflow',
+      name: 'Ember GitHub Development Workflow',
+      description: 'How agents should use GitHub tools to autonomously develop the Ember/Kitchen Bible app',
+      tags: ['ember', 'github', 'development', 'autonomous'],
+      agents: ['forge', 'nexus', 'scout'],
+      skill_md: `# Ember GitHub Development Workflow
+
+## GitHub Repositories
+- **Frontend:** Jmerc151/sous-frontend (React 19 + Vite, deployed on Vercel)
+- **Backend:** Jmerc151/sous-backend (Express.js + PostgreSQL, deployed on Railway)
+- **Landing:** Jmerc151/ember-landing (Marketing site, deployed on Vercel)
+
+## Autonomous Development Process
+
+### Step 1: Understand before coding
+- Use github_list_files to explore the repo structure
+- Use github_read_file to read existing code and understand patterns
+- Use github_search_code to find related code across repos
+- Never write code without first reading the files you will modify
+
+### Step 2: Branch strategy
+- Create a feature branch with github_create_branch — name like feat/feature-name or fix/bug-name
+- Never commit directly to main
+- Branch from main unless told otherwise
+
+### Step 3: Write code
+- Use github_write_file to create or update files on your feature branch
+- Always include the sha param when updating existing files (get it from github_read_file)
+- Write clear commit messages describing what changed and why
+- Follow existing code patterns — read neighboring files first
+
+### Step 4: Create PR
+- Use github_create_pr with a clear title and description
+- Description should explain: what changed, why, and how to test
+- PRs trigger auto-deploy previews on Vercel
+
+### Step 5: Track work
+- Use github_create_issue for bugs found or features to build next
+- Label issues: bug, enhancement, frontend, backend, p0, p1, p2
+
+## Code Patterns to Follow
+
+### Frontend (sous-frontend)
+- Components in src/components/
+- API calls in src/api.js using fetch wrapper
+- Kitchen Bible uses tokens.js (C for colors, S for styles) with inline styles
+- Admin pages use App.css with CSS classes
+- All new components must work at 375px width (mobile-first)
+
+### Backend (sous-backend)
+- Controllers in controllers/ (one per resource)
+- Routes in routes/ (one per resource)
+- Auth middleware sets req.restaurantId from JWT
+- ALL queries must filter by restaurant_id
+- Use pool.query with parameterized queries ($1, $2...)
+- Error handling: try/catch with next(err) pattern
+
+### Landing (ember-landing)
+- React + Tailwind
+- Components: Hero, Problems, Features, HowItWorks, Social, CTA, Footer
+- Dark theme with gold accents
+
+## Priority Work Queue
+1. P0: Add pricing section to landing page
+2. P0: Connect landing CTA to app signup URL
+3. P0: Cloudinary photo uploads (replace base64 hack)
+4. P0: Stripe billing integration
+5. P1: Temperature logging system
+6. P1: Completion reporting dashboard
+7. P1: Recipe costing calculator
+8. P1: Mobile-responsive admin pages
+9. P2: Multi-location dashboard
+10. P2: CSV/PDF export`
     }
   ]
 
@@ -6594,7 +6933,7 @@ src/
       }
     }
   }
-  console.log('🔧 Seeded 4 Ember/Kitchen Bible build-focused skills')
+  console.log('🔧 Seeded 5 Ember/Kitchen Bible build-focused skills (incl. GitHub workflow)')
 }
 
 seedEmberSkills()
@@ -6614,7 +6953,7 @@ function seedEmberPipeline() {
   const steps = [
     { position: 1, agent_id: 'scout', prompt_template: 'Research how competitors handle this specific feature or restaurant pain point. Check FreshCheq, meez, Jolt, MarketMan, Toast, and Restaurant365. Document what they do well, what they miss, and what restaurant operators complain about. Search Reddit r/restaurantowners, r/KitchenConfidential, and restaurant tech forums for real user feedback. Output a structured analysis with competitor approaches, gaps, and recommended approach for Ember.' },
     { position: 2, agent_id: 'nexus', prompt_template: 'Based on Scout\'s competitive research, create a technical specification for implementing this feature in Ember. Include: database schema changes (PostgreSQL), API endpoints needed (Express.js controllers), frontend components (React + Tailwind), and integration points with existing Kitchen Bible tabs. Follow sous-backend patterns (controller pattern, restaurant_id scoping, JWT auth) and sous-frontend patterns (tokens.js for Kitchen Bible, App.css for admin). Prioritize mobile-first for Kitchen Bible components.\n\nResearch:\n{{previous_output}}' },
-    { position: 3, agent_id: 'forge', prompt_template: 'Implement the feature based on Nexus\'s technical spec. Follow sous-backend patterns: controllers in controllers/ folder, pg query with restaurant_id scoping, proper error handling. Follow sous-frontend patterns: use tokens.js C/S system for Kitchen Bible components, React Router v7, useState/useEffect for state. Test the implementation and document any issues found.\n\nTechnical Spec:\n{{previous_output}}' }
+    { position: 3, agent_id: 'forge', prompt_template: 'Implement the feature based on Nexus\'s technical spec using GitHub tools. Workflow: 1) Use github_list_files and github_read_file to understand existing code in the relevant repo (Jmerc151/sous-frontend or Jmerc151/sous-backend). 2) Create a feature branch with github_create_branch. 3) Write/update files with github_write_file on the feature branch. 4) Create a PR with github_create_pr explaining what changed. Follow sous-backend patterns: controllers in controllers/ folder, pg query with restaurant_id scoping, proper error handling. Follow sous-frontend patterns: use tokens.js C/S system for Kitchen Bible components, React Router v7, useState/useEffect for state.\n\nTechnical Spec:\n{{previous_output}}' }
   ]
 
   db.prepare('INSERT INTO pipelines (id, name, description, steps) VALUES (?, ?, ?, ?)').run(

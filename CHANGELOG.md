@@ -1,5 +1,34 @@
 # Hive Changelog
 
+## 2026-03-14 — GitHub Tools + Autonomous Ember Development
+
+### Feature: GitHub API Tools (8 new tools)
+- `github_list_files` — explore repo directory structure (scout, forge, quill, nexus)
+- `github_read_file` — read file contents from any repo (scout, forge, quill, nexus)
+- `github_write_file` — create/update files with commit messages (forge only)
+- `github_create_branch` — create feature branches (forge, nexus)
+- `github_create_pr` — create pull requests with descriptions (forge, nexus)
+- `github_get_issues` — list/read issues from repos (scout, forge, nexus)
+- `github_create_issue` — create issues for tracking work (scout, forge, nexus)
+- `github_search_code` — search code across repos (scout, forge, nexus)
+- Guardrails: only writes to GITHUB_OWNER repos, blocks sensitive files (.env, .key, .pem)
+
+### Feature: Ember GitHub Dev Workflow Skill
+- New skill teaching agents the autonomous development process: explore → branch → code → PR
+- Documents all 3 Ember repos (sous-frontend, sous-backend, ember-landing)
+- Includes code pattern guides and priority work queue
+
+### Feature: Ember Auto-Development Heartbeat
+- Every 6 hours, automatically queues Ember development work
+- Rotates between: frontend audit, backend audit, fix next issue, sprint planning
+- Respects budget (only runs under 80% daily spend limit)
+- Agents use GitHub tools to create issues, branches, code changes, and PRs autonomously
+
+### Updated: Ember Development Pipeline
+- Step 3 (Forge) now uses GitHub tools: reads existing code, creates branch, writes files, opens PR
+
+---
+
 ## 2026-03-14 — Ember Build-Focused Skills & Development Pipeline
 
 ### Feature: Ember Build Skills (replaced marketing skills)
