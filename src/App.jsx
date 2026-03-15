@@ -293,7 +293,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen h-[100dvh] overflow-hidden bg-hive-900">
+    <div className="flex h-screen h-[100dvh] overflow-hidden bg-page">
       {/* Desktop sidebar */}
       <div className="hidden md:block">
         <Sidebar
@@ -339,37 +339,29 @@ export default function App() {
       </div>
 
       <main className="flex-1 overflow-hidden flex flex-col min-w-0">
-        {/* Header */}
-        <header className="flex items-center justify-between px-4 md:px-6 py-2 md:py-3 border-b border-hive-700/50 bg-hive-900/80 backdrop-blur-xl safe-top">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-honey to-honey-dim flex items-center justify-center shadow-lg shadow-honey/20">
-              <span className="text-base">🐝</span>
+        {/* Topbar */}
+        <header className="glass-heavy flex items-center gap-2.5 px-4 md:px-[22px] py-3 safe-top flex-shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
+          <h1 className="font-display text-[26px] text-t1 tracking-[2px] leading-none">DELIVERABLES</h1>
+          <span className="text-xs text-t4 bg-s3 px-2 py-0.5 rounded-lg" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}>
+            {tasks.length} tasks
+          </span>
+          {activeCount > 0 && (
+            <div className="flex items-center gap-1.5 text-[11px] font-medium text-success px-2.5 py-1 rounded-[10px]" style={{ background: 'rgba(52,199,89,0.1)', border: '0.5px solid rgba(52,199,89,0.2)' }}>
+              <span className="w-[5px] h-[5px] rounded-full bg-success dot-pulse" />
+              {activeCount} active
             </div>
-            <div>
-              <h1 className="text-base md:text-lg font-bold tracking-tight">Hive Command Center</h1>
-              <p className="text-xs text-hive-400">
-                {`${tasks.length} tasks · ${activeCount} active`}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full flex-shrink-0 transition-colors ${sseConnected ? 'bg-green-400' : 'bg-red-400 animate-pulse'}`} title={sseConnected ? 'Live connected' : 'Reconnecting...'} />
-            {activeCount > 0 && (
-              <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-honey/10 border border-honey/20 rounded-full">
-                <div className="w-1.5 h-1.5 rounded-full bg-honey animate-pulse" />
-                <span className="text-xs font-medium text-honey">{activeCount} running</span>
-              </div>
-            )}
-            <SearchBar agents={agents} onSelectTask={setSelectedTask} />
-            <button
-              onClick={() => setShowCreate(true)}
-              aria-label="New task"
-              className="flex items-center gap-1 px-3 py-2 bg-gradient-to-r from-honey to-honey-dim text-white rounded-xl font-medium text-sm shadow-lg shadow-honey/20 hover:shadow-honey/30 transition-all active:scale-95"
-            >
-              <span className="text-lg leading-none">+</span>
-              <span className="hidden sm:inline">New Task</span>
-            </button>
-          </div>
+          )}
+          <div className="flex-1" />
+          <div className={`w-2 h-2 rounded-full flex-shrink-0 transition-colors ${sseConnected ? 'bg-success' : 'bg-danger animate-pulse'}`} title={sseConnected ? 'Connected' : 'Reconnecting...'} />
+          <SearchBar agents={agents} onSelectTask={setSelectedTask} />
+          <button
+            onClick={() => setShowCreate(true)}
+            aria-label="New task"
+            className="btn-primary flex items-center gap-1.5 px-3 py-2 text-sm active:scale-95"
+          >
+            <span className="text-lg leading-none">+</span>
+            <span className="hidden sm:inline font-display tracking-wider">NEW TASK</span>
+          </button>
         </header>
 
         {/* Mobile views */}
@@ -399,39 +391,41 @@ export default function App() {
         <ErrorBoundary>
         <div className={`flex-1 overflow-hidden ${mobileView !== 'board' ? 'hidden md:flex' : 'flex'}`}>
           {/* Left: Chat panel (40%) */}
-          <div className="hidden md:flex md:w-[40%] lg:w-[38%] border-r border-hive-700/50 flex-col">
+          <div className="hidden md:flex md:w-[40%] lg:w-[38%] flex-col bg-s1" style={{ borderRight: '0.5px solid rgba(0,0,0,0.08)' }}>
             <ChatPanel agents={agents} embedded onToast={addToast} />
           </div>
 
           {/* Right: Activity dashboard (60%) */}
-          <div className="flex-1 overflow-y-auto">
-            {/* Agent status strip */}
-            <div className="p-3 border-b border-hive-700/30">
-              <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-                {agents.map(agent => {
-                  const agentTask = tasks.find(t => t.agent_id === agent.id && t.status === 'in_progress')
-                  return (
-                    <div
-                      key={agent.id}
-                      className={`flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-xl border transition-all cursor-pointer ${
-                        agentTask
-                          ? 'bg-green-500/5 border-green-500/20'
-                          : 'bg-hive-800/50 border-hive-700/30'
-                      } ${filterAgent === agent.id ? 'ring-1 ring-honey' : ''}`}
-                      onClick={() => setFilterAgent(filterAgent === agent.id ? null : agent.id)}
-                    >
-                      <span className="text-base">{agent.avatar}</span>
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold truncate">{agent.name}</div>
-                        <div className="text-[10px] text-hive-400 truncate max-w-[120px]">
-                          {agentTask ? agentTask.title : 'Idle'}
-                        </div>
-                      </div>
-                      {agentTask && <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse flex-shrink-0" />}
-                    </div>
-                  )
-                })}
-              </div>
+          <div className="flex-1 overflow-y-auto bg-page">
+            {/* Agent strip — pill chips */}
+            <div className="flex gap-[7px] px-[22px] py-2.5 overflow-x-auto flex-shrink-0" style={{ background: 'rgba(255,255,255,0.6)', borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
+              {agents.map(agent => {
+                const agentTask = tasks.find(t => t.agent_id === agent.id && t.status === 'in_progress')
+                const isActive = !!agentTask
+                const isFiltered = filterAgent === agent.id
+                const tileMap = { scout: 'tile-scout', forge: 'tile-forge', quill: 'tile-quill', dealer: 'tile-dealer', oracle: 'tile-oracle', nexus: 'tile-nexus' }
+                const letterMap = { scout: 'S', forge: 'F', quill: 'Q', dealer: 'D', oracle: 'O', nexus: 'N' }
+                return (
+                  <div
+                    key={agent.id}
+                    className={`flex-shrink-0 flex items-center gap-[7px] py-[5px] pl-2 pr-3 rounded-[20px] cursor-pointer transition-all whitespace-nowrap ${
+                      isFiltered
+                        ? 'bg-t1 text-white'
+                        : 'bg-s1 hover:bg-s3'
+                    }`}
+                    style={{ border: isFiltered ? '0.5px solid var(--color-t1)' : '0.5px solid rgba(0,0,0,0.08)' }}
+                    onClick={() => setFilterAgent(filterAgent === agent.id ? null : agent.id)}
+                  >
+                    <span className={`w-[6px] h-[6px] rounded-full flex-shrink-0 ${
+                      isActive ? `bg-success ${isFiltered ? '' : 'dot-pulse'}` : isFiltered ? 'bg-white/50' : 'bg-t5'
+                    }`} />
+                    <span className={`text-xs font-medium ${isFiltered ? 'text-white' : 'text-t1'}`}>{agent.name}</span>
+                    <span className={`text-[10px] ${isFiltered ? 'text-white/55' : 'text-t4'}`}>
+                      {isActive ? 'Working' : 'Idle'}
+                    </span>
+                  </div>
+                )
+              })}
             </div>
 
             {/* Task board */}
@@ -653,10 +647,10 @@ export default function App() {
 
       {/* Keyboard shortcuts help */}
       {showShortcuts && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setShowShortcuts(false)}>
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-          <div className="relative bg-hive-800 border border-hive-700 rounded-xl p-6 max-w-sm w-full">
-            <h3 className="text-lg font-bold text-hive-100 mb-4">Keyboard Shortcuts</h3>
+        <div className="modal-overlay" onClick={() => setShowShortcuts(false)}>
+          <div className="modal-backdrop" />
+          <div className="modal-content p-6 max-w-sm w-full">
+            <h3 className="font-display text-xl tracking-wider text-t1 mb-4">KEYBOARD SHORTCUTS</h3>
             <div className="space-y-2 text-sm">
               {[
                 ['⌘K', 'Command bar'],
@@ -665,8 +659,8 @@ export default function App() {
                 ['?', 'This help'],
               ].map(([key, desc]) => (
                 <div key={key} className="flex justify-between">
-                  <kbd className="px-2 py-0.5 bg-hive-700 rounded text-hive-300 font-mono text-xs">{key}</kbd>
-                  <span className="text-hive-400">{desc}</span>
+                  <kbd className="px-2 py-0.5 bg-s3 rounded text-t2 font-mono text-xs" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}>{key}</kbd>
+                  <span className="text-t3">{desc}</span>
                 </div>
               ))}
             </div>

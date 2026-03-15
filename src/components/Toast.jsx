@@ -8,17 +8,24 @@ const ICONS = {
 }
 
 const COLORS = {
-  success: 'bg-green-500/15 border-green-500/30 text-green-400',
-  error: 'bg-red-500/15 border-red-500/30 text-red-400',
-  info: 'bg-blue-500/15 border-blue-500/30 text-blue-400',
-  warning: 'bg-amber-500/15 border-amber-500/30 text-amber-400',
+  success: 'text-success',
+  error: 'text-danger',
+  info: 'text-blue-600',
+  warning: 'text-amber-600',
 }
 
-const ICON_COLORS = {
-  success: 'bg-green-500/20 text-green-400',
-  error: 'bg-red-500/20 text-red-400',
-  info: 'bg-blue-500/20 text-blue-400',
-  warning: 'bg-amber-500/20 text-amber-400',
+const BG_STYLES = {
+  success: { background: 'rgba(52,199,89,0.1)', border: '0.5px solid rgba(52,199,89,0.2)' },
+  error: { background: 'rgba(255,59,48,0.1)', border: '0.5px solid rgba(255,59,48,0.2)' },
+  info: { background: 'rgba(0,122,255,0.1)', border: '0.5px solid rgba(0,122,255,0.2)' },
+  warning: { background: 'rgba(255,149,0,0.1)', border: '0.5px solid rgba(255,149,0,0.2)' },
+}
+
+const ICON_BG_STYLES = {
+  success: { background: 'rgba(52,199,89,0.15)' },
+  error: { background: 'rgba(255,59,48,0.15)' },
+  info: { background: 'rgba(0,122,255,0.15)' },
+  warning: { background: 'rgba(255,149,0,0.15)' },
 }
 
 export function useToast() {
@@ -62,17 +69,21 @@ function ToastItem({ toast, onRemove }) {
 
   return (
     <div
-      className={`flex items-start gap-2.5 px-3.5 py-2.5 rounded-xl border backdrop-blur-xl shadow-lg transition-all duration-300 ${
+      className={`flex items-start gap-2.5 px-3.5 py-2.5 rounded-xl backdrop-blur-xl shadow-lg transition-all duration-300 ${
         COLORS[type]
       } ${show ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-8'}`}
+      style={BG_STYLES[type]}
     >
-      <span className={`shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${ICON_COLORS[type]}`}>
+      <span
+        className={`shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${COLORS[type]}`}
+        style={ICON_BG_STYLES[type]}
+      >
         {ICONS[type]}
       </span>
       <p className="text-sm flex-1 leading-snug">{toast.message}</p>
       <button
         onClick={() => onRemove(toast.id)}
-        className="shrink-0 text-hive-500 hover:text-hive-300 text-xs mt-0.5"
+        className="shrink-0 text-t4 hover:text-t2 text-xs mt-0.5"
       >
         ✕
       </button>

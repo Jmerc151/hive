@@ -84,7 +84,7 @@ export default function AgentGraph({ onClose }) {
     ctx.fillText(node.avatar, node.x, node.y)
     if (globalScale > 0.6) {
       ctx.font = 'bold 10px sans-serif'
-      ctx.fillStyle = '#e5e5e5'
+      ctx.fillStyle = '#1c1c1e'
       ctx.fillText(node.name, node.x, node.y + r + 12)
     }
   }, [])
@@ -98,7 +98,7 @@ export default function AgentGraph({ onClose }) {
     else ctx.setLineDash([])
     ctx.moveTo(src.x, src.y)
     ctx.lineTo(tgt.x, tgt.y)
-    ctx.strokeStyle = '#ffffff33'
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)'
     ctx.lineWidth = width
     ctx.stroke()
     ctx.setLineDash([])
@@ -112,23 +112,24 @@ export default function AgentGraph({ onClose }) {
     ctx.lineTo(ax - ux * 8 + uy * 4, ay - uy * 8 - ux * 4)
     ctx.lineTo(ax - ux * 8 - uy * 4, ay - uy * 8 + ux * 4)
     ctx.closePath()
-    ctx.fillStyle = '#ffffff55'
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'
     ctx.fill()
   }, [])
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-hive-800 rounded-2xl border border-hive-700 w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between p-4 border-b border-hive-700">
-          <h2 className="text-lg font-bold text-hive-100">Agent Network</h2>
+    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-s1 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
+          <h2 className="text-lg font-bold font-display text-t1">Agent Network</h2>
           <div className="flex items-center gap-2">
             {RANGES.map(r => (
               <button key={r} onClick={() => setRange(r)}
-                className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${range === r ? 'bg-honey/20 text-honey border border-honey/40' : 'bg-hive-700 text-hive-400 hover:text-hive-200'}`}>
+                className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${range === r ? 'bg-t1 text-white' : 'bg-s3 text-t3 hover:text-t1'}`}
+                style={range !== r ? { border: '0.5px solid rgba(0,0,0,0.08)' } : {}}>
                 {r}
               </button>
             ))}
-            <button onClick={onClose} className="ml-2 text-hive-400 hover:text-hive-200 text-xl" aria-label="Close agent graph">&times;</button>
+            <button onClick={onClose} className="ml-2 text-t3 hover:text-t1 text-xl" aria-label="Close agent graph">&times;</button>
           </div>
         </div>
 
@@ -137,20 +138,20 @@ export default function AgentGraph({ onClose }) {
             <SkeletonChart />
           ) : isMobile ? (
             <div className="space-y-2 overflow-y-auto max-h-[60vh]">
-              {edges.length === 0 && <p className="text-hive-400 text-sm text-center py-8">No interactions in this time range</p>}
+              {edges.length === 0 && <p className="text-t3 text-sm text-center py-8">No interactions in this time range</p>}
               {edges.map((edge, i) => (
-                <div key={i} className="flex items-center gap-2 bg-hive-700/50 rounded-lg px-3 py-2 text-sm">
+                <div key={i} className="flex items-center gap-2 bg-s2 rounded-lg px-3 py-2 text-sm">
                   <span>{AGENT_AVATARS[edge.source?.id || edge.source] || '🤖'}</span>
-                  <span className="text-hive-200 font-medium">{edge.source?.name || edge.source}</span>
-                  <span className="text-hive-500">→</span>
+                  <span className="text-t1 font-medium">{edge.source?.name || edge.source}</span>
+                  <span className="text-t4">→</span>
                   <span>{AGENT_AVATARS[edge.target?.id || edge.target] || '🤖'}</span>
-                  <span className="text-hive-200 font-medium">{edge.target?.name || edge.target}</span>
-                  <span className="ml-auto text-honey font-mono text-xs">{edge.count}x</span>
+                  <span className="text-t1 font-medium">{edge.target?.name || edge.target}</span>
+                  <span className="ml-auto text-t1 font-mono text-xs">{edge.count}x</span>
                 </div>
               ))}
             </div>
           ) : (
-            <div ref={containerRef} className="w-full h-[500px] rounded-lg overflow-hidden bg-hive-900/50">
+            <div ref={containerRef} className="w-full h-[500px] rounded-lg overflow-hidden bg-s2">
               <ForceGraph2D
                 ref={graphRef} width={dims.w} height={dims.h}
                 graphData={{ nodes, links: edges }}
@@ -159,7 +160,7 @@ export default function AgentGraph({ onClose }) {
                 linkCanvasObject={linkCanvasObject}
                 linkDirectionalParticles={link => Math.min(link.count, 4)}
                 linkDirectionalParticleWidth={2}
-                linkDirectionalParticleColor={() => '#E8C547'}
+                linkDirectionalParticleColor={() => '#1c1c1e'}
                 d3AlphaDecay={0.05} d3VelocityDecay={0.3} cooldownTicks={80}
                 backgroundColor="transparent"
                 onEngineStop={() => graphRef.current?.zoomToFit(300, 60)}
@@ -170,10 +171,10 @@ export default function AgentGraph({ onClose }) {
 
         {!isMobile && edges.length > 0 && (
           <div className="px-4 pb-4">
-            <div className="flex flex-wrap gap-3 text-xs text-hive-400">
-              <span className="flex items-center gap-1"><span className="w-6 h-0.5 bg-white/30 inline-block" /> consult</span>
-              <span className="flex items-center gap-1"><span className="w-6 h-0.5 border-t border-dashed border-white/30 inline-block" /> tool_call</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-honey inline-block" /> particles = frequency</span>
+            <div className="flex flex-wrap gap-3 text-xs text-t3">
+              <span className="flex items-center gap-1"><span className="w-6 h-0.5 bg-black/15 inline-block" /> consult</span>
+              <span className="flex items-center gap-1"><span className="w-6 h-0.5 border-t border-dashed border-black/15 inline-block" /> tool_call</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-t1 inline-block" /> particles = frequency</span>
             </div>
           </div>
         )}

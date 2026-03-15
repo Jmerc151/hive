@@ -54,25 +54,25 @@ function MarkdownRenderer({ content }) {
               )
             }
             return (
-              <code className="bg-hive-700 text-honey px-1.5 py-0.5 rounded text-xs" {...props}>
+              <code className="bg-s4 text-t1 px-1.5 py-0.5 rounded text-xs" {...props}>
                 {children}
               </code>
             )
           },
-          h1: ({ children }) => <h1 className="text-lg font-bold text-hive-100 mt-4 mb-2">{children}</h1>,
-          h2: ({ children }) => <h2 className="text-base font-semibold text-hive-100 mt-3 mb-2">{children}</h2>,
-          h3: ({ children }) => <h3 className="text-sm font-semibold text-hive-200 mt-2 mb-1">{children}</h3>,
-          p: ({ children }) => <p className="text-sm text-hive-200 leading-relaxed mb-2">{children}</p>,
-          ul: ({ children }) => <ul className="text-sm text-hive-200 list-disc pl-5 mb-2 space-y-0.5">{children}</ul>,
-          ol: ({ children }) => <ol className="text-sm text-hive-200 list-decimal pl-5 mb-2 space-y-0.5">{children}</ol>,
-          li: ({ children }) => <li className="text-sm text-hive-200">{children}</li>,
-          a: ({ children, href }) => <a href={href} className="text-honey hover:underline" target="_blank" rel="noopener noreferrer">{children}</a>,
-          hr: () => <hr className="border-hive-600 my-4" />,
-          strong: ({ children }) => <strong className="font-semibold text-hive-100">{children}</strong>,
-          blockquote: ({ children }) => <blockquote className="border-l-2 border-honey/40 pl-3 my-2 text-sm text-hive-300 italic">{children}</blockquote>,
-          table: ({ children }) => <div className="overflow-x-auto my-2"><table className="text-xs text-hive-200 border-collapse w-full">{children}</table></div>,
-          th: ({ children }) => <th className="border border-hive-600 px-2 py-1 bg-hive-700/50 text-left text-hive-100 font-medium">{children}</th>,
-          td: ({ children }) => <td className="border border-hive-700 px-2 py-1">{children}</td>,
+          h1: ({ children }) => <h1 className="text-lg font-bold text-t1 mt-4 mb-2">{children}</h1>,
+          h2: ({ children }) => <h2 className="text-base font-semibold text-t1 mt-3 mb-2">{children}</h2>,
+          h3: ({ children }) => <h3 className="text-sm font-semibold text-t1 mt-2 mb-1">{children}</h3>,
+          p: ({ children }) => <p className="text-sm text-t1 leading-relaxed mb-2">{children}</p>,
+          ul: ({ children }) => <ul className="text-sm text-t1 list-disc pl-5 mb-2 space-y-0.5">{children}</ul>,
+          ol: ({ children }) => <ol className="text-sm text-t1 list-decimal pl-5 mb-2 space-y-0.5">{children}</ol>,
+          li: ({ children }) => <li className="text-sm text-t1">{children}</li>,
+          a: ({ children, href }) => <a href={href} className="text-t1 hover:underline" target="_blank" rel="noopener noreferrer">{children}</a>,
+          hr: () => <hr className="border-s4 my-4" />,
+          strong: ({ children }) => <strong className="font-semibold text-t1">{children}</strong>,
+          blockquote: ({ children }) => <blockquote className="border-l-2 border-honey/40 pl-3 my-2 text-sm text-t2 italic">{children}</blockquote>,
+          table: ({ children }) => <div className="overflow-x-auto my-2"><table className="text-xs text-t1 border-collapse w-full">{children}</table></div>,
+          th: ({ children }) => <th className="border border-s4 px-2 py-1 bg-s3 text-left text-t1 font-medium">{children}</th>,
+          td: ({ children }) => <td className="border border-s4 px-2 py-1">{children}</td>,
         }}
       >
         {content}

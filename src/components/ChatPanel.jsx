@@ -5,7 +5,7 @@ function renderMarkdown(text) {
   if (!text) return text
   let clean = text.replace(/\[ACTION:\w+\][\s\S]*?\[\/ACTION\]/g, '').trim()
   clean = clean.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-  clean = clean.replace(/`([^`]+)`/g, '<code class="bg-hive-700 px-1 rounded text-xs">$1</code>')
+  clean = clean.replace(/`([^`]+)`/g, '<code class="bg-s3 px-1 rounded text-xs">$1</code>')
   clean = clean.replace(/^[-•] (.+)$/gm, '<li class="ml-4 list-disc">$1</li>')
   clean = clean.replace(/((?:<li[^>]*>.*?<\/li>\n?)+)/g, '<ul class="space-y-0.5 my-1">$1</ul>')
   clean = clean.replace(/\n/g, '<br/>')
@@ -28,32 +28,32 @@ function WelcomeCard({ agents, onSuggestionClick }) {
   return (
     <div className="px-4 py-6 space-y-4">
       {/* Status summary */}
-      <div className="bg-gradient-to-br from-honey/5 to-honey/0 border border-honey/15 rounded-2xl p-4">
+      <div className="bg-gradient-to-br from-t1/5 to-t1/0 rounded-2xl p-4" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}>
         <div className="flex items-center gap-2 mb-3">
           <span className="text-lg">🐝</span>
-          <span className="text-sm font-semibold text-honey">Hive Overview</span>
+          <span className="text-sm font-semibold font-display text-t1">Hive Overview</span>
         </div>
         <div className="grid grid-cols-3 gap-3">
           <div className="text-center">
-            <div className="text-xl font-bold">{agents.length}</div>
-            <div className="text-[10px] text-hive-400 uppercase tracking-wider">Agents</div>
+            <div className="text-xl font-bold text-t1">{agents.length}</div>
+            <div className="text-[10px] text-t3 uppercase tracking-wider">Agents</div>
           </div>
           <div className="text-center">
-            <div className="text-xl font-bold text-green-400">{running}</div>
-            <div className="text-[10px] text-hive-400 uppercase tracking-wider">Active</div>
+            <div className="text-xl font-bold text-green-600">{running}</div>
+            <div className="text-[10px] text-t3 uppercase tracking-wider">Active</div>
           </div>
           <div className="text-center">
-            <div className="text-xl font-bold text-hive-400">{idle}</div>
-            <div className="text-[10px] text-hive-400 uppercase tracking-wider">Idle</div>
+            <div className="text-xl font-bold text-t3">{idle}</div>
+            <div className="text-[10px] text-t3 uppercase tracking-wider">Idle</div>
           </div>
         </div>
         {/* Agent pills */}
-        <div className="flex flex-wrap gap-1.5 mt-3 pt-3 border-t border-hive-700/30">
+        <div className="flex flex-wrap gap-1.5 mt-3 pt-3" style={{ borderTop: '0.5px solid rgba(0,0,0,0.08)' }}>
           {agents.map(a => (
-            <span key={a.id} className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-hive-800/80 border border-hive-700/40">
+            <span key={a.id} className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-s1" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}>
               <span>{a.avatar}</span>
-              <span className="text-hive-300">{a.name}</span>
-              <span className={`w-1.5 h-1.5 rounded-full ${a.isRunning ? 'bg-green-500' : 'bg-hive-600'}`} />
+              <span className="text-t2">{a.name}</span>
+              <span className={`w-1.5 h-1.5 rounded-full ${a.isRunning ? 'bg-green-500' : 'bg-s3'}`} />
             </span>
           ))}
         </div>
@@ -61,13 +61,14 @@ function WelcomeCard({ agents, onSuggestionClick }) {
 
       {/* Suggestions */}
       <div>
-        <p className="text-[10px] text-hive-500 uppercase tracking-wider mb-2 px-1">Try asking</p>
+        <p className="text-[10px] text-t4 uppercase tracking-wider mb-2 px-1">Try asking</p>
         <div className="flex flex-wrap gap-1.5">
           {SUGGESTIONS.map(s => (
             <button
               key={s.label}
               onClick={() => onSuggestionClick(s.text)}
-              className="text-xs px-3 py-1.5 rounded-full bg-hive-800 border border-hive-700/50 text-hive-300 hover:text-honey hover:border-honey/30 transition-all active:scale-95"
+              className="text-xs px-3 py-1.5 rounded-full bg-s1 text-t2 hover:text-t1 transition-all active:scale-95"
+              style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}
             >
               {s.label}
             </button>
@@ -232,50 +233,51 @@ export default function ChatPanel({ agents, onClose, embedded, onToast }) {
   const content = (
     <div className={`flex flex-col ${embedded ? 'h-full' : 'h-full'}`}>
       {/* Header */}
-      <div className="px-4 py-3 border-b border-hive-700/50 flex items-center justify-between">
+      <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-xl bg-honey/10 flex items-center justify-center">
+          <div className="w-8 h-8 rounded-xl bg-t1/10 flex items-center justify-center">
             <span className="text-sm">{mode === 'assistant' ? '🐝' : '💬'}</span>
           </div>
           <div>
-            <h2 className="font-semibold text-sm">{mode === 'assistant' ? 'Hive Assistant' : 'Team Feed'}</h2>
-            <p className="text-xs text-hive-500">{mode === 'assistant' ? 'AI-powered control' : `${agents.length} agents`}</p>
+            <h2 className="font-semibold text-sm text-t1">{mode === 'assistant' ? 'Hive Assistant' : 'Team Feed'}</h2>
+            <p className="text-xs text-t4">{mode === 'assistant' ? 'AI-powered control' : `${agents.length} agents`}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex bg-hive-800 rounded-lg p-0.5 border border-hive-700/50">
+          <div className="flex bg-s1 rounded-lg p-0.5" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}>
             <button
               onClick={() => setMode('assistant')}
-              className={`text-[10px] px-2 py-1 rounded-md transition-all ${mode === 'assistant' ? 'bg-honey/20 text-honey' : 'text-hive-400 hover:text-hive-200'}`}
+              className={`text-[10px] px-2 py-1 rounded-md transition-all ${mode === 'assistant' ? 'bg-t1/10 text-t1' : 'text-t3 hover:text-t1'}`}
             >
               AI
             </button>
             <button
               onClick={() => setMode('feed')}
-              className={`text-[10px] px-2 py-1 rounded-md transition-all ${mode === 'feed' ? 'bg-honey/20 text-honey' : 'text-hive-400 hover:text-hive-200'}`}
+              className={`text-[10px] px-2 py-1 rounded-md transition-all ${mode === 'feed' ? 'bg-t1/10 text-t1' : 'text-t3 hover:text-t1'}`}
             >
               Feed
             </button>
           </div>
           <button
             onClick={handleClear}
-            className="text-xs text-hive-500 hover:text-hive-300 px-2 py-1 rounded-lg active:bg-hive-700"
+            className="text-xs text-t4 hover:text-t2 px-2 py-1 rounded-lg active:bg-s3"
           >
             Clear
           </button>
           {onClose && (
-            <button onClick={onClose} className="text-hive-400 hover:text-hive-200 text-xl">&times;</button>
+            <button onClick={onClose} className="text-t3 hover:text-t1 text-xl">&times;</button>
           )}
         </div>
       </div>
 
       {/* Standup banner — feed mode only */}
       {mode === 'feed' && (
-        <div className="px-4 py-2 border-b border-hive-700/30">
+        <div className="px-4 py-2" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
           <button
             onClick={handleStandup}
             disabled={standupLoading}
-            className="w-full py-2.5 rounded-xl text-sm font-medium transition-all bg-gradient-to-r from-honey/10 to-honey/5 text-honey border border-honey/20 hover:from-honey/20 hover:to-honey/10 disabled:opacity-50 active:scale-[0.98]"
+            className="w-full py-2.5 rounded-xl text-sm font-medium transition-all bg-gradient-to-r from-t1/10 to-t1/5 text-t1 hover:from-t1/20 hover:to-t1/10 disabled:opacity-50 active:scale-[0.98]"
+            style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}
           >
             {standupLoading ? 'Standup in progress...' : '📋 Start Team Standup'}
           </button>
@@ -287,11 +289,11 @@ export default function ChatPanel({ agents, onClose, embedded, onToast }) {
         {showWelcome ? (
           <WelcomeCard agents={agents} onSuggestionClick={handleSuggestionClick} />
         ) : hasNoMessages && mode === 'feed' ? (
-          <div className="text-center text-hive-500 py-16 px-4">
-            <div className="w-16 h-16 rounded-2xl bg-hive-800 flex items-center justify-center mx-auto mb-4">
+          <div className="text-center text-t4 py-16 px-4">
+            <div className="w-16 h-16 rounded-2xl bg-s1 flex items-center justify-center mx-auto mb-4">
               <span className="text-3xl">💬</span>
             </div>
-            <p className="text-sm font-medium text-hive-300">No messages yet</p>
+            <p className="text-sm font-medium text-t2">No messages yet</p>
             <p className="text-xs mt-1">Start a team standup or send a message</p>
           </div>
         ) : (
@@ -304,7 +306,7 @@ export default function ChatPanel({ agents, onClose, embedded, onToast }) {
               if (isSystem) {
                 return (
                   <div key={msg.id} className="flex justify-center">
-                    <span className="text-xs text-hive-500 bg-hive-800/80 px-3 py-1 rounded-full border border-hive-700/30">
+                    <span className="text-xs text-t4 bg-s1 px-3 py-1 rounded-full" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}>
                       {msg.sender_avatar} {msg.text}
                     </span>
                   </div>
@@ -314,26 +316,27 @@ export default function ChatPanel({ agents, onClose, embedded, onToast }) {
               return (
                 <div key={msg.id} className={`flex gap-2.5 ${isUser ? 'flex-row-reverse' : ''}`}>
                   <div className={`shrink-0 w-8 h-8 rounded-xl flex items-center justify-center text-sm ${
-                    isAssistant ? 'bg-honey/10' : 'bg-hive-700/80'
+                    isAssistant ? 'bg-t1/10' : 'bg-s3'
                   }`}>
                     {isAssistant ? '🐝' : msg.sender_avatar || '👤'}
                   </div>
                   <div className={`max-w-[80%] ${isUser ? 'text-right' : ''}`}>
                     <div className={`flex items-center gap-2 mb-0.5 ${isUser ? 'justify-end' : ''}`}>
                       {!isUser && (
-                        <span className={`text-xs font-semibold ${isAssistant ? 'text-honey' : ''}`} style={isAssistant ? {} : { color: msg.sender_color || '#a8a29e' }}>
+                        <span className={`text-xs font-semibold ${isAssistant ? 'text-t1' : ''}`} style={isAssistant ? {} : { color: msg.sender_color || '#78716c' }}>
                           {isAssistant ? 'Hive Assistant' : msg.sender_name}
                         </span>
                       )}
-                      <span className="text-[10px] text-hive-600">{formatTime(msg.created_at)}</span>
+                      <span className="text-[10px] text-t5">{formatTime(msg.created_at)}</span>
                     </div>
                     <div className={`text-sm rounded-2xl px-3.5 py-2 inline-block text-left leading-relaxed ${
                       isUser
-                        ? 'bg-honey text-white rounded-br-md'
+                        ? 'bg-t1 text-white rounded-br-md'
                         : isAssistant
-                          ? 'bg-honey/10 text-hive-200 border border-honey/20 rounded-bl-md'
-                          : 'bg-hive-800 text-hive-200 border border-hive-700/50 rounded-bl-md'
+                          ? 'bg-t1/5 text-t1 rounded-bl-md'
+                          : 'bg-s1 text-t1 rounded-bl-md'
                     }`}
+                      style={!isUser ? { border: '0.5px solid rgba(0,0,0,0.08)' } : undefined}
                       dangerouslySetInnerHTML={isAssistant ? { __html: renderMarkdown(msg.text) } : undefined}
                     >
                       {isAssistant ? undefined : msg.text}
@@ -346,26 +349,26 @@ export default function ChatPanel({ agents, onClose, embedded, onToast }) {
             {/* Streaming response */}
             {streaming && (
               <div className="flex gap-2.5">
-                <div className="shrink-0 w-8 h-8 rounded-xl bg-honey/10 flex items-center justify-center text-sm">
+                <div className="shrink-0 w-8 h-8 rounded-xl bg-t1/10 flex items-center justify-center text-sm">
                   🐝
                 </div>
                 <div className="max-w-[80%]">
                   <div className="flex items-center gap-2 mb-0.5">
-                    <span className="text-xs font-semibold text-honey">Hive Assistant</span>
+                    <span className="text-xs font-semibold text-t1">Hive Assistant</span>
                   </div>
-                  <div className="text-sm rounded-2xl px-3.5 py-2 inline-block text-left leading-relaxed bg-honey/10 text-hive-200 border border-honey/20 rounded-bl-md">
+                  <div className="text-sm rounded-2xl px-3.5 py-2 inline-block text-left leading-relaxed bg-t1/5 text-t1 rounded-bl-md" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}>
                     {streamingText ? (
                       <span dangerouslySetInnerHTML={{ __html: renderMarkdown(streamingText) }} />
                     ) : (
                       <span className="flex gap-1 items-center">
-                        <span className="w-1.5 h-1.5 bg-honey rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                        <span className="w-1.5 h-1.5 bg-honey rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                        <span className="w-1.5 h-1.5 bg-honey rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                        <span className="w-1.5 h-1.5 bg-t1 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-1.5 h-1.5 bg-t1 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-1.5 h-1.5 bg-t1 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                       </span>
                     )}
                   </div>
                   {actions.map((action, i) => (
-                    <div key={i} className="mt-1.5 flex items-center gap-1.5 text-xs text-green-400">
+                    <div key={i} className="mt-1.5 flex items-center gap-1.5 text-xs text-green-600">
                       <span className="w-4 h-4 rounded-full bg-green-500/20 flex items-center justify-center text-[10px]">✓</span>
                       <span>{action.type === 'create_task' ? `Task created: ${action.result?.title || 'New task'}` : action.type === 'pause_agents' ? 'Agents paused' : action.type === 'resume_agents' ? 'Agents resumed' : action.type === 'update_setting' ? 'Setting updated' : action.type === 'run_task' ? 'Task queued' : action.type}</span>
                     </div>
@@ -382,7 +385,8 @@ export default function ChatPanel({ agents, onClose, embedded, onToast }) {
                   <button
                     key={s.label}
                     onClick={() => handleSuggestionClick(s.text)}
-                    className="text-[11px] px-2.5 py-1 rounded-full bg-hive-800/60 border border-hive-700/30 text-hive-400 hover:text-honey hover:border-honey/30 transition-all active:scale-95"
+                    className="text-[11px] px-2.5 py-1 rounded-full bg-s3 text-t3 hover:text-t1 transition-all active:scale-95"
+                    style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}
                   >
                     {s.label}
                   </button>
@@ -394,20 +398,21 @@ export default function ChatPanel({ agents, onClose, embedded, onToast }) {
       </div>
 
       {/* Input */}
-      <div className="p-3 border-t border-hive-700/50 bg-hive-900/80 backdrop-blur-xl shrink-0">
+      <div className="p-3 bg-page backdrop-blur-xl shrink-0" style={{ borderTop: '0.5px solid rgba(0,0,0,0.08)' }}>
         <div className="flex gap-2">
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={mode === 'assistant' ? 'Ask the hive...' : 'Send a message...'}
-            className="flex-1 bg-hive-800 border border-hive-700 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-honey/30 focus:border-honey/50 placeholder:text-hive-500"
+            className="flex-1 bg-s1 rounded-xl px-3.5 py-2.5 text-sm text-t1 focus:outline-none focus:ring-2 focus:ring-t1/30 placeholder:text-t4"
+            style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}
             disabled={streaming}
           />
           <button
             onClick={handleSend}
             disabled={!input.trim() || streaming}
-            className="px-4 py-2.5 bg-honey text-white rounded-xl text-sm font-medium hover:bg-honey-dim transition-all disabled:opacity-30 active:scale-95"
+            className="px-4 py-2.5 bg-t1 text-white rounded-xl text-sm font-medium hover:opacity-90 transition-all disabled:opacity-30 active:scale-95"
           >
             {streaming ? '...' : mode === 'assistant' ? 'Ask' : 'Send'}
           </button>
@@ -421,8 +426,8 @@ export default function ChatPanel({ agents, onClose, embedded, onToast }) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex justify-end" onClick={onClose}>
-      <div className="w-full max-w-lg bg-hive-900 border-l border-hive-700/50 shadow-2xl flex flex-col h-full" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex justify-end" onClick={onClose}>
+      <div className="w-full max-w-lg bg-page shadow-2xl flex flex-col h-full" onClick={e => e.stopPropagation()} style={{ borderLeft: '0.5px solid rgba(0,0,0,0.08)' }}>
         {content}
       </div>
     </div>

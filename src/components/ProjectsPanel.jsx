@@ -5,16 +5,16 @@ const STATUS_COLOR = (pct) =>
   pct >= 75 ? 'bg-green-500' : pct >= 25 ? 'bg-honey' : 'bg-red-500'
 
 const STATUS_BADGE = (pct) =>
-  pct >= 75 ? 'text-green-400 bg-green-500/15' : pct >= 25 ? 'text-honey bg-honey/15' : 'text-red-400 bg-red-500/15'
+  pct >= 75 ? 'text-green-600 bg-green-500/15' : pct >= 25 ? 'text-t1 bg-honey/15' : 'text-red-600 bg-red-500/15'
 
 const STATUS_DOT = {
   done: 'bg-green-500',
   failed: 'bg-red-500',
   in_progress: 'bg-honey animate-pulse',
   awaiting_approval: 'bg-blue-400 animate-pulse',
-  todo: 'bg-hive-500',
+  todo: 'bg-t4',
   in_review: 'bg-purple-400',
-  backlog: 'bg-hive-600',
+  backlog: 'bg-t5',
 }
 
 export default function ProjectsPanel({ agents = [], onClose, onSelectTask }) {
@@ -37,45 +37,45 @@ export default function ProjectsPanel({ agents = [], onClose, onSelectTask }) {
     : []
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-hive-800 border border-hive-700 rounded-xl w-full max-w-4xl shadow-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 bg-page backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-s1 rounded-xl w-full max-w-4xl shadow-2xl max-h-[90vh] flex flex-col" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
 
         {/* Header */}
-        <div className="p-5 border-b border-hive-700 flex items-center justify-between shrink-0">
+        <div className="p-5 flex items-center justify-between shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
           <div className="flex items-center gap-3">
             {activeProject ? (
               <>
                 <button
                   onClick={() => { setActiveProject(null); setFilter('all') }}
-                  className="text-hive-400 hover:text-hive-200 transition-colors text-sm flex items-center gap-1"
+                  className="text-t3 hover:text-t1 transition-colors text-sm flex items-center gap-1"
                 >
                   <span>&larr;</span> Back
                 </button>
-                <span className="text-hive-600">|</span>
+                <span className="text-t5">|</span>
                 <span className="text-xl">{project?.icon || '📁'}</span>
-                <h2 className="text-lg font-semibold">{activeProject}</h2>
-                <span className="text-xs bg-hive-700 text-hive-400 rounded-full px-2 py-0.5">{project?.total || 0} tasks</span>
+                <h2 className="text-lg font-semibold font-display text-t1">{activeProject}</h2>
+                <span className="text-xs bg-s3 text-t3 rounded-full px-2 py-0.5">{project?.total || 0} tasks</span>
               </>
             ) : (
               <>
                 <span className="text-xl">📂</span>
-                <h2 className="text-lg font-semibold">Projects</h2>
-                <span className="text-xs bg-hive-700 text-hive-400 rounded-full px-2 py-0.5">{projects.length}</span>
+                <h2 className="text-lg font-semibold font-display text-t1">Projects</h2>
+                <span className="text-xs bg-s3 text-t3 rounded-full px-2 py-0.5">{projects.length}</span>
               </>
             )}
           </div>
-          <button onClick={onClose} className="text-hive-400 hover:text-hive-200 text-xl">&times;</button>
+          <button onClick={onClose} className="text-t3 hover:text-t1 text-xl">&times;</button>
         </div>
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-5">
           {!activeProject ? (
-            /* ─── Folder Grid View ─── */
+            /* Folder Grid View */
             <div>
               {projects.length === 0 && (
                 <div className="text-center py-12">
                   <div className="text-3xl mb-2">📂</div>
-                  <p className="text-sm text-hive-500">No tasks found.</p>
+                  <p className="text-sm text-t4">No tasks found.</p>
                 </div>
               )}
 
@@ -89,7 +89,8 @@ export default function ProjectsPanel({ agents = [], onClose, onSelectTask }) {
                   return (
                     <div
                       key={p.name}
-                      className="bg-hive-700/30 border border-hive-700 rounded-xl p-4 cursor-pointer hover:bg-hive-700/50 hover:border-hive-600 transition-all group"
+                      className="bg-s2 rounded-xl p-4 cursor-pointer hover:bg-s3 transition-all group"
+                      style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}
                       onClick={() => setActiveProject(p.name)}
                     >
                       {/* Folder icon + name */}
@@ -97,8 +98,8 @@ export default function ProjectsPanel({ agents = [], onClose, onSelectTask }) {
                         <div className="flex items-center gap-2.5">
                           <span className="text-2xl group-hover:scale-110 transition-transform">{p.icon}</span>
                           <div>
-                            <h3 className="font-semibold text-sm text-hive-100">{p.name}</h3>
-                            <span className="text-xs text-hive-500">{p.total} tasks</span>
+                            <h3 className="font-semibold text-sm text-t1">{p.name}</h3>
+                            <span className="text-xs text-t4">{p.total} tasks</span>
                           </div>
                         </div>
                         <span className={`text-xs font-bold px-2 py-0.5 rounded ${STATUS_BADGE(p.completionPct)}`}>
@@ -107,21 +108,21 @@ export default function ProjectsPanel({ agents = [], onClose, onSelectTask }) {
                       </div>
 
                       {/* Progress bar */}
-                      <div className="h-1.5 bg-hive-600 rounded-full overflow-hidden mb-3">
+                      <div className="h-1.5 bg-s3 rounded-full overflow-hidden mb-3">
                         <div className={`h-full rounded-full transition-all ${STATUS_COLOR(p.completionPct)}`} style={{ width: `${p.completionPct}%` }} />
                       </div>
 
                       {/* Stats row */}
-                      <div className="flex items-center justify-between text-xs text-hive-400">
+                      <div className="flex items-center justify-between text-xs text-t3">
                         <div className="flex items-center gap-2">
-                          <span className="text-green-400">{p.completed} done</span>
-                          {p.awaiting > 0 && <span className="text-blue-400">{p.awaiting} review</span>}
-                          {p.inProgress > 0 && <span className="text-honey">{p.inProgress} active</span>}
-                          {p.failed > 0 && <span className="text-red-400">{p.failed} failed</span>}
+                          <span className="text-green-600">{p.completed} done</span>
+                          {p.awaiting > 0 && <span className="text-blue-600">{p.awaiting} review</span>}
+                          {p.inProgress > 0 && <span className="text-t1">{p.inProgress} active</span>}
+                          {p.failed > 0 && <span className="text-red-600">{p.failed} failed</span>}
                         </div>
                         <div className="flex items-center gap-1">
                           {agentAvatars.map((av, i) => <span key={i}>{av}</span>)}
-                          <span className="ml-1 text-hive-500">${p.totalCost.toFixed(2)}</span>
+                          <span className="ml-1 text-t4">${p.totalCost.toFixed(2)}</span>
                         </div>
                       </div>
                     </div>
@@ -131,14 +132,14 @@ export default function ProjectsPanel({ agents = [], onClose, onSelectTask }) {
 
               {/* Summary bar */}
               {projects.length > 0 && (
-                <div className="mt-5 pt-4 border-t border-hive-700 flex items-center justify-between text-xs text-hive-500">
+                <div className="mt-5 pt-4 flex items-center justify-between text-xs text-t4" style={{ borderTop: '0.5px solid rgba(0,0,0,0.08)' }}>
                   <span>{projects.reduce((s, p) => s + p.total, 0)} total tasks across {projects.length} projects</span>
                   <span>${projects.reduce((s, p) => s + p.totalCost, 0).toFixed(2)} total spend</span>
                 </div>
               )}
             </div>
           ) : (
-            /* ─── Project Detail View ─── */
+            /* Project Detail View */
             <div>
               {/* Filter tabs */}
               <div className="flex gap-2 mb-4 flex-wrap">
@@ -152,11 +153,12 @@ export default function ProjectsPanel({ agents = [], onClose, onSelectTask }) {
                   <button
                     key={f.key}
                     onClick={() => setFilter(f.key)}
-                    className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+                    className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${
                       filter === f.key
-                        ? 'bg-honey/20 border-honey/40 text-honey'
-                        : 'bg-hive-700/30 border-hive-700 text-hive-400 hover:bg-hive-700/50'
+                        ? 'bg-t1/10 text-t1'
+                        : 'bg-s2 text-t3 hover:bg-s3'
                     }`}
+                    style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}
                   >
                     {f.label} ({f.count})
                   </button>
@@ -166,7 +168,7 @@ export default function ProjectsPanel({ agents = [], onClose, onSelectTask }) {
               {/* Task list */}
               <div className="space-y-2">
                 {filteredTasks.length === 0 && (
-                  <div className="text-center py-8 text-hive-500 text-sm">No tasks match this filter.</div>
+                  <div className="text-center py-8 text-t4 text-sm">No tasks match this filter.</div>
                 )}
                 {filteredTasks.map(t => {
                   const a = agents.find(x => x.id === t.agent_id)
@@ -174,13 +176,14 @@ export default function ProjectsPanel({ agents = [], onClose, onSelectTask }) {
                   return (
                     <div
                       key={t.id}
-                      className="flex items-start gap-3 p-3 bg-hive-700/30 border border-hive-700 rounded-lg hover:bg-hive-700/50 transition-colors cursor-pointer"
+                      className="flex items-start gap-3 p-3 bg-s2 rounded-lg hover:bg-s3 transition-colors cursor-pointer"
+                      style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}
                       onClick={() => onSelectTask?.(t)}
                     >
-                      <span className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${STATUS_DOT[t.status] || 'bg-hive-500'}`} />
+                      <span className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${STATUS_DOT[t.status] || 'bg-t4'}`} />
                       <div className="flex-1 min-w-0">
-                        <div className="text-sm text-hive-200 leading-snug">{displayTitle}</div>
-                        <div className="flex items-center gap-2 mt-1.5 text-xs text-hive-500">
+                        <div className="text-sm text-t1 leading-snug">{displayTitle}</div>
+                        <div className="flex items-center gap-2 mt-1.5 text-xs text-t4">
                           {a && <span className="flex items-center gap-1">{a.avatar} {a.name}</span>}
                           <span className="capitalize">{t.status.replace(/_/g, ' ')}</span>
                           {t.estimated_cost > 0 && <span>${t.estimated_cost.toFixed(3)}</span>}
@@ -190,15 +193,15 @@ export default function ProjectsPanel({ agents = [], onClose, onSelectTask }) {
                       <div className="flex items-center gap-2 shrink-0">
                         {t.nexus_score != null && (
                           <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${
-                            t.nexus_score >= 7 ? 'text-green-400 bg-green-500/15' :
-                            t.nexus_score >= 4 ? 'text-yellow-400 bg-yellow-500/15' :
-                            'text-red-400 bg-red-500/15'
+                            t.nexus_score >= 7 ? 'text-green-600 bg-green-500/15' :
+                            t.nexus_score >= 4 ? 'text-yellow-600 bg-yellow-500/15' :
+                            'text-red-600 bg-red-500/15'
                           }`}>{t.nexus_score}/10</span>
                         )}
                         <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                          t.priority === 'high' ? 'text-red-400 bg-red-500/15' :
-                          t.priority === 'medium' ? 'text-honey bg-honey/15' :
-                          'text-hive-500 bg-hive-700'
+                          t.priority === 'high' ? 'text-red-600 bg-red-500/15' :
+                          t.priority === 'medium' ? 'text-t1 bg-honey/15' :
+                          'text-t4 bg-s3'
                         }`}>{t.priority}</span>
                       </div>
                     </div>
@@ -208,7 +211,7 @@ export default function ProjectsPanel({ agents = [], onClose, onSelectTask }) {
 
               {/* Project summary */}
               {project && (
-                <div className="mt-4 pt-3 border-t border-hive-700 flex items-center justify-between text-xs text-hive-500">
+                <div className="mt-4 pt-3 flex items-center justify-between text-xs text-t4" style={{ borderTop: '0.5px solid rgba(0,0,0,0.08)' }}>
                   <span>{project.completed}/{project.total} completed ({project.completionPct}%)</span>
                   <span>Total cost: ${project.totalCost.toFixed(2)}</span>
                 </div>
