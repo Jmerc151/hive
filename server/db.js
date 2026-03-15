@@ -403,13 +403,10 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_spend_log_agent ON spend_log(agent_id);
   CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);
   CREATE INDEX IF NOT EXISTS idx_intel_status ON intel_items(status);
-  CREATE INDEX IF NOT EXISTS idx_eval_runs_case ON eval_runs(eval_case_id);
-  CREATE INDEX IF NOT EXISTS idx_guardrail_task ON guardrail_events(task_id);
   CREATE INDEX IF NOT EXISTS idx_spend_log_agent_date ON spend_log(agent_id, date);
   CREATE INDEX IF NOT EXISTS idx_tasks_agent_status ON tasks(agent_id, status);
   CREATE INDEX IF NOT EXISTS idx_task_logs_agent ON task_logs(agent_id);
   CREATE INDEX IF NOT EXISTS idx_proposals_proposed_by ON proposals(proposed_by);
-  CREATE INDEX IF NOT EXISTS idx_memory_agent_created ON memory_embeddings(agent_id, created_at DESC);
 `)
 
 // ── Industry-grade upgrade tables ──
@@ -467,6 +464,8 @@ db.exec(`
     failure_reason TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now'))
   );
+  CREATE INDEX IF NOT EXISTS idx_eval_runs_case ON eval_runs(eval_case_id);
+  CREATE INDEX IF NOT EXISTS idx_guardrail_task ON guardrail_events(task_id);
 `)
 
 // MCP server connections
@@ -495,6 +494,7 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_memory_agent ON memory_embeddings(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_memory_agent_created ON memory_embeddings(agent_id, created_at DESC);
 `)
 
 // OTLP trace columns
