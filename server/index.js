@@ -703,6 +703,21 @@ const TOOL_REGISTRY = [
       const sanitize = (str) => String(str || '').replace(/[\r\n]/g, ' ').trim()
       const to = sanitize(args.to)
       const subject = sanitize(args.subject)
+
+      // Block fake/hallucinated email addresses
+      const BLOCKED_DOMAINS = ['example.com', 'example.org', 'test.com', 'placeholder.com', 'hive.local', 'fake.com', 'temp.com', 'mail.test']
+      const domain = to.split('@')[1]?.toLowerCase()
+      if (!domain || BLOCKED_DOMAINS.includes(domain)) {
+        return { sent: false, error: `Blocked: "${to}" is a fake/placeholder address. Only send to REAL email addresses you found via web_search or that the user provided.` }
+      }
+
+      // Only allow sending to owner without approval — all others need approval gate
+      const OWNER_EMAIL = process.env.GMAIL_USER || 'Johnmercurio151@gmail.com'
+      if (to.toLowerCase() !== OWNER_EMAIL.toLowerCase()) {
+        // Log for review but still send — could add approval gate later
+        console.log(`📧 External email: to=${to} subject="${subject}"`)
+      }
+
       try {
         await email.sendCustomEmail(to, subject, args.body)
         return { sent: true, to, subject }
