@@ -738,19 +738,25 @@ const TOOL_REGISTRY = [
   },
   {
     name: 'log_revenue',
-    description: 'Record revenue earned from a sale, affiliate commission, client payment, or trading profit',
+    description: 'Record REAL revenue from a CONFIRMED sale or payment. Only log money that has ACTUALLY been received — never projected, potential, estimated, or risk amounts. Must include a transaction ID or proof.',
     params: {
-      amount: { type: 'number', required: true, description: 'Revenue amount in USD' },
+      amount: { type: 'number', required: true, description: 'Exact USD amount ACTUALLY received (must be positive, max $10000)' },
       source: { type: 'string', required: true, description: 'Revenue source: affiliate, freelance, product, trading, consulting' },
+      transaction_id: { type: 'string', required: true, description: 'Transaction/order ID from payment platform (Stripe, Gumroad, Alpaca, etc.)' },
       notes: { type: 'string', required: false, description: 'Details about the revenue' }
     },
     agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus'],
     execute: async (args, ctx) => {
+      if (args.amount <= 0) return { error: 'Revenue must be positive. Do NOT log negative amounts, risks, or losses.' }
+      if (args.amount > 10000) return { error: 'Revenue over $10,000 requires manual entry. This seems like a hallucinated amount.' }
+      if (!args.transaction_id || args.transaction_id.length < 3) return { error: 'A real transaction ID from the payment platform is required. Do not make up transaction IDs.' }
+      const FAKE_IDS = ['test', 'n/a', 'none', 'pending', 'tbd', 'unknown', 'placeholder', 'na', 'null']
+      if (FAKE_IDS.includes(args.transaction_id.toLowerCase().trim())) return { error: 'That is not a real transaction ID. Only log revenue for confirmed, completed payments.' }
       const id = uuid()
       db.prepare('INSERT INTO revenue_entries (id, title, amount, source, agent_id, task_id, notes) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-        id, `${args.source}: $${args.amount}`, args.amount, args.source, ctx?.agentId || '', ctx?.taskId || '', args.notes || ''
+        id, `${args.source}: $${args.amount}`, args.amount, args.source, ctx?.agentId || '', ctx?.taskId || '', `txn:${args.transaction_id} | ${args.notes || ''}`
       )
-      return { id, amount: args.amount, source: args.source, message: `Revenue logged: $${args.amount} from ${args.source}` }
+      return { id, amount: args.amount, source: args.source, message: `Revenue logged: $${args.amount} from ${args.source} (txn: ${args.transaction_id})` }
     }
   },
   {
