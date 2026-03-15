@@ -1385,6 +1385,349 @@ const TOOL_REGISTRY = [
       }
       return { success: true, thread: results }
     }
+  },
+  // ═══════════════════════════════════════════
+  // ██ HUNTER.IO — Find real email addresses ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'find_email',
+    description: 'Find real email addresses for a person or company using Hunter.io. Use BEFORE send_email to get real contacts.',
+    params: {
+      domain: { type: 'string', required: false, description: 'Company domain to find emails for (e.g. stripe.com)' },
+      company: { type: 'string', required: false, description: 'Company name to search' },
+      first_name: { type: 'string', required: false, description: 'Person first name' },
+      last_name: { type: 'string', required: false, description: 'Person last name' }
+    },
+    agents: ['dealer', 'scout'],
+    execute: async (args) => {
+      const token = process.env.HUNTER_API_KEY
+      if (!token) return { error: 'HUNTER_API_KEY not configured. Sign up at hunter.io (25 free searches/mo).' }
+      try {
+        if (args.first_name && args.last_name && args.domain) {
+          const res = await fetch(`https://api.hunter.io/v2/email-finder?domain=${encodeURIComponent(args.domain)}&first_name=${encodeURIComponent(args.first_name)}&last_name=${encodeURIComponent(args.last_name)}&api_key=${token}`)
+          const data = await res.json()
+          if (data.errors) return { error: data.errors[0]?.details || 'Hunter API error' }
+          return { email: data.data?.email, confidence: data.data?.confidence, sources: data.data?.sources?.length }
+        } else if (args.domain || args.company) {
+          const q = args.domain ? `domain=${encodeURIComponent(args.domain)}` : `company=${encodeURIComponent(args.company)}`
+          const res = await fetch(`https://api.hunter.io/v2/domain-search?${q}&limit=10&api_key=${token}`)
+          const data = await res.json()
+          if (data.errors) return { error: data.errors[0]?.details || 'Hunter API error' }
+          return { domain: data.data?.domain, org: data.data?.organization, emails: data.data?.emails?.map(e => ({ email: e.value, type: e.type, confidence: e.confidence, name: `${e.first_name || ''} ${e.last_name || ''}`.trim(), position: e.position })) }
+        }
+        return { error: 'Provide domain, company, or first_name+last_name+domain' }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  // ═══════════════════════════════════════════
+  // ██ STRIPE — Payment links & revenue      ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'stripe_create_link',
+    description: 'Create a Stripe payment link for selling a product or service. Returns a checkout URL.',
+    params: {
+      name: { type: 'string', required: true, description: 'Product name' },
+      price: { type: 'number', required: true, description: 'Price in cents (e.g. 999 = $9.99)' },
+      description: { type: 'string', required: false, description: 'Product description' }
+    },
+    agents: ['forge', 'dealer'],
+    execute: async (args) => {
+      const token = process.env.STRIPE_SECRET_KEY
+      if (!token) return { error: 'STRIPE_SECRET_KEY not configured. Add it to .env.' }
+      try {
+        // Create a price
+        const priceRes = await fetch('https://api.stripe.com/v1/prices', {
+          method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ 'unit_amount': String(args.price), 'currency': 'usd', 'product_data[name]': args.name, ...(args.description ? { 'product_data[description]': args.description } : {}) })
+        })
+        const priceData = await priceRes.json()
+        if (priceData.error) return { error: priceData.error.message }
+        // Create payment link
+        const linkRes = await fetch('https://api.stripe.com/v1/payment_links', {
+          method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ 'line_items[0][price]': priceData.id, 'line_items[0][quantity]': '1' })
+        })
+        const linkData = await linkRes.json()
+        if (linkData.error) return { error: linkData.error.message }
+        return { success: true, url: linkData.url, id: linkData.id, price: args.price / 100 }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'stripe_get_balance',
+    description: 'Get current Stripe balance and recent charges',
+    params: {},
+    agents: ['dealer', 'nexus'],
+    execute: async () => {
+      const token = process.env.STRIPE_SECRET_KEY
+      if (!token) return { error: 'STRIPE_SECRET_KEY not configured' }
+      try {
+        const [balRes, chargesRes] = await Promise.all([
+          fetch('https://api.stripe.com/v1/balance', { headers: { Authorization: `Bearer ${token}` } }),
+          fetch('https://api.stripe.com/v1/charges?limit=10', { headers: { Authorization: `Bearer ${token}` } })
+        ])
+        const balance = await balRes.json()
+        const charges = await chargesRes.json()
+        return {
+          available: balance.available?.map(b => ({ amount: b.amount / 100, currency: b.currency })),
+          pending: balance.pending?.map(b => ({ amount: b.amount / 100, currency: b.currency })),
+          recent_charges: charges.data?.map(c => ({ amount: c.amount / 100, status: c.status, description: c.description, created: new Date(c.created * 1000).toISOString() }))
+        }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  // ═══════════════════════════════════════════
+  // ██ MEDIUM — Blog publishing              ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'medium_publish',
+    description: 'Publish an article on Medium. Returns the post URL.',
+    params: {
+      title: { type: 'string', required: true, description: 'Article title' },
+      content: { type: 'string', required: true, description: 'Article content in markdown or HTML' },
+      tags: { type: 'string', required: false, description: 'Comma-separated tags (max 5)' },
+      format: { type: 'string', required: false, description: 'Content format: markdown or html (default: markdown)' }
+    },
+    agents: ['quill'],
+    execute: async (args) => {
+      const token = process.env.MEDIUM_TOKEN
+      if (!token) return { error: 'MEDIUM_TOKEN not configured. Get it from medium.com/me/settings → Integration tokens.' }
+      try {
+        const meRes = await fetch('https://api.medium.com/v1/me', { headers: { Authorization: `Bearer ${token}` } })
+        const me = await meRes.json()
+        const userId = me.data?.id
+        if (!userId) return { error: 'Could not get Medium user ID' }
+        const tags = args.tags ? args.tags.split(',').map(t => t.trim()).slice(0, 5) : []
+        const res = await fetch(`https://api.medium.com/v1/users/${userId}/posts`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: args.title, contentFormat: args.format || 'markdown', content: args.content, tags, publishStatus: 'public' })
+        })
+        const data = await res.json()
+        if (data.errors) return { error: data.errors[0]?.message || 'Medium API error' }
+        return { success: true, url: data.data?.url, id: data.data?.id, title: data.data?.title }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  // ═══════════════════════════════════════════
+  // ██ REDDIT — Post content                 ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'reddit_post',
+    description: 'Submit a post to a subreddit on Reddit',
+    params: {
+      subreddit: { type: 'string', required: true, description: 'Subreddit name without r/ (e.g. "webdev")' },
+      title: { type: 'string', required: true, description: 'Post title' },
+      text: { type: 'string', required: false, description: 'Post body text (for text posts)' },
+      url: { type: 'string', required: false, description: 'URL to share (for link posts)' }
+    },
+    agents: ['quill', 'dealer'],
+    execute: async (args) => {
+      const clientId = process.env.REDDIT_CLIENT_ID
+      const clientSecret = process.env.REDDIT_CLIENT_SECRET
+      const username = process.env.REDDIT_USERNAME
+      const password = process.env.REDDIT_PASSWORD
+      if (!clientId || !clientSecret || !username || !password) return { error: 'Reddit API not configured. Need REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USERNAME, REDDIT_PASSWORD in .env.' }
+      try {
+        // Get access token
+        const authRes = await fetch('https://www.reddit.com/api/v1/access_token', {
+          method: 'POST',
+          headers: { Authorization: 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ grant_type: 'password', username, password })
+        })
+        const auth = await authRes.json()
+        if (!auth.access_token) return { error: 'Reddit auth failed: ' + (auth.error || 'unknown') }
+        // Submit post
+        const form = new URLSearchParams({ sr: args.subreddit, title: args.title, kind: args.url ? 'link' : 'self', resubmit: 'true' })
+        if (args.url) form.append('url', args.url)
+        if (args.text) form.append('text', args.text)
+        const res = await fetch('https://oauth.reddit.com/api/submit', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${auth.access_token}`, 'User-Agent': 'Hive/1.0', 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: form
+        })
+        const data = await res.json()
+        if (data.json?.errors?.length) return { error: data.json.errors.map(e => e.join(': ')).join(', ') }
+        return { success: true, url: data.json?.data?.url, id: data.json?.data?.id }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  // ═══════════════════════════════════════════
+  // ██ REPLICATE — AI image generation       ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'generate_image',
+    description: 'Generate an AI image using Replicate (FLUX). Returns image URL for products, blog posts, social media.',
+    params: {
+      prompt: { type: 'string', required: true, description: 'Image description prompt' },
+      aspect_ratio: { type: 'string', required: false, description: 'Aspect ratio: 1:1, 16:9, 9:16, 4:3 (default: 1:1)' }
+    },
+    agents: ['forge', 'quill'],
+    execute: async (args) => {
+      const token = process.env.REPLICATE_API_TOKEN
+      if (!token) return { error: 'REPLICATE_API_TOKEN not configured. Sign up at replicate.com.' }
+      try {
+        const res = await fetch('https://api.replicate.com/v1/predictions', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'black-forest-labs/flux-schnell', input: { prompt: args.prompt, aspect_ratio: args.aspect_ratio || '1:1' } })
+        })
+        const prediction = await res.json()
+        if (prediction.error) return { error: prediction.error }
+        // Poll for result
+        let result = prediction
+        for (let i = 0; i < 30; i++) {
+          if (result.status === 'succeeded') return { success: true, url: result.output?.[0] || result.output }
+          if (result.status === 'failed') return { error: 'Image generation failed' }
+          await new Promise(r => setTimeout(r, 2000))
+          const poll = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, { headers: { Authorization: `Bearer ${token}` } })
+          result = await poll.json()
+        }
+        return { error: 'Timed out waiting for image' }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  // ═══════════════════════════════════════════
+  // ██ WEB SCRAPER — Extract page content    ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'scrape_page',
+    description: 'Extract text content and links from any web page. Use for research, competitive analysis, finding contacts.',
+    params: {
+      url: { type: 'string', required: true, description: 'URL to scrape' },
+      selector: { type: 'string', required: false, description: 'CSS selector to extract specific content (default: body)' }
+    },
+    agents: ['scout', 'dealer', 'quill'],
+    execute: async (args) => {
+      const blocked = /^https?:\/\/(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/i
+      if (blocked.test(args.url)) return { error: 'Internal URLs are blocked' }
+      try {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 15000)
+        const res = await fetch(args.url, { signal: controller.signal, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Hive/1.0)' } })
+        clearTimeout(timeout)
+        const html = await res.text()
+        // Simple HTML to text extraction
+        const text = html
+          .replace(/<script[\s\S]*?<\/script>/gi, '')
+          .replace(/<style[\s\S]*?<\/style>/gi, '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 8000)
+        // Extract links
+        const linkRegex = /href="(https?:\/\/[^"]+)"/g
+        const links = []
+        let match
+        while ((match = linkRegex.exec(html)) && links.length < 20) links.push(match[1])
+        // Extract emails from page
+        const emailRegex = /[\w.+-]+@[\w-]+\.[\w.]+/g
+        const emails = [...new Set(html.match(emailRegex) || [])].slice(0, 10)
+        return { text: text.slice(0, 5000), links, emails, url: args.url }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  // ═══════════════════════════════════════════
+  // ██ NETLIFY — Deploy sites & landing pages██
+  // ═══════════════════════════════════════════
+  {
+    name: 'netlify_deploy',
+    description: 'Deploy a site to Netlify from workspace files. Returns the live URL.',
+    params: {
+      site_name: { type: 'string', required: true, description: 'Site name (becomes <name>.netlify.app)' },
+      files: { type: 'string', required: true, description: 'JSON object mapping file paths to content, e.g. {"index.html":"<html>...","style.css":"body{...}"}' }
+    },
+    agents: ['forge'],
+    execute: async (args) => {
+      const token = process.env.NETLIFY_ACCESS_TOKEN
+      if (!token) return { error: 'NETLIFY_ACCESS_TOKEN not configured. Get it from app.netlify.com/user/applications.' }
+      try {
+        let files
+        try { files = JSON.parse(args.files) } catch { return { error: 'files must be a JSON object mapping paths to content' } }
+        const { createHash } = await import('crypto')
+        // Create file digests
+        const fileHashes = {}
+        const fileContents = {}
+        for (const [path, content] of Object.entries(files)) {
+          const hash = createHash('sha1').update(content).digest('hex')
+          fileHashes['/' + path] = hash
+          fileContents[hash] = content
+        }
+        // Create deploy
+        const deployRes = await fetch('https://api.netlify.com/api/v1/sites', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: args.site_name, files: fileHashes })
+        })
+        const deploy = await deployRes.json()
+        if (deploy.error) return { error: deploy.message || deploy.error }
+        // Upload required files
+        for (const hash of (deploy.required || [])) {
+          const content = fileContents[hash]
+          if (content) {
+            await fetch(`https://api.netlify.com/api/v1/deploys/${deploy.deploy_id}/files/${hash}`, {
+              method: 'PUT',
+              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
+              body: content
+            })
+          }
+        }
+        return { success: true, url: deploy.ssl_url || deploy.url || `https://${args.site_name}.netlify.app`, site_id: deploy.site_id, deploy_id: deploy.deploy_id }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'netlify_list_sites',
+    description: 'List all Netlify sites with their URLs and deploy status',
+    params: {},
+    agents: ['forge', 'nexus'],
+    execute: async () => {
+      const token = process.env.NETLIFY_ACCESS_TOKEN
+      if (!token) return { error: 'NETLIFY_ACCESS_TOKEN not configured' }
+      try {
+        const res = await fetch('https://api.netlify.com/api/v1/sites?per_page=20', { headers: { Authorization: `Bearer ${token}` } })
+        const sites = await res.json()
+        return { sites: sites.map(s => ({ name: s.name, url: s.ssl_url || s.url, updated: s.updated_at, state: s.state })) }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  // ═══════════════════════════════════════════
+  // ██ LINKEDIN — Professional posting       ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'linkedin_post',
+    description: 'Post content on LinkedIn for professional visibility',
+    params: {
+      text: { type: 'string', required: true, description: 'Post text content' }
+    },
+    agents: ['quill', 'dealer'],
+    execute: async (args) => {
+      const token = process.env.LINKEDIN_ACCESS_TOKEN
+      if (!token) return { error: 'LINKEDIN_ACCESS_TOKEN not configured. Set up OAuth at linkedin.com/developers.' }
+      try {
+        // Get user URN
+        const meRes = await fetch('https://api.linkedin.com/v2/userinfo', { headers: { Authorization: `Bearer ${token}` } })
+        const me = await meRes.json()
+        const urn = `urn:li:person:${me.sub}`
+        const res = await fetch('https://api.linkedin.com/v2/ugcPosts', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Restli-Protocol-Version': '2.0.0' },
+          body: JSON.stringify({
+            author: urn,
+            lifecycleState: 'PUBLISHED',
+            specificContent: { 'com.linkedin.ugc.ShareContent': { shareCommentary: { text: args.text }, shareMediaCategory: 'NONE' } },
+            visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC' }
+          })
+        })
+        if (!res.ok) return { error: `LinkedIn API ${res.status}: ${await res.text()}` }
+        const postId = res.headers.get('x-restli-id')
+        return { success: true, id: postId }
+      } catch (e) { return { error: e.message } }
+    }
   }
 ]
 
