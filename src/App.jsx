@@ -37,6 +37,7 @@ import MemoryDashboard from './components/MemoryDashboard'
 import AgentSandbox from './components/AgentSandbox'
 import UserManagement from './components/UserManagement'
 import LoginScreen from './components/LoginScreen'
+import MissionControl from './components/MissionControl'
 import ErrorBoundary from './components/ErrorBoundary'
 
 export default function App() {
@@ -74,6 +75,7 @@ export default function App() {
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showSandbox, setShowSandbox] = useState(false)
   const [showUsers, setShowUsers] = useState(false)
+  const [showMission, setShowMission] = useState(false)
   const [currentUser, setCurrentUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
 
@@ -329,6 +331,7 @@ export default function App() {
               spend: () => setShowSpend(true),
               chat: () => setShowChat(true),
               users: () => setShowUsers(true),
+              mission: () => setShowMission(true),
             }
             navMap[key]?.()
           }}
@@ -631,6 +634,14 @@ export default function App() {
 
       {showUsers && (
         <UserManagement onClose={() => setShowUsers(false)} />
+      )}
+
+      {showMission && (
+        <MissionControl
+          agents={agents}
+          onClose={() => setShowMission(false)}
+          onSelectTask={(task) => { setShowMission(false); setSelectedTask(task) }}
+        />
       )}
 
       {/* Mobile CommandBar — hide when chat is open since chat has its own input */}
