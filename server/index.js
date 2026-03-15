@@ -409,6 +409,15 @@ const agents = JSON.parse(readFileSync(agentsPath, 'utf8'))
 // Active agent runs (in-memory tracking)
 const activeRuns = new Map()
 
+// Startup cleanup: reset orphaned in_progress tasks (from crashes/restarts)
+const orphaned = db.prepare("SELECT id, agent_id, title FROM tasks WHERE status = 'in_progress'").all()
+if (orphaned.length) {
+  for (const t of orphaned) {
+    db.prepare("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ?").run(t.id)
+  }
+  console.log(`[startup] Reset ${orphaned.length} orphaned in_progress tasks back to todo`)
+}
+
 // ══════════════════════════════════════════════════════
 // ██ TOOL REGISTRY — Real tools for agent execution   ██
 // ══════════════════════════════════════════════════════
@@ -2028,6 +2037,17 @@ registerHeartbeat('queue-monitor', 5 * 60 * 1000, () => {
       if (pendingCount > 0) {
         processAgentQueue(agent.id)
       }
+    }
+  }
+})
+
+// Auto-unstick: reset in_progress tasks not actually running (every 10 min)
+registerHeartbeat('auto-unstick', 10 * 60 * 1000, () => {
+  const stuck = db.prepare("SELECT id, agent_id, title FROM tasks WHERE status = 'in_progress' AND updated_at < datetime('now', '-15 minutes')").all()
+  for (const t of stuck) {
+    if (!activeRuns.has(t.agent_id)) {
+      db.prepare("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ?").run(t.id)
+      console.log(`[auto-unstick] Reset: ${t.agent_id} → "${t.title}"`)
     }
   }
 })
