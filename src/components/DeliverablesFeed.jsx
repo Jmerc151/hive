@@ -45,6 +45,7 @@ export default function DeliverablesFeed({ agents = [], tasks = [], filterAgent,
   const [typeFilter, setTypeFilter] = useState('')
   const [expanded, setExpanded] = useState(null)
   const [sortNewest, setSortNewest] = useState(true)
+  const [estRevenue, setEstRevenue] = useState(0)
 
   useEffect(() => {
     setLoading(true)
@@ -55,6 +56,12 @@ export default function DeliverablesFeed({ agents = [], tasks = [], filterAgent,
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [filterAgent])
+
+  useEffect(() => {
+    api.getRevenueSummary()
+      .then(d => setEstRevenue(d.total_revenue || d.totalRevenue || 0))
+      .catch(() => {})
+  }, [])
 
   const filtered = typeFilter ? items.filter(i => i.type === typeFilter) : items
 
@@ -127,40 +134,49 @@ export default function DeliverablesFeed({ agents = [], tasks = [], filterAgent,
             >By agent</button>
           </div>
 
-          {/* Generating cards */}
-          {activeTasks.map(task => {
-            const tile = AGENT_TILES[task.agent_id] || { letter: '?', class: 'tile-nexus' }
-            const agentName = agents.find(a => a.id === task.agent_id)?.name || task.agent_id
-            return (
-              <div key={task.id} className="hive-card mb-[9px] p-[13px] relative overflow-hidden gen-shimmer-top" style={{ borderColor: 'rgba(40,167,69,0.22)' }}>
-                <div className="flex items-center gap-2 mb-3">
-                  <div className={`agent-tile w-[27px] h-[27px] rounded-lg text-sm ${tile.class}`}>{tile.letter}</div>
-                  <span className="text-[13px] font-semibold text-t1">{agentName}</span>
-                  <span className="text-[11px] text-t4 flex-1 truncate">{task.title}</span>
-                  <div className="flex items-center gap-1 text-[10px] font-medium text-success px-2 py-[2px] rounded-[7px]" style={{ background: 'rgba(40,167,69,0.09)', border: '0.5px solid rgba(40,167,69,0.18)' }}>
-                    <span className="w-[5px] h-[5px] rounded-full bg-success dot-pulse" />
-                    Generating
-                  </div>
-                </div>
-                <div className="shimmer-line w-[90%] mb-1.5" />
-                <div className="shimmer-line w-[74%] mb-1.5" />
-                <div className="shimmer-line w-[54%]" />
-              </div>
-            )
-          })}
-
           {/* Loading */}
           {loading && <div className="text-center text-t4 py-12 text-sm">Loading deliverables...</div>}
 
           {/* Empty */}
-          {!loading && filtered.length === 0 && (
+          {!loading && filtered.length === 0 && activeTasks.length === 0 && (
             <div className="text-center py-12">
               <p className="text-t3 text-sm">No deliverables yet</p>
               <p className="text-t4 text-xs mt-1">Completed tasks with real output will appear here</p>
             </div>
           )}
 
-          {/* Output cards */}
+          {/* Output cards (completed deliverables first) */}
+          {/* Generating cards (max 3 shown) */}
+          {activeTasks.length > 0 && (
+            <>
+              {activeTasks.slice(0, 3).map(task => {
+                const tile = AGENT_TILES[task.agent_id] || { letter: '?', class: 'tile-nexus' }
+                const agentName = agents.find(a => a.id === task.agent_id)?.name || task.agent_id
+                return (
+                  <div key={task.id} className="hive-card mb-[9px] p-[13px] relative overflow-hidden gen-shimmer-top" style={{ borderColor: 'rgba(40,167,69,0.22)' }}>
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className={`agent-tile w-[27px] h-[27px] rounded-lg text-sm ${tile.class}`}>{tile.letter}</div>
+                      <span className="text-[13px] font-semibold text-t1">{agentName}</span>
+                      <span className="text-[11px] text-t4 flex-1 truncate">{task.title}</span>
+                      <div className="flex items-center gap-1 text-[10px] font-medium text-success px-2 py-[2px] rounded-[7px]" style={{ background: 'rgba(40,167,69,0.09)', border: '0.5px solid rgba(40,167,69,0.18)' }}>
+                        <span className="w-[5px] h-[5px] rounded-full bg-success dot-pulse" />
+                        Generating
+                      </div>
+                    </div>
+                    <div className="shimmer-line w-[90%] mb-1.5" />
+                    <div className="shimmer-line w-[74%] mb-1.5" />
+                    <div className="shimmer-line w-[54%]" />
+                  </div>
+                )
+              })}
+              {activeTasks.length > 3 && (
+                <div className="text-center text-t4 text-[11px] py-2 mb-2">
+                  +{activeTasks.length - 3} more generating...
+                </div>
+              )}
+            </>
+          )}
+
           {filtered.map(item => {
             const tile = AGENT_TILES[item.agent_id] || { letter: '?', class: 'tile-nexus' }
             const agentName = agents.find(a => a.id === item.agent_id)?.name || item.agent_id
@@ -255,8 +271,8 @@ export default function DeliverablesFeed({ agents = [], tasks = [], filterAgent,
             <div className="text-[10px] text-t4">This week</div>
           </div>
           <div className="bg-s2 rounded-[10px] p-[9px]" style={{ border: '0.5px solid rgba(0,0,0,0.07)' }}>
-            <div className="font-display text-[24px] tracking-[1px] leading-none mb-[3px] text-scout">{typeCounts.outreach || 0}</div>
-            <div className="text-[10px] text-t4">Emails sent</div>
+            <div className="font-display text-[24px] tracking-[1px] leading-none mb-[3px] text-scout">${Math.round(estRevenue)}</div>
+            <div className="text-[10px] text-t4">Est. revenue</div>
           </div>
           <div className="bg-s2 rounded-[10px] p-[9px]" style={{ border: '0.5px solid rgba(0,0,0,0.07)' }}>
             <div className="font-display text-[24px] tracking-[1px] leading-none mb-[3px] text-t1">{typeCounts.code || 0}</div>
