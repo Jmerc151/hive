@@ -110,9 +110,13 @@ export default function App() {
   }
 
   const refresh = useCallback(async () => {
-    const [a, t] = await Promise.all([api.getAgents(), api.getTasks()])
-    setAgents(a)
-    setTasks(t)
+    try {
+      const [a, t] = await Promise.all([api.getAgents(), api.getTasks()])
+      setAgents(a)
+      setTasks(t)
+    } catch (e) {
+      console.warn('[refresh] Failed to load data:', e.message)
+    }
   }, [])
 
   const [sseConnected, setSseConnected] = useState(false)
@@ -450,7 +454,9 @@ export default function App() {
         />
       )}
 
-      {/* Chat is now embedded in main layout — modal removed */}
+      {showChat && (
+        <ChatPanel agents={agents} onClose={() => setShowChat(false)} onToast={addToast} />
+      )}
 
       {showSpend && (
         <SpendDashboard onClose={() => setShowSpend(false)} />

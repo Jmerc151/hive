@@ -63,7 +63,7 @@ export default function TaskBoard({ tasks, agents, onSelectTask, onRunTask, onUp
           {tasks.filter(t => t.status === mobileColumn).map(task => {
             const agent = agents.find(a => a.id === task.agent_id)
             return (
-              <TaskCard key={task.id} task={task} agent={agent} onSelect={() => onSelectTask(task.id)} onRun={() => onRunTask(task.id)} />
+              <TaskCard key={task.id} task={task} agent={agent} onSelect={() => onSelectTask(task.id)} onRun={() => onRunTask(task.id)} onRefresh={() => onUpdateTask?.(task.id, {})} />
             )
           })}
           {tasks.filter(t => t.status === mobileColumn).length === 0 && (
@@ -90,7 +90,7 @@ export default function TaskBoard({ tasks, agents, onSelectTask, onRunTask, onUp
                   {colTasks.map(task => {
                     const agent = agents.find(a => a.id === task.agent_id)
                     return (
-                      <TaskCard key={task.id} task={task} agent={agent} onSelect={() => onSelectTask(task.id)} onRun={() => onRunTask(task.id)} />
+                      <TaskCard key={task.id} task={task} agent={agent} onSelect={() => onSelectTask(task.id)} onRun={() => onRunTask(task.id)} onRefresh={() => onUpdateTask?.(task.id, {})} />
                     )
                   })}
                   {colTasks.length === 0 && (
@@ -122,7 +122,7 @@ function getOutputPreview(output) {
   return lines.length > 0 ? lines[0].trim().slice(0, 120) : null
 }
 
-function TaskCard({ task, agent, onSelect, onRun }) {
+function TaskCard({ task, agent, onSelect, onRun, onRefresh }) {
   const outputPreview = task.status === 'done' ? getOutputPreview(task.output) : null
   const hasToolResults = task.output?.includes('[TOOL_RESULT')
   const outputLen = (task.output || '').length
@@ -190,11 +190,11 @@ function TaskCard({ task, agent, onSelect, onRun }) {
         {task.status === 'awaiting_approval' && (
           <div className="flex items-center gap-1">
             <button
-              onClick={(e) => { e.stopPropagation(); api.approveTask(task.id) }}
+              onClick={async (e) => { e.stopPropagation(); await api.approveTask(task.id); onRefresh?.() }}
               className="text-xs px-2 py-0.5 rounded font-medium" style={{ background: 'rgba(52,199,89,0.1)', color: '#248a3d' }}
             >Approve</button>
             <button
-              onClick={(e) => { e.stopPropagation(); api.rejectTask(task.id) }}
+              onClick={async (e) => { e.stopPropagation(); await api.rejectTask(task.id); onRefresh?.() }}
               className="text-xs px-2 py-0.5 rounded font-medium" style={{ background: 'rgba(255,59,48,0.1)', color: '#ff3b30' }}
             >Reject</button>
           </div>

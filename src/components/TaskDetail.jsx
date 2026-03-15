@@ -453,14 +453,14 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
             {task.status === 'awaiting_approval' && (
               <>
                 <button
-                  onClick={async () => { await api.rejectTask(task.id) }}
+                  onClick={async () => { await api.rejectTask(task.id); onUpdate(task.id, { status: 'failed' }) }}
                   className="px-4 py-2 text-sm text-red-500 rounded-lg hover:bg-red-50 transition-colors"
                   style={{ border: '0.5px solid rgba(239,68,68,0.2)' }}
                 >
                   Reject
                 </button>
                 <button
-                  onClick={async () => { await api.approveTask(task.id) }}
+                  onClick={async () => { await api.approveTask(task.id); onUpdate(task.id, { status: 'todo' }) }}
                   className="px-4 py-2 bg-green-600 text-white rounded-lg font-medium text-sm hover:bg-green-700 transition-colors"
                 >
                   Approve & Run
