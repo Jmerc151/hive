@@ -68,7 +68,7 @@ export default function SkillRegistry({ agent, onClose }) {
                 </div>
                 <div className="flex items-center gap-2">
                   <button onClick={() => toggleSkill(skill)}
-                    className={`w-10 h-5 rounded-full relative transition-colors ${skill.enabled ? 'bg-green-500' : 'bg-hive-600'}`}>
+                    className={`w-10 h-5 rounded-full relative transition-colors ${skill.enabled ? 'bg-green-500' : 'bg-s4'}`}>
                     <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${skill.enabled ? 'left-5' : 'left-0.5'}`} />
                   </button>
                   <button onClick={async () => { await api.deleteSkill(skill.id); refresh() }}

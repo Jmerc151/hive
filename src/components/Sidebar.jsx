@@ -105,7 +105,7 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
   }
 
   return (
-    <aside className="w-[220px] glass flex flex-col overflow-hidden" style={{ borderRight: '0.5px solid rgba(0,0,0,0.08)' }}>
+    <aside className="w-[216px] bg-s1 flex flex-col overflow-hidden" style={{ borderRight: '0.5px solid rgba(0,0,0,0.07)' }}>
       {/* Logo area */}
       <div className="px-4 py-5 flex items-center gap-3" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
         <div className="w-8 h-8 rounded-[9px] bg-t1 flex items-center justify-center flex-shrink-0">
@@ -136,7 +136,7 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
               {group.label && (
                 <button
                   onClick={() => isCollapsible && toggleGroup(group.label)}
-                  className="flex items-center gap-1.5 w-full px-4 pb-1.5 text-[10px] font-semibold text-t4 uppercase tracking-[0.09em] hover:text-t3 transition-colors"
+                  className="flex items-center gap-1.5 w-full px-[15px] pb-[5px] font-display text-[11px] text-t5 tracking-[2px] hover:text-t4 transition-colors"
                 >
                   {isCollapsible && (
                     <span className="text-[8px] transition-transform" style={{ transform: isOpen ? 'rotate(90deg)' : '' }}>&#x25B6;</span>
@@ -155,16 +155,16 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
                       <div
                         key={agent.id}
                         onClick={() => onFilterAgent(filterAgent === agent.id ? null : agent.id)}
-                        className={`flex items-center gap-2.5 px-4 py-[7px] cursor-pointer transition-all relative text-[13px] ${
+                        className={`flex items-center gap-2.5 px-4 py-[6px] cursor-pointer transition-all relative text-[13px] ${
                           isFiltered
-                            ? 'bg-[rgba(28,28,30,0.06)] text-t1 font-medium'
-                            : 'text-t2 hover:bg-[rgba(28,28,30,0.04)]'
+                            ? 'bg-[rgba(0,0,0,0.05)] text-t1 font-medium'
+                            : 'text-t3 hover:bg-[rgba(0,0,0,0.04)] hover:text-t1'
                         }`}
                       >
                         {isFiltered && (
                           <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] bg-t1 rounded-r-sm" />
                         )}
-                        <div className={`agent-tile w-7 h-7 rounded-[7px] text-[13px] ${tile.class}`}>
+                        <div className={`agent-tile w-[26px] h-[26px] rounded-[7px] text-[12px] ${tile.class}`}>
                           {tile.letter}
                         </div>
                         <span className="flex-1 truncate">{agent.name}</span>
@@ -192,16 +192,16 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
                   <button
                     key={item.key}
                     onClick={() => handleNav(item.key)}
-                    className={`flex items-center gap-2.5 w-full px-4 py-[7px] text-[13px] transition-all relative ${
+                    className={`flex items-center gap-2.5 w-full px-4 py-[6px] text-[13px] transition-all relative ${
                       isActive
-                        ? 'bg-[rgba(28,28,30,0.06)] text-t1 font-medium'
-                        : 'text-t2 hover:bg-[rgba(28,28,30,0.04)]'
+                        ? 'bg-[rgba(0,0,0,0.05)] text-t1 font-medium'
+                        : 'text-t3 hover:bg-[rgba(0,0,0,0.04)] hover:text-t1'
                     }`}
                   >
                     {isActive && (
                       <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] bg-t1 rounded-r-sm" />
                     )}
-                    <div className="w-7 h-7 rounded-[7px] bg-[rgba(28,28,30,0.06)] flex items-center justify-center text-[13px] text-t3 flex-shrink-0">
+                    <div className="w-[26px] h-[26px] rounded-[7px] bg-[rgba(28,28,30,0.06)] flex items-center justify-center text-[12px] text-t3 flex-shrink-0">
                       {item.icon}
                     </div>
                     <span className="truncate">{item.label}</span>
@@ -231,9 +231,9 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
       </div>
 
       {/* + New Task button */}
-      <div className="px-3.5 py-3 mt-auto">
-        <button onClick={onNewTask} className="w-full py-2.5 rounded-xl bg-t1 text-white flex items-center justify-center gap-2 transition-opacity hover:opacity-80">
-          <span className="font-display text-[15px] tracking-[1.5px]">+ NEW TASK</span>
+      <div className="px-[13px] py-3 mt-auto" style={{ borderTop: '0.5px solid rgba(0,0,0,0.07)' }}>
+        <button onClick={onNewTask} className="w-full py-[9px] rounded-[11px] bg-t1 text-white flex items-center justify-center transition-opacity hover:opacity-80">
+          <span className="font-display text-[15px] tracking-[2px]">+ NEW TASK</span>
         </button>
       </div>
 

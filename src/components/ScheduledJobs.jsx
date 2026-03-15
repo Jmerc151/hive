@@ -94,7 +94,7 @@ export default function ScheduledJobs({ agents = [], onClose }) {
               <div key={job.id} className="p-3 bg-s3 rounded-lg border border-s4">
                 <div className="flex items-center justify-between mb-1.5">
                   <div className="flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${job.enabled ? 'bg-green-500' : 'bg-hive-500'}`} />
+                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${job.enabled ? 'bg-green-500' : 'bg-t4'}`} />
                     <span className="font-medium text-sm text-t1">{job.name}</span>
                   </div>
                   <div className="flex items-center gap-1.5">
@@ -150,7 +150,7 @@ export default function ScheduledJobs({ agents = [], onClose }) {
                 <input value={cronExpr} onChange={e => setCronExpr(e.target.value)} placeholder="0 9 * * *" className="w-full bg-page border border-s4 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-t1/50" />
                 <div className="flex flex-wrap gap-1.5 mt-2">
                   {CRON_PRESETS.map(p => (
-                    <button key={p.value} type="button" onClick={() => setCronExpr(p.value)} className={`text-[10px] px-2 py-1 rounded-full border transition-all ${cronExpr === p.value ? 'bg-s3 border-t1/40 text-t1' : 'bg-s3 border-s4 text-t3 hover:border-hive-500'}`}>
+                    <button key={p.value} type="button" onClick={() => setCronExpr(p.value)} className={`text-[10px] px-2 py-1 rounded-full border transition-all ${cronExpr === p.value ? 'bg-s3 border-t1/40 text-t1' : 'bg-s3 border-s4 text-t3 hover:border-t4'}`}>
                       {p.label}
                     </button>
                   ))}
@@ -158,7 +158,7 @@ export default function ScheduledJobs({ agents = [], onClose }) {
               </div>
               <div className="flex gap-2 pt-1">
                 <button type="submit" className="flex-1 py-2 bg-t1 text-white rounded-lg text-sm font-medium hover:bg-t2 transition-colors">Create Job</button>
-                <button type="button" onClick={() => setShowForm(false)} className="px-4 py-2 bg-s4 text-t2 rounded-lg text-sm hover:bg-hive-600 transition-colors">Cancel</button>
+                <button type="button" onClick={() => setShowForm(false)} className="px-4 py-2 bg-s4 text-t2 rounded-lg text-sm hover:bg-s5 transition-colors">Cancel</button>
               </div>
             </form>
           )}

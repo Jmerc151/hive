@@ -40,7 +40,7 @@ export default function SearchBar({ agents = [], onSelectTask }) {
 
   return (
     <div ref={wrapperRef} className="relative">
-      <div className="flex items-center gap-[7px] bg-s3 rounded-[10px] px-3 py-[7px]" style={{ border: '0.5px solid rgba(0,0,0,0.14)' }}>
+      <div className="flex items-center gap-[6px] bg-page rounded-[9px] px-[11px] py-[6px]" style={{ border: '0.5px solid rgba(0,0,0,0.12)' }}>
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="flex-shrink-0">
           <circle cx="5" cy="5" r="4" stroke="#aeaeb2" strokeWidth="1.2"/>
           <line x1="8.2" y1="8.2" x2="11" y2="11" stroke="#aeaeb2" strokeWidth="1.2" strokeLinecap="round"/>
@@ -48,8 +48,8 @@ export default function SearchBar({ agents = [], onSelectTask }) {
         <input
           type="text" value={query} onChange={e => handleChange(e.target.value)}
           onFocus={() => results && setOpen(true)}
-          placeholder="Search..."
-          className="bg-transparent text-xs text-t1 placeholder:text-t4 focus:outline-none w-28 lg:w-40"
+          placeholder="Search outputs..."
+          className="bg-transparent text-xs text-t1 placeholder:text-t4 focus:outline-none w-[140px] lg:w-[180px]"
         />
       </div>
 

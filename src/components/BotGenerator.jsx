@@ -155,7 +155,7 @@ Format each file as a markdown heading (## filename.ext) followed by a code bloc
                   className={`text-left p-2.5 rounded-lg border text-sm transition-all ${
                     type === bt.value
                       ? 'border-t1 bg-s3 text-t1'
-                      : 'border-s4 text-t3 hover:border-hive-500 hover:text-t1'
+                      : 'border-s4 text-t3 hover:border-t4 hover:text-t1'
                   }`}>
                   <span className="mr-1.5">{bt.icon}</span>{bt.label}
                 </button>

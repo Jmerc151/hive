@@ -133,18 +133,18 @@ export default function TradingDashboard({ agents, onClose }) {
   }
 
   const signalColor = (s) => s === 'bullish' ? 'text-success' : s === 'bearish' ? 'text-danger' : 'text-t3'
-  const signalBg = (s) => s === 'bullish' ? 'bg-green-500/20 border-green-500/30' : s === 'bearish' ? 'bg-red-500/20 border-red-500/30' : 'bg-hive-600/50 border-hive-500/30'
+  const signalBg = (s) => s === 'bullish' ? 'bg-green-500/20 border-green-500/30' : s === 'bearish' ? 'bg-red-500/20 border-red-500/30' : 'bg-s4/50 border-s5/30'
   const actionBg = (a) => {
     if (a?.includes('BUY')) return 'bg-green-500/20 text-success'
     if (a?.includes('SELL')) return 'bg-red-500/20 text-danger'
-    return 'bg-hive-600/50 text-t2'
+    return 'bg-s4/50 text-t2'
   }
 
   const pnlColor = (v) => v > 0 ? 'text-success' : v < 0 ? 'text-danger' : 'text-t3'
   const pnlSign = (v) => v > 0 ? '+' : ''
   const statusBadge = (status) => {
     const colors = { discovered: 'bg-blue-500/20 text-blue-400', backtesting: 'bg-yellow-500/20 text-yellow-400', approved: 'bg-green-500/20 text-success', deployed: 'bg-purple-500/20 text-purple-400', paused: 'bg-orange-500/20 text-orange-400', retired: 'bg-red-500/20 text-danger' }
-    return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${colors[status] || 'bg-hive-600 text-t2'}`}>{status}</span>
+    return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${colors[status] || 'bg-s4 text-t2'}`}>{status}</span>
   }
 
   return (

@@ -90,9 +90,9 @@ export default function MemoryDashboard({ agents = [], onClose }) {
               placeholder="Search memory..."
               className="flex-1 bg-page border border-s4 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-t1/50"
             />
-            <button onClick={handleSearch} className="px-3 py-2 bg-s4 hover:bg-hive-600 rounded-lg text-sm text-t2 transition-colors">Search</button>
+            <button onClick={handleSearch} className="px-3 py-2 bg-s4 hover:bg-s5 rounded-lg text-sm text-t2 transition-colors">Search</button>
             {searchResults && (
-              <button onClick={() => { setSearchResults(null); setSearchQuery('') }} className="px-3 py-2 bg-s4 hover:bg-hive-600 rounded-lg text-xs text-t3 transition-colors">Clear</button>
+              <button onClick={() => { setSearchResults(null); setSearchQuery('') }} className="px-3 py-2 bg-s4 hover:bg-s5 rounded-lg text-xs text-t3 transition-colors">Clear</button>
             )}
           </div>
         </div>
@@ -102,7 +102,7 @@ export default function MemoryDashboard({ agents = [], onClose }) {
           <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
             <button
               onClick={() => setFilter('')}
-              className={`flex-shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs transition-all ${!filter ? 'bg-s3 border border-t1/40 text-t1' : 'bg-s3 border border-s4 text-t3 hover:border-hive-500'}`}
+              className={`flex-shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs transition-all ${!filter ? 'bg-s3 border border-t1/40 text-t1' : 'bg-s3 border border-s4 text-t3 hover:border-t4'}`}
             >
               All
               <span className="text-[10px] opacity-70">{entries.length}</span>
@@ -111,7 +111,7 @@ export default function MemoryDashboard({ agents = [], onClose }) {
               <button
                 key={a.id}
                 onClick={() => setFilter(filter === a.id ? '' : a.id)}
-                className={`flex-shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs transition-all ${filter === a.id ? 'bg-s3 border border-t1/40 text-t1' : 'bg-s3 border border-s4 text-t3 hover:border-hive-500'}`}
+                className={`flex-shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs transition-all ${filter === a.id ? 'bg-s3 border border-t1/40 text-t1' : 'bg-s3 border border-s4 text-t3 hover:border-t4'}`}
               >
                 <span>{a.avatar}</span>
                 <span>{a.name}</span>

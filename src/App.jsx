@@ -30,6 +30,7 @@ import IntelFeed from './components/IntelFeed'
 import CommandBar from './components/CommandBar'
 import SkillRegistryV2 from './components/SkillRegistryV2'
 import DeliverablesPanel from './components/DeliverablesPanel'
+import DeliverablesFeed from './components/DeliverablesFeed'
 import EvalHarness from './components/EvalHarness'
 import KnowledgeBase from './components/KnowledgeBase'
 import ScheduledJobs from './components/ScheduledJobs'
@@ -340,28 +341,19 @@ export default function App() {
 
       <main className="flex-1 overflow-hidden flex flex-col min-w-0">
         {/* Topbar */}
-        <header className="glass-heavy flex items-center gap-2.5 px-4 md:px-[22px] py-3 safe-top flex-shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
-          <h1 className="font-display text-[26px] text-t1 tracking-[2px] leading-none">DELIVERABLES</h1>
-          <span className="text-xs text-t4 bg-s3 px-2 py-0.5 rounded-lg" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}>
-            {tasks.length} tasks
+        <header className="bg-s2 flex items-center gap-[10px] px-4 md:px-[20px] pt-3 pb-[10px] safe-top flex-shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
+          <h1 className="font-display text-[24px] text-t1 tracking-[2.5px] leading-none">DELIVERABLES</h1>
+          <span className="text-xs text-t4">
+            {tasks.length} outputs
           </span>
           {activeCount > 0 && (
-            <div className="flex items-center gap-1.5 text-[11px] font-medium text-success px-2.5 py-1 rounded-[10px]" style={{ background: 'rgba(52,199,89,0.1)', border: '0.5px solid rgba(52,199,89,0.2)' }}>
+            <div className="flex items-center gap-[5px] text-[11px] font-medium text-success px-[9px] py-[3px] rounded-[9px]" style={{ background: 'rgba(40,167,69,0.09)', border: '0.5px solid rgba(40,167,69,0.2)' }}>
               <span className="w-[5px] h-[5px] rounded-full bg-success dot-pulse" />
               {activeCount} active
             </div>
           )}
           <div className="flex-1" />
-          <div className={`w-2 h-2 rounded-full flex-shrink-0 transition-colors ${sseConnected ? 'bg-success' : 'bg-danger animate-pulse'}`} title={sseConnected ? 'Connected' : 'Reconnecting...'} />
           <SearchBar agents={agents} onSelectTask={setSelectedTask} />
-          <button
-            onClick={() => setShowCreate(true)}
-            aria-label="New task"
-            className="btn-primary flex items-center gap-1.5 px-3 py-2 text-sm active:scale-95"
-          >
-            <span className="text-lg leading-none">+</span>
-            <span className="hidden sm:inline font-display tracking-wider">NEW TASK</span>
-          </button>
         </header>
 
         {/* Mobile views */}
@@ -387,58 +379,45 @@ export default function App() {
           </div>
         )}
 
-        {/* Desktop: Split layout — Chat left, Dashboard right */}
+        {/* Desktop: Main content area */}
         <ErrorBoundary>
-        <div className={`flex-1 overflow-hidden ${mobileView !== 'board' ? 'hidden md:flex' : 'flex'}`}>
-          {/* Left: Chat panel (40%) */}
-          <div className="hidden md:flex md:w-[40%] lg:w-[38%] flex-col bg-s1" style={{ borderRight: '0.5px solid rgba(0,0,0,0.08)' }}>
-            <ChatPanel agents={agents} embedded onToast={addToast} />
+        <div className={`flex-1 overflow-hidden ${mobileView !== 'board' ? 'hidden md:flex' : 'flex'} flex-col`}>
+          {/* Agent strip — pill chips */}
+          <div className="hidden md:flex gap-[6px] px-[20px] py-2 bg-s2 overflow-x-auto flex-shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
+            {agents.map(agent => {
+              const agentTask = tasks.find(t => t.agent_id === agent.id && t.status === 'in_progress')
+              const isActive = !!agentTask
+              const isFiltered = filterAgent === agent.id
+              return (
+                <div
+                  key={agent.id}
+                  className={`flex-shrink-0 flex items-center gap-[6px] py-[5px] pl-2 pr-[10px] rounded-[18px] cursor-pointer transition-all whitespace-nowrap ${
+                    isFiltered
+                      ? 'bg-t1 text-white'
+                      : 'bg-s3 hover:bg-card'
+                  }`}
+                  style={{ border: isFiltered ? '0.5px solid var(--color-t1)' : '0.5px solid rgba(0,0,0,0.07)' }}
+                  onClick={() => setFilterAgent(filterAgent === agent.id ? null : agent.id)}
+                >
+                  <span className={`w-[6px] h-[6px] rounded-full flex-shrink-0 ${
+                    isActive ? `bg-success ${isFiltered ? '' : 'dot-pulse'}` : isFiltered ? 'bg-white/50' : 'bg-t5'
+                  }`} />
+                  <span className={`text-xs font-medium ${isFiltered ? 'text-white' : 'text-t1'}`}>{agent.name}</span>
+                  <span className={`text-[10px] ${isFiltered ? 'text-white/55' : 'text-t4'}`}>
+                    {isActive ? 'Working' : 'Idle'}
+                  </span>
+                </div>
+              )
+            })}
           </div>
 
-          {/* Right: Activity dashboard (60%) */}
-          <div className="flex-1 overflow-y-auto bg-page">
-            {/* Agent strip — pill chips */}
-            <div className="flex gap-[7px] px-[22px] py-2.5 overflow-x-auto flex-shrink-0" style={{ background: 'rgba(255,255,255,0.6)', borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
-              {agents.map(agent => {
-                const agentTask = tasks.find(t => t.agent_id === agent.id && t.status === 'in_progress')
-                const isActive = !!agentTask
-                const isFiltered = filterAgent === agent.id
-                const tileMap = { scout: 'tile-scout', forge: 'tile-forge', quill: 'tile-quill', dealer: 'tile-dealer', oracle: 'tile-oracle', nexus: 'tile-nexus' }
-                const letterMap = { scout: 'S', forge: 'F', quill: 'Q', dealer: 'D', oracle: 'O', nexus: 'N' }
-                return (
-                  <div
-                    key={agent.id}
-                    className={`flex-shrink-0 flex items-center gap-[7px] py-[5px] pl-2 pr-3 rounded-[20px] cursor-pointer transition-all whitespace-nowrap ${
-                      isFiltered
-                        ? 'bg-t1 text-white'
-                        : 'bg-s1 hover:bg-s3'
-                    }`}
-                    style={{ border: isFiltered ? '0.5px solid var(--color-t1)' : '0.5px solid rgba(0,0,0,0.08)' }}
-                    onClick={() => setFilterAgent(filterAgent === agent.id ? null : agent.id)}
-                  >
-                    <span className={`w-[6px] h-[6px] rounded-full flex-shrink-0 ${
-                      isActive ? `bg-success ${isFiltered ? '' : 'dot-pulse'}` : isFiltered ? 'bg-white/50' : 'bg-t5'
-                    }`} />
-                    <span className={`text-xs font-medium ${isFiltered ? 'text-white' : 'text-t1'}`}>{agent.name}</span>
-                    <span className={`text-[10px] ${isFiltered ? 'text-white/55' : 'text-t4'}`}>
-                      {isActive ? 'Working' : 'Idle'}
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
-
-            {/* Task board */}
-            <div className="flex-1">
-              <TaskBoard
-                tasks={filteredTasks}
-                agents={agents}
-                onSelectTask={setSelectedTask}
-                onRunTask={handleRunTask}
-                onUpdateTask={handleUpdateTask}
-              />
-            </div>
-          </div>
+          {/* Deliverables feed (default main view) */}
+          <DeliverablesFeed
+            agents={agents}
+            tasks={tasks}
+            filterAgent={filterAgent}
+            onSelectTask={setSelectedTask}
+          />
         </div>
 
         {/* Mobile: Full task board (no split) */}

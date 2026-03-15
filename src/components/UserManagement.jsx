@@ -112,8 +112,8 @@ export default function UserManagement({ onClose }) {
           <div className="p-4 space-y-4">
             {userForm(true)}
             <div className="flex gap-2">
-              <button onClick={handleUpdate} className="px-4 py-2 bg-t1 text-hive-900 rounded-lg text-sm font-medium hover:bg-t2">Save</button>
-              <button onClick={() => { setEditing(null); setError('') }} className="px-4 py-2 bg-s4 text-t1 rounded-lg text-sm hover:bg-hive-600">Cancel</button>
+              <button onClick={handleUpdate} className="px-4 py-2 bg-t1 text-white rounded-lg text-sm font-medium hover:bg-t2">Save</button>
+              <button onClick={() => { setEditing(null); setError('') }} className="px-4 py-2 bg-s4 text-t1 rounded-lg text-sm hover:bg-s5">Cancel</button>
             </div>
           </div>
         </div>
@@ -134,8 +134,8 @@ export default function UserManagement({ onClose }) {
             {userForm(false)}
             <div className="flex gap-2">
               <button onClick={handleCreate} disabled={!form.username || !form.password}
-                className="px-4 py-2 bg-t1 text-hive-900 rounded-lg text-sm font-medium hover:bg-t2 disabled:opacity-50">Create User</button>
-              <button onClick={() => { setCreating(false); setError('') }} className="px-4 py-2 bg-s4 text-t1 rounded-lg text-sm hover:bg-hive-600">Cancel</button>
+                className="px-4 py-2 bg-t1 text-white rounded-lg text-sm font-medium hover:bg-t2 disabled:opacity-50">Create User</button>
+              <button onClick={() => { setCreating(false); setError('') }} className="px-4 py-2 bg-s4 text-t1 rounded-lg text-sm hover:bg-s5">Cancel</button>
             </div>
           </div>
         </div>
@@ -151,7 +151,7 @@ export default function UserManagement({ onClose }) {
           <h2 className="text-lg font-bold text-t1">User Management</h2>
           <div className="flex items-center gap-2">
             <button onClick={() => { setCreating(true); setForm({ username: '', password: '', role: 'viewer', display_name: '' }); setError('') }}
-              className="px-3 py-1.5 bg-t1 text-hive-900 rounded-lg text-xs font-medium hover:bg-t2">+ Add User</button>
+              className="px-3 py-1.5 bg-t1 text-white rounded-lg text-xs font-medium hover:bg-t2">+ Add User</button>
             <button onClick={onClose} className="text-t3 hover:text-t1 text-xl">&times;</button>
           </div>
         </div>
@@ -187,7 +187,7 @@ export default function UserManagement({ onClose }) {
                     setEditing(user)
                     setForm({ username: user.username, password: '', role: user.role, display_name: user.display_name || '' })
                     setError('')
-                  }} className="px-2.5 py-1 bg-s4 text-t1 rounded text-xs hover:bg-hive-600">Edit</button>
+                  }} className="px-2.5 py-1 bg-s4 text-t1 rounded text-xs hover:bg-s5">Edit</button>
                   <button onClick={() => setConfirmDelete(user)}
                     className="px-2.5 py-1 bg-danger/15 text-danger rounded text-xs hover:bg-danger/25">Delete</button>
                 </div>

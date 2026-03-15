@@ -9,7 +9,7 @@ const STATUS_STYLES = {
 }
 
 const SOURCE_BADGE = {
-  text: 'bg-hive-600 text-t1',
+  text: 'bg-s4 text-t2',
   url: 'bg-blue-500/15 text-blue-400',
   file: 'bg-purple-500/15 text-purple-400',
 }
@@ -152,7 +152,7 @@ export default function KnowledgeBase({ onClose }) {
             <button
               onClick={handleSearch}
               disabled={searching}
-              className="px-3 py-2 rounded-lg text-xs font-medium bg-s4 text-t1 hover:bg-hive-600 transition-colors disabled:opacity-50"
+              className="px-3 py-2 rounded-lg text-xs font-medium bg-s4 text-t1 hover:bg-s5 transition-colors disabled:opacity-50"
             >
               {searching ? '...' : 'Search'}
             </button>
