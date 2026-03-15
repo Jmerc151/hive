@@ -1,15 +1,17 @@
 # Hive Changelog
 
-## 2026-03-14 — Ember Marketing Skills & Sales Pipeline
+## 2026-03-14 — Ember Build-Focused Skills & Development Pipeline
 
-### Feature: Ember/Kitchen Bible Marketing Skills
-- **Ember Marketing & Sales** skill — complete playbook with product overview, pricing, cold email templates, SEO topics, competitive positioning, Honey Belly case study (assigned to Scout, Quill, Dealer)
-- **Restaurant Lead Research** skill — how to find and qualify restaurant leads by city, cuisine, growth signals, with qualification tiers and output format (assigned to Scout)
-- **Ember Content Strategy** skill — SEO blog topics ranked by value, email sequences by restaurant segment, social media ideas, tone guidelines (assigned to Quill)
+### Feature: Ember Build Skills (replaced marketing skills)
+- **Ember Product Roadmap** skill — full prioritized roadmap (P0-P3) covering commercial blockers, competitive features, Toast marketplace prep, and market differentiators (assigned to Nexus, Scout)
+- **Ember Backend Development** skill — sous-backend codebase patterns, controller structure, PostgreSQL conventions, auth modes, known issues to fix (assigned to Forge)
+- **Ember Frontend Development** skill — sous-frontend patterns, Kitchen Bible token system vs Admin CSS, component patterns, two-UI architecture, key issues (assigned to Forge, Quill)
+- **Ember Competitor Intelligence** skill — pricing/feature matrix for FreshCheq, meez, 7shifts, Jolt, MarketMan, Toast, R365; positioning strategy, table stakes features, differentiators, Toast marketplace strategy, ongoing research priorities (assigned to Scout)
+- Old marketing-focused skills (ember-marketing, ember-lead-research, ember-content) are auto-cleaned on seed
 
-### Feature: Ember Sales Pipeline
-- 3-step automated pipeline: Scout finds restaurant leads → Quill writes personalized outreach → Dealer sends and tracks responses
-- Seeded on server startup if not already present
+### Feature: Ember Development Pipeline (replaced sales pipeline)
+- 3-step build pipeline: Scout researches competitor feature/pain point → Nexus creates technical spec → Forge implements following codebase patterns
+- Old Ember Sales Pipeline auto-cleaned on seed
 
 ### Feature: Intel Auto-Extraction from Scout Tasks
 - `extractIntelItems()` function extracts structured opportunities from Scout research output after QA review

@@ -6282,259 +6282,302 @@ seedTradingSkills()
 
 // ── Seed Ember/Kitchen Bible Marketing Skills ────────
 function seedEmberSkills() {
-  const existing = db.prepare("SELECT id FROM skills WHERE slug = 'ember-marketing'").get()
+  const existing = db.prepare("SELECT id FROM skills WHERE slug = 'ember-product-roadmap'").get()
   if (existing) return
+
+  // Clean out old marketing-focused Ember skills if they exist
+  const oldSlugs = ['ember-marketing', 'ember-lead-research', 'ember-content']
+  for (const slug of oldSlugs) {
+    const old = db.prepare('SELECT id FROM skills WHERE slug = ?').get(slug)
+    if (old) {
+      db.prepare('DELETE FROM agent_skills_v2 WHERE skill_id = ?').run(old.id)
+      db.prepare('DELETE FROM skills WHERE id = ?').run(old.id)
+    }
+  }
 
   const EMBER_SKILLS = [
     {
-      slug: 'ember-marketing',
-      name: 'Ember Marketing & Sales',
-      description: 'Complete playbook for marketing and selling Ember (Kitchen Bible) - the restaurant kitchen management SaaS',
-      tags: ['ember', 'marketing', 'sales', 'restaurant'],
-      agents: ['scout', 'quill', 'dealer'],
-      skill_md: `# Ember Marketing & Sales — Kitchen Bible
+      slug: 'ember-product-roadmap',
+      name: 'Ember Product Roadmap',
+      description: 'Complete roadmap for making Kitchen Bible commercial-grade and getting listed on Toast marketplace',
+      tags: ['ember', 'roadmap', 'product', 'toast'],
+      agents: ['nexus', 'scout'],
+      skill_md: `# Ember Product Roadmap
 
 ## Product Overview
-Ember (Kitchen Bible) is a restaurant kitchen management SaaS. Managers use the web dashboard to set up kitchen ops; staff access the "Kitchen Bible" via a simple share link — zero friction, no app install needed. This is the key differentiator.
+Ember (Kitchen Bible) is a restaurant kitchen management SaaS. Managers use the web dashboard; staff access the "Kitchen Bible" via share link. AI-powered onboarding generates cuisine-specific content.
 
 **URLs:**
-- Landing page: https://ember-landing-phi.vercel.app
+- Landing: https://ember-landing-phi.vercel.app
 - App: https://sous-frontend.vercel.app
 - Backend: https://sous-backend-production.up.railway.app
 
-**Features:** 15 kitchen ops tabs — opening checklists, closing checklists, prep lists, sidework, temperature logs, waste logs, recipes, and more. JWT auth with manager/staff roles. Per-line checklist completion tracking with staff attribution.
+**Tech:** React 19 + Vite + Tailwind (frontend), Express.js + PostgreSQL (backend), deployed on Vercel + Railway.
+**Customer:** Honey Belly Korean BBQ (paying). **Pricing:** $49/mo Starter, $99/mo Pro, $199+ Enterprise.
 
-**Pricing:**
-- Starter: $49/mo (1-3 locations) — 14-day free trial, no credit card required
-- Pro: $99/mo (3-20 locations)
-- Enterprise: $199+/mo (20+ locations)
+---
 
-**Current Customer:** Honey Belly Korean BBQ (paying customer, reference available)
+## P0 — Commercial Blockers (Must fix first)
 
-## Target Customer Profiles
-1. **Independent restaurants** — Owner-operators juggling kitchen chaos with paper checklists. Pain: inconsistency, no accountability.
-2. **Multi-unit operators** (2-20 locations) — Need standardized SOPs across locations. Pain: can't see what's happening in each kitchen.
-3. **Food trucks** — Small teams, high turnover. Pain: training new staff takes too long.
-4. **Catering companies** — Event-based ops need tight checklists. Pain: missed prep items = disaster.
-5. **Ghost kitchens** — Multiple brands from one kitchen. Pain: complex prep lists across menus.
+1. **Stripe billing integration** — $49 Starter / $99 Pro / $199+ Enterprise, 14-day free trial. No billing = no new customers.
+2. **Connect landing page to app signup** — ember-landing-phi.vercel.app must link to sous-frontend.vercel.app signup flow seamlessly.
+3. **Add pricing section to landing page** — visitors need to see plans before signing up.
+4. **Security hardening** — Helmet middleware, rate limiting on auth endpoints, input validation on all forms.
+5. **Fix photo uploads** — replace base64 storage with Cloudinary cloud storage. Base64 bloats the DB and breaks on large images.
+6. **Persist onboarding chat sessions** — currently stored in-memory Map, dies on every deploy. Must persist to PostgreSQL.
+7. **Password reset flow** — forgot password email with reset link. Basic table stakes.
+8. **Fix share_code column** — missing from schema migrations, was manually added to prod. Add to migrations properly.
+9. **Fix user_id: 1 hardcode** — JWT tokens hardcode user_id: 1. Must use actual authenticated user ID.
+10. **Unify design system** — login page is red, Kitchen Bible is green. Looks like two different products. Pick one palette.
+11. **Mobile responsive dashboard** — admin/dashboard pages are desktop-only. Managers use phones. Must be responsive.
 
-## Value Propositions
-- **Save 2+ hours/day** on kitchen management (replacing paper checklists, whiteboard lists, group texts)
-- **Zero staff training needed** — share a link, staff open it on their phone, start checking off tasks
-- **Replace paper checklists** — digital, trackable, accountable. See who completed what and when.
-- **No app install required** — staff access via share link on any device. Zero friction onboarding.
-- **Manager visibility** — see checklist completion in real-time from anywhere
-- **Food safety compliance** — temperature logs, waste tracking, all digitally recorded
+## P1 — Competitive Features
 
-## Cold Outreach Email Templates
+1. **Temperature logging** — health inspectors require it. Table stakes for kitchen software.
+2. **Completion reporting dashboard** — % of checklists done today. #1 thing managers check every morning.
+3. **Recipe costing** — what does each dish cost to make? Critical for menu pricing.
+4. **Multi-location dashboard** — see all locations at a glance. Required for Pro/Enterprise tiers.
+5. **CSV/PDF export** — reports for accountants, health inspectors, corporate.
+6. **Staff training tracker** — who was trained on what, when, signed off by whom.
+7. **Offline checklist support** — service worker for when kitchens lose wifi (common in basements/walk-ins).
 
-### Template 1: Introduction
-Subject: Quick question about [Restaurant Name]'s kitchen ops
+## P2 — Toast Marketplace Prep
 
-Hi [Name],
+1. **Toast API integration** — OAuth 2.0, REST API for data sync.
+2. **Employee sync** — Toast Labor API auto-populates Ember staff directory.
+3. **Menu item sync** — Toast Menus API populates Kitchen Bible recipes automatically.
+4. **Partner application** — apply at pos.toasttab.com/partners/integration-partner-application.
+5. **Reference customers** — need 2-3 Toast restaurant customers using Ember before applying.
 
-I noticed [Restaurant Name] on [source — Instagram/Google/Yelp] — love what you're doing with [specific compliment about their food/concept].
+## P3 — Market Differentiators (things NO competitor has)
 
-Quick question: are you still using paper checklists or whiteboards for opening/closing duties?
-
-We built Kitchen Bible specifically for kitchens like yours — it replaces paper checklists with a digital system your staff accesses via a simple link (no app install). Your team just opens the link on their phone and starts checking off tasks.
-
-Honey Belly Korean BBQ switched over and cut their daily ops time by 2+ hours.
-
-Want me to set up a free 14-day trial? Takes about 10 minutes: https://ember-landing-phi.vercel.app
-
-Best,
-John
-Ember / Kitchen Bible
-
-### Template 2: Follow-up (3 days later)
-Subject: Re: Kitchen ops at [Restaurant Name]
-
-Hi [Name],
-
-Following up on my last note. I know you're busy running a kitchen — I'll keep this short.
-
-Kitchen Bible gives your staff a shareable link with all their daily checklists (opening, closing, prep, sidework, temps). No app to download, no training needed. You see who completed what in real-time.
-
-Starts at $49/mo. 14-day free trial, no credit card: https://ember-landing-phi.vercel.app
-
-Worth a 10-minute look?
-
-John
-
-### Template 3: Last Chance
-Subject: Last note — free kitchen checklist tool
-
-Hi [Name],
-
-Last email from me. If paper checklists are working great for [Restaurant Name], no worries at all.
-
-But if you've ever had a closer skip the fryer filter or a morning crew miss half the prep list — Kitchen Bible fixes that. Digital checklists with accountability, accessed via a link.
-
-Free trial: https://ember-landing-phi.vercel.app
-
-John
-
-## SEO Content Topics (for Quill to write)
-1. "Restaurant opening checklist template" (high search volume)
-2. "Kitchen SOP template for restaurants"
-3. "How to train kitchen staff faster"
-4. "Food safety daily checklist for restaurants"
-5. "Restaurant closing checklist PDF" (create digital version as lead magnet)
-6. "How to manage multiple restaurant locations"
-7. "Kitchen prep list template"
-8. "Restaurant sidework checklist"
-9. "How to reduce food waste in restaurants"
-10. "Best restaurant management software for small restaurants"
-
-## Competitive Positioning
-- **vs MarketMan/Apicbase ($200-500/mo):** We're simpler, cheaper, focused on daily execution not inventory/procurement
-- **vs meez (recipe-focused):** We cover full kitchen ops, not just recipes. Checklists, temps, waste, sidework.
-- **vs paper/whiteboards:** Digital, trackable, accessible from anywhere, can't get lost
-- **vs group texts/Slack:** Structured checklists with completion tracking, not chaotic message threads
-
-## Honey Belly Case Study
-Honey Belly Korean BBQ is our first paying customer. Use as social proof:
-- Switched from paper checklists to Kitchen Bible
-- Staff adopted it immediately (share link, no app install)
-- Owner can check kitchen status from home
-- Reference available for interested prospects
-
-## Sales Process
-1. Find leads (Scout research)
-2. Personalize outreach (reference their restaurant specifically)
-3. Send intro email with free trial link
-4. Follow up at day 3 and day 7
-5. For interested prospects: offer a quick demo call
-6. Close at $49/mo Starter plan
-7. Upsell to Pro ($99/mo) after they add locations`
+1. **Health inspection prep mode** — checklist of everything an inspector looks for, one-tap evidence collection (photos, temps, dates).
+2. **Gamified compliance** — streaks, leaderboards for completing daily checklists. Staff compete to not miss tasks.
+3. **Food waste root-cause analysis** — not just "we wasted $X" but WHY (over-prep, spoilage, wrong order, dropped).
+4. **Menu change propagation** — change a recipe and auto-update cost, training docs, allergens, prep lists across the system.
+5. **SMS/WhatsApp notifications** — push checklist reminders without requiring app install.`
     },
     {
-      slug: 'ember-lead-research',
-      name: 'Restaurant Lead Research',
-      description: 'Find and qualify restaurant leads for Ember outreach',
-      tags: ['ember', 'research', 'leads', 'restaurant'],
+      slug: 'ember-backend-patterns',
+      name: 'Ember Backend Development',
+      description: 'Sous-backend codebase patterns, API structure, database schema for Kitchen Bible',
+      tags: ['ember', 'backend', 'express', 'postgresql'],
+      agents: ['forge'],
+      skill_md: `# Ember Backend Development — sous-backend
+
+## Tech Stack
+- **Runtime:** Node.js + Express.js
+- **Database:** PostgreSQL on Railway (pg library, connection via DATABASE_URL)
+- **Auth:** JWT (jsonwebtoken) + bcrypt password hashing
+- **AI:** Anthropic SDK for onboarding chat
+- **Email:** nodemailer (for password reset, notifications)
+
+## File Structure
+\`\`\`
+server.js              — Main Express app, middleware, route registration
+controllers/           — 22 controller files (one per resource)
+middleware/            — Auth middleware, error handler
+migrations/           — PostgreSQL migration files (run in order)
+utils/errors.js       — AppError/ValidationError classes (exist but underused)
+\`\`\`
+
+## Key Controllers
+- **authController.js** — signup, login, staff PIN auth, share link auth
+- **checklistController.js** — CRUD for checklists, line items, completion tracking
+- **recipesController.js** — recipe CRUD with ingredients, steps, photos
+- **onboardingChatController.js** — AI conversation flow using Anthropic SDK
+- **tempController.js** — temperature log entries
+- **wasteController.js** — food waste tracking
+- **inventoryController.js** — ingredient inventory
+- **scheduleController.js** — staff scheduling
+
+## Three Access Modes
+1. **Manager login** — email + password, full dashboard access
+2. **Staff PIN** — 4-digit PIN, Kitchen Bible access only
+3. **Share link** — unique code, read-only Kitchen Bible (zero friction)
+
+## Restaurant Data Isolation
+Every query MUST filter by \`req.restaurantId\`. This is set by auth middleware from the JWT token. Never query without restaurant scoping.
+
+## API Pattern
+\`\`\`js
+// Controller pattern (every controller follows this)
+export const getItems = async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM items WHERE restaurant_id = $1 ORDER BY created_at DESC',
+      [req.restaurantId]
+    )
+    res.json(rows)
+  } catch (err) {
+    console.error('Error:', err)  // TODO: migrate to Winston logger
+    res.status(500).json({ error: 'Internal server error' })
+  }
+}
+\`\`\`
+
+## Known Issues to Fix
+- **Error handling:** AppError/ValidationError classes exist in utils/errors.js but controllers use raw try/catch with console.error. Migrate to structured error classes.
+- **Logger:** Winston is configured but most controllers use console.error. Migrate to logger.
+- **Onboarding chat:** Sessions stored in in-memory Map — dies on every deploy. Must persist to PostgreSQL.
+- **Photo uploads:** Returns base64 strings. Needs Cloudinary integration (upload to cloud, store URL).
+- **user_id hardcode:** JWT tokens set user_id: 1. Must use actual user ID from auth.
+- **share_code column:** Missing from migration files, was manually added to prod DB.
+
+## Environment Variables
+\`\`\`
+DATABASE_URL          — PostgreSQL connection string (Railway)
+JWT_SECRET            — JWT signing secret
+ANTHROPIC_API_KEY     — For AI onboarding chat
+CORS_ORIGIN           — Frontend URL for CORS
+GMAIL_USER            — For email notifications
+GMAIL_APP_PASSWORD    — Gmail app password
+\`\`\`
+
+## Database Conventions
+- All tables have \`restaurant_id\` column for multi-tenancy
+- Timestamps: \`created_at\` and \`updated_at\` with DEFAULT NOW()
+- UUIDs for primary keys (uuid_generate_v4())
+- Soft deletes where appropriate (is_deleted boolean)
+- Migrations run sequentially, named with number prefix`
+    },
+    {
+      slug: 'ember-frontend-patterns',
+      name: 'Ember Frontend Development',
+      description: 'Sous-frontend codebase patterns, component system, Kitchen Bible UX for Ember',
+      tags: ['ember', 'frontend', 'react', 'kitchen-bible'],
+      agents: ['forge', 'quill'],
+      skill_md: `# Ember Frontend Development — sous-frontend
+
+## Tech Stack
+- **Framework:** React 19 + Vite
+- **Styling:** Tailwind CSS + inline style tokens (Kitchen Bible) + App.css (Admin)
+- **Routing:** React Router v7
+- **State:** useState/useEffect (no Redux, no Context)
+- **API:** fetch wrapper in api.js, JWT token in localStorage
+
+## Two Distinct UIs
+
+### Kitchen Bible (staff-facing)
+- **Mobile-first**, dark green theme
+- **Token system:** tokens.js exports C (colors) and S (styles) objects — all inline styles
+- **16 tabs** in KitchenBible.jsx: Opening, Closing, Recipes, Plating, Prep, Sidework, Temps, Order, Schedule, Events, Ops, 86'd, Notes, Waste, Chat, Leaderboard
+- **Shared components:** shared.jsx exports Header, NavBar (floating pill navigation), Row, Badge, PostCard, Spinner
+- **Accessed via share link** — no login required for staff
+
+### Admin/Dashboard (manager-facing)
+- **Desktop-oriented** (NOT mobile responsive — this needs fixing)
+- Uses CSS classes from App.css, NOT the token system
+- This design split (tokens vs CSS classes) needs unifying
+
+## Component Patterns
+\`\`\`jsx
+// Kitchen Bible component pattern
+import { C, S } from '../tokens'
+import { Header, Row, Badge } from '../shared'
+
+export default function TempsTab({ restaurant }) {
+  const [temps, setTemps] = useState([])
+  // ... fetch and render with inline styles using C and S
+  return (
+    <div style={S.page}>
+      <Header title="Temperature Logs" />
+      {temps.map(t => <Row key={t.id} style={S.row}>...</Row>)}
+    </div>
+  )
+}
+\`\`\`
+
+## Auth Flow
+1. LoginPage — email/password signup or login
+2. Staff join via share link (no auth needed)
+3. OnboardingChat.jsx — AI conversation flow for new restaurants:
+   - Asks about cuisine, size, priorities
+   - Feature selection checkboxes
+   - AI generates content (checklists, recipes, etc.)
+   - Review screen before applying to restaurant
+
+## Key Issues to Fix
+- **Admin pages not mobile responsive** — kitchen.css is mobile-first but App.css only has one @media query. Managers use phones.
+- **Design system split** — Login page is red, Kitchen Bible is green, Admin is different again. Needs one unified palette.
+- **No offline support** — Kitchen Bible should work offline via service worker (kitchens lose wifi frequently).
+- **Base64 photos** — Photo uploads return base64, need Cloudinary URLs instead.
+
+## File Structure
+\`\`\`
+src/
+  App.jsx              — Main app, routing, layout
+  api.js               — fetch wrapper, all API calls
+  tokens.js            — C (colors) and S (styles) for Kitchen Bible
+  shared.jsx           — Shared Kitchen Bible components
+  components/
+    KitchenBible.jsx   — Main Kitchen Bible container (16 tabs)
+    LoginPage.jsx      — Auth flow
+    OnboardingChat.jsx — AI onboarding conversation
+    Dashboard.jsx      — Manager dashboard
+    ...tab components  — One per Kitchen Bible tab
+\`\`\``
+    },
+    {
+      slug: 'ember-competitor-intel',
+      name: 'Ember Competitor Intelligence',
+      description: 'Restaurant kitchen software competitive landscape — what to watch, steal, and avoid',
+      tags: ['ember', 'competitors', 'research', 'restaurant-tech'],
       agents: ['scout'],
-      skill_md: `# Restaurant Lead Research
+      skill_md: `# Ember Competitor Intelligence
 
-## How to Search for Leads
-1. **By city:** Search "[city] restaurants" on Google Maps, Yelp, Instagram. Start with major metros (NYC, LA, Chicago, Houston, Miami, Seattle, Portland, Denver, Austin, Nashville).
-2. **By cuisine type:** Focus on cuisines with complex prep (Korean BBQ, sushi, Mexican, Italian, Indian) — they benefit most from checklists.
-3. **By growth signals:** Look for restaurants that are hiring (Indeed/Poached), expanding to new locations, recently renovated, or actively posting on social media.
-4. **By platform:** Search Instagram hashtags like #restaurantlife, #kitchenlife, #cheflife, #restaurantowner. Look for owners posting about daily operations.
+## Key Competitors & Pricing
+| Competitor | Price/mo | Focus |
+|---|---|---|
+| FreshCheq | ~$60 | Checklists, food safety, temp logging |
+| meez | $49+ | Recipe management, costing, training |
+| 7shifts | $40-135 | Staff scheduling, labor management |
+| Jolt | $90-296 | Checklists, temp logging, training |
+| MarketMan | $199-249 | Inventory, purchasing, recipe costing |
+| Toast | $69-300+ | Full POS + restaurant management suite |
+| Restaurant365 | $249-499+ | Accounting, inventory, scheduling, BI |
 
-## What to Look For (Qualification)
-- **5+ staff** — too small and they won't need software
-- **Established 1+ years** — brand new restaurants are too chaotic to adopt new tools
-- **Active social media** — signals they care about their brand and operations
-- **Multiple locations OR planning to expand** — highest value prospects
-- **Owner-operated** — decision maker is accessible
-- **Currently using paper/whiteboards** — obvious pain point
+## Ember's Positioning
+- **Price sweet spot:** $49-99/mo — cheaper than Jolt/MarketMan/R365, comparable to meez/FreshCheq
+- **Target:** Independent restaurants and small chains (1-20 locations)
+- **Core value:** Checklists + recipes + training + daily ops in ONE tool
 
-## How to Find Contact Info
-1. **Website → About page** — often has owner name and email
-2. **Instagram/Facebook bio** — email address, website link
-3. **Google Maps listing** — phone number, website
-4. **LinkedIn** — search for restaurant name, find owner/GM/chef
-5. **Yelp business page** — sometimes has owner response patterns
-6. **Direct message on Instagram** — if no email available
+## Ember's Unique Advantages
+1. **AI onboarding** — NO competitor generates cuisine-specific content via AI conversation. This is a genuine moat.
+2. **Share link access** — Staff open a link on their phone. No app download, no account creation, no training. Zero friction.
+3. **Price point** — Full kitchen ops for $49/mo undercuts Jolt ($90+) and MarketMan ($199+).
 
-## Qualification Tiers
-- **Tier 1 (Hot):** Multi-unit operator, 3+ locations, active online presence. Confidence: 0.8-1.0
-- **Tier 2 (Warm):** Single location, 10+ staff, established 2+ years, signs of growth. Confidence: 0.6-0.8
-- **Tier 3 (Cool):** Single location, 5-10 staff, less online presence. Confidence: 0.4-0.6
+## Table Stakes Features (must have to compete)
+- Temperature logging (FreshCheq, Jolt have it — health inspectors require it)
+- Recipe costing (meez's core feature — every kitchen software needs this)
+- Completion reporting (% done today — managers check this first thing)
+- Photo verification (prove tasks were done, not just checked off)
+- Multi-location dashboard (required for any customer with 2+ locations)
+- Offline mode (kitchens lose wifi — Jolt has offline support)
+- CSV/PDF export (for health inspectors, accountants, corporate)
 
-## Output Format
-For each lead, structure findings as intel items:
-- **title:** "[Restaurant Name] — [City] — [Cuisine]"
-- **summary:** Staff size, locations, why they're a good fit, contact info found
-- **source_url:** Their website or primary social media URL
-- **confidence:** 0.4-1.0 based on qualification tier
-- **tags:** ["ember", "lead", cuisine type, city]
+## Differentiators to Build (things nobody has)
+1. **Health inspection prep mode** — no competitor offers a dedicated "inspector is coming" checklist with evidence collection
+2. **Gamified compliance** — streaks and leaderboards for checklist completion (7shifts has some gamification for scheduling, nobody for kitchen ops)
+3. **Food waste root-cause analysis** — competitors track waste amounts but not WHY
+4. **Menu change propagation** — change a recipe, auto-update everything downstream
+5. **SMS/WhatsApp notifications** — push reminders without app install
 
-## Geographic Strategy
-1. **Phase 1:** Start with the city/metro area where you have the most data
-2. **Phase 2:** Expand to top 10 US metro areas
-3. **Phase 3:** Target restaurant-dense neighborhoods specifically
-4. **Priority cities:** Austin, Nashville, Portland, Denver (food-forward cities with independent restaurant culture)
+## Toast Marketplace Strategy
+- **Revenue share:** Toast takes ~30% of marketplace revenue
+- **Timeline:** 6-12 months from application to listing
+- **Requirements:** Working integration, reference customers on Toast POS, security review
+- **Key integrations:** Employee sync (Labor API), menu sync (Menus API), order data
+- **Critical:** Need 2-3 Toast restaurant customers as references before applying
 
-## Research Best Practices
-- Research 10-20 leads per batch (quality over quantity)
-- Always note the SOURCE where you found them
-- Check if they already use restaurant management software (if so, note which one)
-- Look for pain signals in their reviews (inconsistency complaints = they need better SOPs)
-- Track seasonal patterns (don't outreach during holiday rushes: Nov-Dec, Mother's Day week)`
-    },
-    {
-      slug: 'ember-content',
-      name: 'Ember Content Strategy',
-      description: 'SEO content and marketing copy for Kitchen Bible',
-      tags: ['ember', 'content', 'seo', 'copywriting'],
-      agents: ['quill'],
-      skill_md: `# Ember Content Strategy
-
-## Blog Post Topics (Ranked by SEO Value)
-1. **"Restaurant Opening Checklist: The Complete Daily Guide"** — highest search volume, create the definitive resource
-2. **"Kitchen SOP Template: How to Standardize Your Restaurant Operations"** — restaurant owners search for templates
-3. **"How to Train Kitchen Staff in 2026: A Step-by-Step Guide"** — evergreen, high intent
-4. **"Food Safety Daily Checklist for Restaurants (Free Template)"** — compliance-driven, lead magnet opportunity
-5. **"Restaurant Closing Checklist: Never Miss a Step"** — pairs with opening checklist
-6. **"How to Manage Multiple Restaurant Locations Without Losing Your Mind"** — targets multi-unit operators (highest value)
-7. **"Kitchen Prep List Template for Busy Restaurants"** — template searchers convert well
-8. **"Restaurant Sidework Checklist: Keep Your FOH and BOH Running Smooth"** — niche but high intent
-9. **"How to Reduce Food Waste in Your Restaurant Kitchen"** — trending topic, sustainability angle
-10. **"Best Restaurant Management Software for Small Restaurants (2026)"** — comparison/listicle, capture bottom-funnel searches
-
-## Content Formats
-1. **How-to guides** (1500-2500 words) — solve a specific problem, link to Ember as the solution
-2. **Free templates** (downloadable checklist PDFs) — lead magnets, capture email in exchange
-3. **Comparison posts** — "Kitchen Bible vs [competitor]" or "Digital vs Paper Checklists"
-4. **Case studies** — Honey Belly Korean BBQ story (once more data available)
-5. **Quick tips lists** — "10 Kitchen Management Tips from Professional Chefs" — shareable on social
-
-## Email Sequences by Segment
-
-### Fine Dining
-Tone: Professional, emphasize precision and consistency. They care about reputation.
-Key angle: "Your checklists should be as precise as your plating."
-Pain point: High standards require high accountability. Paper checklists get lost or ignored.
-
-### Casual/Fast Casual
-Tone: Friendly, emphasize speed and simplicity. They care about efficiency.
-Key angle: "Your staff checks their phone anyway — put their checklist on it."
-Pain point: High turnover means constant retraining. Share link = instant onboarding.
-
-### Food Trucks
-Tone: Energetic, emphasize mobility and small-team efficiency.
-Key angle: "Everything your crew needs, on their phone. No counter space required."
-Pain point: Tiny workspace, no room for paper checklists or binders.
-
-### Catering
-Tone: Organized, emphasize event prep and nothing-falls-through-the-cracks reliability.
-Key angle: "Never show up to an event missing a prep item again."
-Pain point: Each event is different. Customizable checklists per event.
-
-## Social Media Content Ideas
-1. **Kitchen tip of the day** — quick operational tips (shareable, positions Ember as expert)
-2. **Behind-the-scenes ops** — "Here's what a real opening checklist looks like" (with Kitchen Bible screenshot)
-3. **Chef quotes** — Pair with Kitchen Bible branding
-4. **Before/after** — "Paper checklist vs Kitchen Bible" side-by-side
-5. **Poll/engagement** — "What's the #1 thing your kitchen staff forgets?" (drives comments)
-6. **Customer spotlight** — Honey Belly feature
-
-## Tone Guidelines
-- Professional but approachable — speak like a fellow restaurant operator, not a tech company
-- Use "kitchen" language: BOH, FOH, mise en place, 86'd, on the fly, behind, heard
-- Acknowledge the grind — restaurant work is hard. We're here to make it easier, not lecture.
-- Never condescend — these are skilled professionals
-- Short sentences. No jargon from the tech world.
-
-## CTA Rules
-- Every piece of content MUST include a CTA linking to https://ember-landing-phi.vercel.app
-- Primary CTA: "Try Kitchen Bible free for 14 days — no credit card needed"
-- Secondary CTA: "See how it works" (link to landing page)
-- Never use aggressive sales language. Let the product sell itself.
-- In blog posts: CTA after intro paragraph + at the end`
+## Research Priorities (what Scout should regularly check)
+1. New features competitors announce (blog posts, changelogs, Product Hunt)
+2. Restaurant tech trends (NRA Show announcements, industry publications)
+3. Toast marketplace new listings and popular integrations
+4. Restaurant operator forums — Reddit r/restaurantowners, r/KitchenConfidential, Yelp business forums
+5. Customer complaints about competitors (opportunities for Ember)
+6. Pricing changes from competitors
+7. New entrants in the restaurant kitchen ops space`
     }
   ]
 
@@ -6551,30 +6594,36 @@ Pain point: Each event is different. Customizable checklists per event.
       }
     }
   }
-  console.log('🍳 Seeded 3 Ember/Kitchen Bible marketing skills')
+  console.log('🔧 Seeded 4 Ember/Kitchen Bible build-focused skills')
 }
 
 seedEmberSkills()
 
 // ── Seed Ember Sales Pipeline ────────────────────────
 function seedEmberPipeline() {
-  const existing = db.prepare("SELECT id FROM pipelines WHERE name = 'Ember Sales Pipeline'").get()
+  // Clean out old sales pipeline if it exists
+  const oldPipeline = db.prepare("SELECT id FROM pipelines WHERE name = 'Ember Sales Pipeline'").get()
+  if (oldPipeline) {
+    db.prepare('DELETE FROM pipelines WHERE id = ?').run(oldPipeline.id)
+  }
+
+  const existing = db.prepare("SELECT id FROM pipelines WHERE name = 'Ember Development Pipeline'").get()
   if (existing) return
 
   const pipelineId = uuid()
   const steps = [
-    { position: 1, agent_id: 'scout', prompt_template: 'Find restaurant leads in target city. Research 10-20 restaurants that would benefit from Kitchen Bible. Look for restaurants with 5+ staff, active social media, signs of growth. Extract names, emails, websites. Focus on independent restaurants and small chains. Output structured leads with contact info and qualification tier.' },
-    { position: 2, agent_id: 'quill', prompt_template: 'For each restaurant lead found by Scout, write a personalized cold email introducing Ember/Kitchen Bible. Reference something specific about their restaurant. Include the key value props: zero-friction staff access via share link, replace paper checklists, save 2+ hours/day. Link to https://ember-landing-phi.vercel.app. Keep it under 150 words.\n\nLeads:\n{{previous_output}}' },
-    { position: 3, agent_id: 'dealer', prompt_template: 'Send the personalized emails to each restaurant lead. Log each send. Track which emails get responses. For any positive responses, draft a follow-up with pricing details ($49/mo starter) and offer a 14-day free trial. Log any revenue opportunities as intel items.\n\nEmails to send:\n{{previous_output}}' }
+    { position: 1, agent_id: 'scout', prompt_template: 'Research how competitors handle this specific feature or restaurant pain point. Check FreshCheq, meez, Jolt, MarketMan, Toast, and Restaurant365. Document what they do well, what they miss, and what restaurant operators complain about. Search Reddit r/restaurantowners, r/KitchenConfidential, and restaurant tech forums for real user feedback. Output a structured analysis with competitor approaches, gaps, and recommended approach for Ember.' },
+    { position: 2, agent_id: 'nexus', prompt_template: 'Based on Scout\'s competitive research, create a technical specification for implementing this feature in Ember. Include: database schema changes (PostgreSQL), API endpoints needed (Express.js controllers), frontend components (React + Tailwind), and integration points with existing Kitchen Bible tabs. Follow sous-backend patterns (controller pattern, restaurant_id scoping, JWT auth) and sous-frontend patterns (tokens.js for Kitchen Bible, App.css for admin). Prioritize mobile-first for Kitchen Bible components.\n\nResearch:\n{{previous_output}}' },
+    { position: 3, agent_id: 'forge', prompt_template: 'Implement the feature based on Nexus\'s technical spec. Follow sous-backend patterns: controllers in controllers/ folder, pg query with restaurant_id scoping, proper error handling. Follow sous-frontend patterns: use tokens.js C/S system for Kitchen Bible components, React Router v7, useState/useEffect for state. Test the implementation and document any issues found.\n\nTechnical Spec:\n{{previous_output}}' }
   ]
 
   db.prepare('INSERT INTO pipelines (id, name, description, steps) VALUES (?, ?, ?, ?)').run(
     pipelineId,
-    'Ember Sales Pipeline',
-    'Scout finds restaurant leads → Quill writes personalized outreach → Dealer sends and tracks responses',
+    'Ember Development Pipeline',
+    'Scout researches competitor feature/pain point → Nexus creates technical spec → Forge implements following codebase patterns',
     JSON.stringify(steps)
   )
-  console.log('🔗 Seeded Ember Sales Pipeline')
+  console.log('🔗 Seeded Ember Development Pipeline')
 }
 
 seedEmberPipeline()
