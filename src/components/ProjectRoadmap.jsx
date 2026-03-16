@@ -741,13 +741,21 @@ export default function ProjectRoadmap({ agents = [], onClose, onSelectTask }) {
     try {
       const projs = await api.getProjectsV2()
       setProjects(projs)
-      // Fetch details for all projects in parallel
-      const detailResults = await Promise.all(projs.map(p => api.getProjectV2(p.id).catch(() => null)))
+      // Build detail map from list data (milestones are included in list response)
       const detailMap = {}
-      projs.forEach((p, i) => { if (detailResults[i]) detailMap[p.id] = detailResults[i] })
+      projs.forEach(p => { detailMap[p.id] = p })
+      // Then fetch full details in background (has descriptions, acceptance_criteria)
       setDetails(detailMap)
-    } catch (e) { console.warn('Failed to load projects:', e) }
-    finally { setLoading(false) }
+      setLoading(false)
+      // Enrich with full detail data (non-blocking)
+      const detailResults = await Promise.all(projs.map(p => api.getProjectV2(p.id).catch(() => null)))
+      const enriched = { ...detailMap }
+      projs.forEach((p, i) => { if (detailResults[i]) enriched[p.id] = detailResults[i] })
+      setDetails(enriched)
+    } catch (e) {
+      console.warn('Failed to load projects:', e)
+      setLoading(false)
+    }
   }, [])
 
   useEffect(() => { fetchAll() }, [fetchAll])
