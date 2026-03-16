@@ -184,8 +184,8 @@ const openai = new OpenAI({
 
 // ── Agent Model Assignment ──────────────────────────
 const AGENT_MODELS = {
-  scout:  'perplexity/sonar-pro',
-  forge:  'deepseek/deepseek-r1',
+  scout:  'anthropic/claude-haiku-4-5',
+  forge:  'anthropic/claude-haiku-4-5',
   quill:  'anthropic/claude-haiku-4-5',
   dealer: 'anthropic/claude-haiku-4-5',
   oracle: 'anthropic/claude-sonnet-4-5',
