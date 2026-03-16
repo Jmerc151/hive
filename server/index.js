@@ -1746,6 +1746,123 @@ const TOOL_REGISTRY = [
         return { success: true, id: postId }
       } catch (e) { return { error: e.message } }
     }
+  },
+  {
+    name: 'search_skills',
+    description: 'Search for AI agent skills on SkillsMP, ClawHub, and GitHub. Returns installable SKILL.md skills that can enhance agent capabilities.',
+    params: {
+      query: { type: 'string', required: true, description: 'Search query (e.g. "trading bot", "web scraping", "email outreach")' },
+      source: { type: 'string', required: false, description: 'Source to search: skillsmp, github, or all (default: all)' }
+    },
+    agents: ['scout', 'nexus', 'forge'],
+    execute: async (args) => {
+      const results = []
+      const query = encodeURIComponent(args.query)
+      const source = args.source || 'all'
+      try {
+        // Search GitHub for SKILL.md files
+        if (source === 'all' || source === 'github') {
+          const ghRes = await fetch(`https://api.github.com/search/code?q=${query}+filename:SKILL.md&per_page=10`, {
+            headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'Hive-Agent/1.0' }
+          })
+          if (ghRes.ok) {
+            const ghData = await ghRes.json()
+            for (const item of (ghData.items || []).slice(0, 5)) {
+              results.push({
+                name: item.repository.full_name,
+                path: item.path,
+                url: item.html_url,
+                source: 'github',
+                stars: item.repository.stargazers_count || 0,
+                description: item.repository.description || ''
+              })
+            }
+          }
+        }
+        // Search SkillsMP API
+        if (source === 'all' || source === 'skillsmp') {
+          try {
+            const smpRes = await fetch(`https://skillsmp.com/api/search?q=${query}&limit=5`, {
+              headers: { 'User-Agent': 'Hive-Agent/1.0' }
+            })
+            if (smpRes.ok) {
+              const smpData = await smpRes.json()
+              for (const skill of (smpData.skills || smpData.results || []).slice(0, 5)) {
+                results.push({
+                  name: skill.name || skill.title,
+                  description: skill.description || '',
+                  url: skill.url || `https://skillsmp.com/skills/${skill.slug || skill.id}`,
+                  source: 'skillsmp',
+                  tags: skill.tags || [],
+                  author: skill.author || ''
+                })
+              }
+            }
+          } catch (e) { /* SkillsMP may not have public API yet */ }
+        }
+        return { results, count: results.length, query: args.query }
+      } catch (e) { return { error: e.message, results: [] } }
+    }
+  },
+  {
+    name: 'install_skill',
+    description: 'Install a SKILL.md skill from a GitHub URL. Downloads the skill content and saves it to the skills database for agent use.',
+    params: {
+      url: { type: 'string', required: true, description: 'GitHub raw URL or repo URL containing SKILL.md' },
+      agent_ids: { type: 'string', required: false, description: 'Comma-separated agent IDs to assign skill to (default: auto-detect from skill)' }
+    },
+    agents: ['nexus', 'forge'],
+    execute: async (args) => {
+      try {
+        // Convert GitHub URL to raw content URL
+        let rawUrl = args.url
+        if (rawUrl.includes('github.com') && !rawUrl.includes('raw.githubusercontent.com')) {
+          rawUrl = rawUrl.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/')
+        }
+        const res = await fetch(rawUrl, { headers: { 'User-Agent': 'Hive-Agent/1.0' } })
+        if (!res.ok) return { error: `Failed to fetch skill: ${res.status}` }
+        const content = await res.text()
+        if (content.length < 10) return { error: 'Empty or invalid SKILL.md content' }
+
+        // Parse YAML frontmatter
+        let name = 'imported-skill', description = '', tags = [], agents = []
+        const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
+        if (fmMatch) {
+          const fm = fmMatch[1]
+          const nameMatch = fm.match(/name:\s*(.+)/)
+          const descMatch = fm.match(/description:\s*(.+)/)
+          const tagsMatch = fm.match(/tags:\s*\[([^\]]*)\]/)
+          const agentsMatch = fm.match(/agents:\s*\[([^\]]*)\]/)
+          if (nameMatch) name = nameMatch[1].trim()
+          if (descMatch) description = descMatch[1].trim()
+          if (tagsMatch) tags = tagsMatch[1].split(',').map(t => t.trim().replace(/['"]/g, ''))
+          if (agentsMatch) agents = agentsMatch[1].split(',').map(a => a.trim().replace(/['"]/g, ''))
+        }
+        if (args.agent_ids) agents = args.agent_ids.split(',').map(a => a.trim())
+
+        const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+        const id = uuid()
+
+        // Insert into skills table (if it exists) or save as file
+        try {
+          db.prepare(`INSERT OR REPLACE INTO skills (id, slug, name, description, version, skill_md, tags, source) VALUES (?, ?, ?, ?, '1.0.0', ?, ?, 'clawhub')`)
+            .run(id, slug, name, description, content, JSON.stringify(tags))
+          // Assign to agents
+          for (const agentId of agents) {
+            try {
+              db.prepare('INSERT OR IGNORE INTO agent_skills_v2 (agent_id, skill_id) VALUES (?, ?)').run(agentId, id)
+            } catch {}
+          }
+          return { success: true, id, slug, name, description, assigned_to: agents }
+        } catch {
+          // Fallback: save as file in memory/skills/
+          const skillDir = join(__dirname, '..', 'memory', 'skills')
+          if (!existsSync(skillDir)) mkdirSync(skillDir, { recursive: true })
+          writeFileSync(join(skillDir, `${slug}.md`), content)
+          return { success: true, saved_to: `memory/skills/${slug}.md`, name, description, note: 'Skills table not found — saved as file. Run Skill Registry V2 migration first.' }
+        }
+      } catch (e) { return { error: e.message } }
+    }
   }
 ]
 
