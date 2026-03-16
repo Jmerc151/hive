@@ -9060,6 +9060,11 @@ if (todoCount > 15) {
 // ══════════════════════════════════════════════════════
 // ██ MASTER PLAN — Skills, Pipelines, Digest, AI Svc  ██
 // ══════════════════════════════════════════════════════
+try {
+
+// Quick test: write a marker setting to prove this code block executes
+db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('master_plan_seeded', datetime('now'))").run()
+console.log('🏁 Master plan seeding block started')
 
 // ── Seed Ember Quality Skills + AgentForge Context + AI Services ──
 const masterSkills = [
@@ -9225,6 +9230,31 @@ for (const p of masterPipelines) {
     db.prepare('INSERT INTO pipelines (id, name, description, steps) VALUES (?, ?, ?, ?)').run(uuid(), p.name, p.description, JSON.stringify(p.steps))
     console.log(`🔗 Seeded pipeline: ${p.name}`)
   }
+}
+
+// Force-set per-agent spend limits (INSERT OR REPLACE so they always apply)
+const spendOverrides = {
+  daily_limit_usd: '8.00',
+  monthly_limit_usd: '100.00',
+  scout_daily_usd: '1.50',
+  forge_daily_usd: '2.00',
+  quill_daily_usd: '1.00',
+  dealer_daily_usd: '0.75',
+  oracle_daily_usd: '0.75',
+  nexus_daily_usd: '1.00',
+  auto_tasks_enabled: 'true',
+  auto_chain_enabled: 'true',
+  digest_last_sent: '',
+  ai_services_activated: 'false'
+}
+for (const [key, value] of Object.entries(spendOverrides)) {
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value)
+}
+console.log('💰 Spend limits updated: $8/day global, per-agent caps set')
+
+console.log('✅ Master plan seeding complete — skills + pipelines + settings')
+} catch (masterPlanErr) {
+  console.error('❌ MASTER PLAN SEEDING ERROR:', masterPlanErr.message, masterPlanErr.stack)
 }
 
 // ── Pipeline Heartbeats ─────────────────────────────
