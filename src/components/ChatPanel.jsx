@@ -285,7 +285,7 @@ export default function ChatPanel({ agents, onClose, embedded, onToast, isMobile
       )}
 
       {/* Messages area */}
-      <div className="flex-1 overflow-y-auto">
+      <div className={`flex-1 overflow-y-auto ${isMobile ? 'pb-[70px]' : ''}`}>
         {showWelcome ? (
           <WelcomeCard agents={agents} onSuggestionClick={handleSuggestionClick} />
         ) : hasNoMessages && mode === 'feed' ? (
@@ -397,27 +397,50 @@ export default function ChatPanel({ agents, onClose, embedded, onToast, isMobile
         )}
       </div>
 
-      {/* Input */}
-      <div className="px-3 py-2 bg-page backdrop-blur-xl shrink-0" style={{ borderTop: '0.5px solid rgba(0,0,0,0.08)', paddingBottom: isMobile ? '68px' : '8px' }}>
-        <div className="flex gap-1.5 items-center">
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={mode === 'assistant' ? 'Ask the hive...' : 'Message...'}
-            className="flex-1 bg-s1 rounded-xl px-3 py-2 text-sm text-t1 focus:outline-none focus:ring-2 focus:ring-t1/30 placeholder:text-t4 min-w-0"
-            style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}
-            disabled={streaming}
-          />
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || streaming}
-            className="w-9 h-9 shrink-0 bg-t1 text-white rounded-xl text-sm font-medium hover:opacity-90 transition-all disabled:opacity-30 active:scale-95 flex items-center justify-center"
-          >
-            {streaming ? '…' : '↑'}
-          </button>
+      {/* Input — mobile: fixed above bottom nav; desktop: inline */}
+      {isMobile ? (
+        <div className="fixed left-0 right-0 z-30 px-3 py-2 bg-page/95 backdrop-blur-xl" style={{ bottom: '54px', borderTop: '0.5px solid rgba(0,0,0,0.08)' }}>
+          <div className="flex gap-1.5 items-center">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={mode === 'assistant' ? 'Ask the hive...' : 'Message...'}
+              className="flex-1 bg-s1 rounded-xl px-3 py-2.5 text-sm text-t1 focus:outline-none focus:ring-2 focus:ring-t1/30 placeholder:text-t4 min-w-0"
+              style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}
+              disabled={streaming}
+            />
+            <button
+              onClick={handleSend}
+              disabled={!input.trim() || streaming}
+              className="w-10 h-10 shrink-0 bg-t1 text-white rounded-xl text-sm font-medium hover:opacity-90 transition-all disabled:opacity-30 active:scale-95 flex items-center justify-center"
+            >
+              {streaming ? '…' : '↑'}
+            </button>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="px-3 py-2 bg-page backdrop-blur-xl shrink-0" style={{ borderTop: '0.5px solid rgba(0,0,0,0.08)', paddingBottom: '8px' }}>
+          <div className="flex gap-1.5 items-center">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={mode === 'assistant' ? 'Ask the hive...' : 'Message...'}
+              className="flex-1 bg-s1 rounded-xl px-3 py-2 text-sm text-t1 focus:outline-none focus:ring-2 focus:ring-t1/30 placeholder:text-t4 min-w-0"
+              style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}
+              disabled={streaming}
+            />
+            <button
+              onClick={handleSend}
+              disabled={!input.trim() || streaming}
+              className="w-9 h-9 shrink-0 bg-t1 text-white rounded-xl text-sm font-medium hover:opacity-90 transition-all disabled:opacity-30 active:scale-95 flex items-center justify-center"
+            >
+              {streaming ? '…' : '↑'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 
