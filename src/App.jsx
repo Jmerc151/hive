@@ -31,6 +31,7 @@ import CommandBar from './components/CommandBar'
 import SkillRegistryV2 from './components/SkillRegistryV2'
 import DeliverablesPanel from './components/DeliverablesPanel'
 import DeliverablesFeed from './components/DeliverablesFeed'
+import ProjectRoadmap from './components/ProjectRoadmap'
 import EvalHarness from './components/EvalHarness'
 import KnowledgeBase from './components/KnowledgeBase'
 import ScheduledJobs from './components/ScheduledJobs'
@@ -77,6 +78,7 @@ export default function App() {
   const [showSandbox, setShowSandbox] = useState(false)
   const [showUsers, setShowUsers] = useState(false)
   const [showMission, setShowMission] = useState(false)
+  const [showRoadmap, setShowRoadmap] = useState(false)
   const [currentUser, setCurrentUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
 
@@ -214,6 +216,7 @@ export default function App() {
         setShowShortcuts(false)
         setShowSandbox(false)
         setShowUsers(false)
+        setShowRoadmap(false)
         return
       }
 
@@ -319,7 +322,7 @@ export default function App() {
               analytics: () => setShowCostTimeline(true),
               intel: () => setShowIntel(true),
               skillsV2: () => setShowSkillsV2(true),
-              projects: () => setShowProjects(true),
+              projects: () => setShowRoadmap(true),
               history: () => setShowHistory(true),
               trace: () => setShowTrace(true),
               triggers: () => setShowTriggers(true),
@@ -613,6 +616,14 @@ export default function App() {
 
       {showUsers && (
         <UserManagement onClose={() => setShowUsers(false)} />
+      )}
+
+      {showRoadmap && (
+        <ProjectRoadmap
+          agents={agents}
+          onClose={() => setShowRoadmap(false)}
+          onSelectTask={(id) => { setShowRoadmap(false); setSelectedTask(id) }}
+        />
       )}
 
       {showMission && (

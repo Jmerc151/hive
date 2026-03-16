@@ -3463,6 +3463,13 @@ START WITH TOOL CALLS NOW.`
       payload: { content: 'Task completed', step: 'final' }
     })
 
+    // Auto-complete milestone if task is linked to one
+    if (task.milestone_id) {
+      try {
+        db.prepare("UPDATE milestones SET status = 'done', completed_at = datetime('now') WHERE id = ? AND status != 'done'").run(task.milestone_id)
+      } catch (e) { /* ok */ }
+    }
+
     const summary = fullOutput.length > 300 ? fullOutput.slice(0, 300) + '…' : fullOutput
     db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
       .run(agent.id, agent.name, agent.avatar, agent.color, `✅ Finished: "${task.title}"\n\n${summary}`)
@@ -6029,6 +6036,213 @@ app.get('/api/deliverables', (req, res) => {
   })
 
   res.json({ deliverables: paged, total, stats })
+})
+
+// ── Projects + Roadmaps ─────────────────────────────────
+
+// List all projects with milestone counts and progress
+app.get('/api/projects-v2', (req, res) => {
+  const projects = db.prepare('SELECT * FROM projects ORDER BY CASE status WHEN \'active\' THEN 0 WHEN \'draft\' THEN 1 WHEN \'paused\' THEN 2 ELSE 3 END, updated_at DESC').all()
+  const enriched = projects.map(p => {
+    const milestones = db.prepare('SELECT id, title, status, agent_id, sort_order, task_id FROM milestones WHERE project_id = ? ORDER BY sort_order').all(p.id)
+    const done = milestones.filter(m => m.status === 'done').length
+    const total = milestones.length
+    const progress = total > 0 ? Math.round((done / total) * 100) : 0
+    // Update progress in DB if changed
+    if (progress !== Math.round(p.progress)) {
+      db.prepare('UPDATE projects SET progress = ?, updated_at = datetime(\'now\') WHERE id = ?').run(progress, p.id)
+    }
+    return { ...p, milestones, progress, milestone_count: total, done_count: done }
+  })
+  res.json(enriched)
+})
+
+// Get single project with full milestones + linked tasks
+app.get('/api/projects-v2/:id', (req, res) => {
+  const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  const milestones = db.prepare('SELECT * FROM milestones WHERE project_id = ? ORDER BY sort_order').all(project.id)
+  const enrichedMilestones = milestones.map(m => {
+    let task = null
+    if (m.task_id) {
+      task = db.prepare('SELECT id, title, status, agent_id, output, evidence, nexus_score, completed_at FROM tasks WHERE id = ?').get(m.task_id)
+    }
+    return { ...m, task, depends_on: JSON.parse(m.depends_on || '[]') }
+  })
+
+  res.json({ ...project, milestones: enrichedMilestones })
+})
+
+// Create project
+app.post('/api/projects-v2', (req, res) => {
+  const { name, goal, pillar, target_date } = req.body
+  if (!name || !goal) return res.status(400).json({ error: 'Name and goal required' })
+  const id = crypto.randomUUID()
+  db.prepare('INSERT INTO projects (id, name, goal, pillar, target_date) VALUES (?, ?, ?, ?, ?)').run(id, name, goal, pillar || '', target_date || null)
+  res.json({ id, name, goal })
+})
+
+// Update project
+app.patch('/api/projects-v2/:id', (req, res) => {
+  const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const { name, goal, status, pillar, target_date } = req.body
+  if (name) db.prepare('UPDATE projects SET name = ?, updated_at = datetime(\'now\') WHERE id = ?').run(name, req.params.id)
+  if (goal) db.prepare('UPDATE projects SET goal = ?, updated_at = datetime(\'now\') WHERE id = ?').run(goal, req.params.id)
+  if (status) db.prepare('UPDATE projects SET status = ?, updated_at = datetime(\'now\') WHERE id = ?').run(status, req.params.id)
+  if (pillar !== undefined) db.prepare('UPDATE projects SET pillar = ?, updated_at = datetime(\'now\') WHERE id = ?').run(pillar, req.params.id)
+  if (target_date !== undefined) db.prepare('UPDATE projects SET target_date = ?, updated_at = datetime(\'now\') WHERE id = ?').run(target_date, req.params.id)
+  res.json({ ok: true })
+})
+
+// Delete project
+app.delete('/api/projects-v2/:id', (req, res) => {
+  db.prepare('DELETE FROM projects WHERE id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+// Add milestone to project
+app.post('/api/projects-v2/:id/milestones', (req, res) => {
+  const { title, description, agent_id, depends_on, acceptance_criteria } = req.body
+  if (!title) return res.status(400).json({ error: 'Title required' })
+  const maxOrder = db.prepare('SELECT MAX(sort_order) as mx FROM milestones WHERE project_id = ?').get(req.params.id)?.mx || 0
+  const id = crypto.randomUUID()
+  db.prepare('INSERT INTO milestones (id, project_id, title, description, agent_id, sort_order, depends_on, acceptance_criteria) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+    id, req.params.id, title, description || '', agent_id || null, maxOrder + 1, JSON.stringify(depends_on || []), acceptance_criteria || ''
+  )
+  res.json({ id, title })
+})
+
+// Update milestone
+app.patch('/api/milestones/:id', (req, res) => {
+  const ms = db.prepare('SELECT * FROM milestones WHERE id = ?').get(req.params.id)
+  if (!ms) return res.status(404).json({ error: 'Milestone not found' })
+  const { title, description, agent_id, status, sort_order, depends_on, acceptance_criteria, task_id } = req.body
+  if (title !== undefined) db.prepare('UPDATE milestones SET title = ? WHERE id = ?').run(title, req.params.id)
+  if (description !== undefined) db.prepare('UPDATE milestones SET description = ? WHERE id = ?').run(description, req.params.id)
+  if (agent_id !== undefined) db.prepare('UPDATE milestones SET agent_id = ? WHERE id = ?').run(agent_id, req.params.id)
+  if (status) {
+    db.prepare('UPDATE milestones SET status = ?, completed_at = ? WHERE id = ?').run(status, status === 'done' ? new Date().toISOString() : null, req.params.id)
+  }
+  if (sort_order !== undefined) db.prepare('UPDATE milestones SET sort_order = ? WHERE id = ?').run(sort_order, req.params.id)
+  if (depends_on !== undefined) db.prepare('UPDATE milestones SET depends_on = ? WHERE id = ?').run(JSON.stringify(depends_on), req.params.id)
+  if (acceptance_criteria !== undefined) db.prepare('UPDATE milestones SET acceptance_criteria = ? WHERE id = ?').run(acceptance_criteria, req.params.id)
+  if (task_id !== undefined) db.prepare('UPDATE milestones SET task_id = ? WHERE id = ?').run(task_id, req.params.id)
+  res.json({ ok: true })
+})
+
+// Delete milestone
+app.delete('/api/milestones/:id', (req, res) => {
+  db.prepare('DELETE FROM milestones WHERE id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+// AI-generate roadmap for a project goal
+app.post('/api/projects-v2/:id/generate-roadmap', async (req, res) => {
+  const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  const agentsJson = JSON.stringify(agents.map(a => ({ id: a.id, name: a.name, role: a.role })))
+
+  try {
+    const response = await callClaude({
+      system: `You are a project planner for Hive, an AI agent platform with 6 agents:
+${agentsJson}
+
+Given a project goal, create a concrete roadmap of 4-8 milestones that agents can execute.
+Each milestone should:
+- Have a clear, actionable title
+- Be assigned to the most appropriate agent
+- Have specific acceptance criteria (what "done" looks like — must involve tool usage and real output)
+- List dependencies (which milestones must complete first)
+
+Output ONLY a valid JSON array:
+[{"title": "...", "description": "...", "agent_id": "scout|forge|quill|dealer|oracle|nexus", "acceptance_criteria": "...", "depends_on_indices": []}]
+
+depends_on_indices is an array of 0-based indices of milestones that must complete first (empty for the first milestone).
+Keep it practical — each milestone should be completable in 1-3 agent tasks.`,
+      messages: [{ role: 'user', content: `Project: ${project.name}\nGoal: ${project.goal}\n${project.pillar ? `Business pillar: ${project.pillar}` : ''}\n${project.target_date ? `Target date: ${project.target_date}` : ''}` }],
+      max_tokens: 2000
+    }, 'nexus')
+
+    // Parse the JSON from response
+    const text = response.content?.[0]?.text || response.choices?.[0]?.message?.content || ''
+    const jsonMatch = text.match(/\[[\s\S]*\]/)
+    if (!jsonMatch) return res.status(500).json({ error: 'Failed to parse roadmap', raw: text })
+
+    const milestones = JSON.parse(jsonMatch[0])
+
+    // Clear existing milestones
+    db.prepare('DELETE FROM milestones WHERE project_id = ?').run(project.id)
+
+    // Insert new milestones
+    const ids = []
+    milestones.forEach((m, i) => {
+      const id = crypto.randomUUID()
+      ids.push(id)
+      const depsIndices = m.depends_on_indices || []
+      // We'll update depends_on with actual IDs after all are created
+      db.prepare('INSERT INTO milestones (id, project_id, title, description, agent_id, sort_order, depends_on, acceptance_criteria) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+        id, project.id, m.title, m.description || '', m.agent_id || 'scout', i, '[]', m.acceptance_criteria || ''
+      )
+    })
+
+    // Now update depends_on with real IDs
+    milestones.forEach((m, i) => {
+      const depsIndices = m.depends_on_indices || []
+      const depIds = depsIndices.filter(idx => idx < ids.length).map(idx => ids[idx])
+      if (depIds.length > 0) {
+        db.prepare('UPDATE milestones SET depends_on = ? WHERE id = ?').run(JSON.stringify(depIds), ids[i])
+      }
+    })
+
+    db.prepare('UPDATE projects SET status = \'active\', updated_at = datetime(\'now\') WHERE id = ?').run(project.id)
+
+    res.json({ milestones: milestones.length, ids })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Execute next milestone — creates a task from the milestone and links them
+app.post('/api/milestones/:id/execute', async (req, res) => {
+  const ms = db.prepare('SELECT * FROM milestones WHERE id = ?').get(req.params.id)
+  if (!ms) return res.status(404).json({ error: 'Milestone not found' })
+  if (ms.status === 'done') return res.status(400).json({ error: 'Already completed' })
+
+  const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(ms.project_id)
+
+  // Check dependencies
+  const deps = JSON.parse(ms.depends_on || '[]')
+  if (deps.length > 0) {
+    const incomplete = deps.filter(depId => {
+      const dep = db.prepare('SELECT status FROM milestones WHERE id = ?').get(depId)
+      return dep && dep.status !== 'done'
+    })
+    if (incomplete.length > 0) return res.status(400).json({ error: 'Dependencies not met', blocked_by: incomplete })
+  }
+
+  // Create task
+  const taskId = crypto.randomUUID()
+  const description = `## Project: ${project?.name || 'Unknown'}\n## Milestone: ${ms.title}\n\n${ms.description}\n\n### Acceptance Criteria\n${ms.acceptance_criteria}\n\n**You MUST use tools to produce real output. Text-only responses will fail this milestone.**`
+
+  db.prepare('INSERT INTO tasks (id, title, description, agent_id, status, project_id, milestone_id) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+    taskId, `[${project?.name || 'Project'}] ${ms.title}`, description, ms.agent_id || 'scout', 'todo', ms.project_id, ms.id
+  )
+
+  // Link milestone to task and mark in_progress
+  db.prepare('UPDATE milestones SET task_id = ?, status = \'in_progress\' WHERE id = ?').run(taskId, ms.id)
+
+  // Run the task
+  try {
+    await fetch(`http://localhost:${process.env.API_PORT || 3002}/api/tasks/${taskId}/run`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${process.env.HIVE_API_KEY}`, 'Content-Type': 'application/json' }
+    })
+  } catch { /* fire and forget */ }
+
+  res.json({ task_id: taskId, milestone_id: ms.id })
 })
 
 // ── Global Search ─────────────────────────────────

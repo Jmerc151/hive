@@ -18,7 +18,7 @@ const NAV_GROUPS = [
     label: 'Work',
     items: [
       { key: 'deliverables', icon: '\u25A6', label: 'Deliverables' },
-      { key: 'projects',     icon: '\u25A4', label: 'Projects' },
+      { key: 'projects',     icon: '\u25A4', label: 'Roadmap' },
       { key: 'pipelines',    icon: '\u22B6', label: 'Pipelines' },
       { key: 'schedule',     icon: '\u229E', label: 'Schedule' },
     ]

@@ -178,6 +178,18 @@ export const api = {
   unassignSkill: (agentId, slug) => request(`/agents/${agentId}/skills-v2/${slug}`, { method: 'DELETE' }),
   toggleSkillV2: (agentId, slug, data) => request(`/agents/${agentId}/skills-v2/${slug}`, { method: 'PATCH', body: data }),
 
+  // Projects V2 (Roadmap)
+  getProjectsV2: () => request('/projects-v2'),
+  getProjectV2: (id) => request(`/projects-v2/${id}`),
+  createProjectV2: (data) => request('/projects-v2', { method: 'POST', body: data }),
+  updateProjectV2: (id, data) => request(`/projects-v2/${id}`, { method: 'PATCH', body: data }),
+  deleteProjectV2: (id) => request(`/projects-v2/${id}`, { method: 'DELETE' }),
+  addMilestone: (projectId, data) => request(`/projects-v2/${projectId}/milestones`, { method: 'POST', body: data }),
+  updateMilestone: (id, data) => request(`/milestones/${id}`, { method: 'PATCH', body: data }),
+  deleteMilestone: (id) => request(`/milestones/${id}`, { method: 'DELETE' }),
+  generateRoadmap: (projectId) => request(`/projects-v2/${projectId}/generate-roadmap`, { method: 'POST' }),
+  executeMilestone: (id) => request(`/milestones/${id}/execute`, { method: 'POST' }),
+
   // Scorecards
   getScorecard: (agentId) => request(`/agents/${agentId}/scorecard`),
   getScoreboards: () => request('/scorecards'),

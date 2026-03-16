@@ -517,6 +517,41 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_combo ON strategy_meta(indicator_combo);
 `)
 
+// Projects + Roadmaps — goal-driven task planning
+db.exec(`
+  CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    status TEXT DEFAULT 'active' CHECK(status IN ('draft','active','paused','completed','archived')),
+    pillar TEXT DEFAULT '' CHECK(pillar IN ('','ember','hive','trading')),
+    target_date TEXT,
+    progress REAL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS milestones (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    agent_id TEXT,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending','in_progress','done','blocked','skipped')),
+    sort_order INTEGER DEFAULT 0,
+    depends_on TEXT DEFAULT '[]',
+    acceptance_criteria TEXT DEFAULT '',
+    task_id TEXT,
+    completed_at TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id, sort_order);
+`)
+
+// Migration: add project_id to tasks
+try { db.exec(`ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
+try { db.exec(`ALTER TABLE tasks ADD COLUMN milestone_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
+
 // Default settings
 const defaults = {
   daily_limit_usd: '5.00',
