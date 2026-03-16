@@ -1749,78 +1749,187 @@ const TOOL_REGISTRY = [
   },
   {
     name: 'search_skills',
-    description: 'Search for AI agent skills on SkillsMP, ClawHub, and GitHub. Returns installable SKILL.md skills that can enhance agent capabilities.',
+    description: 'Search for AI agent skills on skills.sh marketplace, GitHub, and internal registry. Returns installable SKILL.md skills that can enhance agent capabilities.',
     params: {
       query: { type: 'string', required: true, description: 'Search query (e.g. "trading bot", "web scraping", "email outreach")' },
-      source: { type: 'string', required: false, description: 'Source to search: skillsmp, github, or all (default: all)' }
+      source: { type: 'string', required: false, description: 'Source to search: skillssh, github, internal, or all (default: all)' }
     },
     agents: ['scout', 'nexus', 'forge'],
     execute: async (args) => {
       const results = []
-      const query = encodeURIComponent(args.query)
+      const query = args.query.toLowerCase()
+      const queryEncoded = encodeURIComponent(args.query)
       const source = args.source || 'all'
       try {
+        // Search skills.sh marketplace (scrape leaderboard page)
+        if (source === 'all' || source === 'skillssh') {
+          try {
+            const sshRes = await fetch('https://skills.sh', {
+              headers: { 'User-Agent': 'Hive-Agent/1.0', 'Accept': 'text/html' }
+            })
+            if (sshRes.ok) {
+              const html = await sshRes.text()
+              // Extract skill entries from the page — look for repo/skill patterns
+              const skillPattern = /href="\/([^"]+?)\/([^"]+?)\/([^"]+?)"/g
+              const seen = new Set()
+              let match
+              while ((match = skillPattern.exec(html)) !== null) {
+                const [, owner, repo, skill] = match
+                if (owner === 'audits' || owner === 'docs' || seen.has(`${owner}/${repo}/${skill}`)) continue
+                seen.add(`${owner}/${repo}/${skill}`)
+                const fullName = `${owner}/${repo}/${skill}`
+                if (fullName.toLowerCase().includes(query) || skill.toLowerCase().includes(query) || owner.toLowerCase().includes(query)) {
+                  results.push({
+                    name: skill,
+                    repo: `${owner}/${repo}`,
+                    url: `https://skills.sh/${owner}/${repo}/${skill}`,
+                    install_url: `https://raw.githubusercontent.com/${owner}/${repo}/main/skills/${skill}/SKILL.md`,
+                    source: 'skills.sh'
+                  })
+                }
+              }
+              // If no query matches, still return top results from page
+              if (results.length === 0 && (source === 'skillssh')) {
+                const allSkills = [...seen].slice(0, 10).map(key => {
+                  const [owner, repo, skill] = key.split('/')
+                  return {
+                    name: skill,
+                    repo: `${owner}/${repo}`,
+                    url: `https://skills.sh/${owner}/${repo}/${skill}`,
+                    install_url: `https://raw.githubusercontent.com/${owner}/${repo}/main/skills/${skill}/SKILL.md`,
+                    source: 'skills.sh'
+                  }
+                })
+                results.push(...allSkills)
+              }
+            }
+          } catch (e) { /* skills.sh may be unavailable */ }
+        }
         // Search GitHub for SKILL.md files
         if (source === 'all' || source === 'github') {
-          const ghRes = await fetch(`https://api.github.com/search/code?q=${query}+filename:SKILL.md&per_page=10`, {
-            headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'Hive-Agent/1.0' }
-          })
-          if (ghRes.ok) {
-            const ghData = await ghRes.json()
-            for (const item of (ghData.items || []).slice(0, 5)) {
-              results.push({
-                name: item.repository.full_name,
-                path: item.path,
-                url: item.html_url,
-                source: 'github',
-                stars: item.repository.stargazers_count || 0,
-                description: item.repository.description || ''
-              })
-            }
-          }
-        }
-        // Search SkillsMP API
-        if (source === 'all' || source === 'skillsmp') {
           try {
-            const smpRes = await fetch(`https://skillsmp.com/api/search?q=${query}&limit=5`, {
-              headers: { 'User-Agent': 'Hive-Agent/1.0' }
+            const ghRes = await fetch(`https://api.github.com/search/code?q=${queryEncoded}+filename:SKILL.md&per_page=10`, {
+              headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'Hive-Agent/1.0' }
             })
-            if (smpRes.ok) {
-              const smpData = await smpRes.json()
-              for (const skill of (smpData.skills || smpData.results || []).slice(0, 5)) {
+            if (ghRes.ok) {
+              const ghData = await ghRes.json()
+              for (const item of (ghData.items || []).slice(0, 5)) {
                 results.push({
-                  name: skill.name || skill.title,
-                  description: skill.description || '',
-                  url: skill.url || `https://skillsmp.com/skills/${skill.slug || skill.id}`,
-                  source: 'skillsmp',
-                  tags: skill.tags || [],
-                  author: skill.author || ''
+                  name: item.repository.full_name,
+                  path: item.path,
+                  url: item.html_url,
+                  install_url: `https://raw.githubusercontent.com/${item.repository.full_name}/main/${item.path}`,
+                  source: 'github',
+                  stars: item.repository.stargazers_count || 0,
+                  description: item.repository.description || ''
                 })
               }
             }
-          } catch (e) { /* SkillsMP may not have public API yet */ }
+          } catch (e) { /* GitHub API may be rate-limited */ }
         }
-        return { results, count: results.length, query: args.query }
+        // Search internal skills registry
+        if (source === 'all' || source === 'internal') {
+          try {
+            const internal = db.prepare('SELECT slug, name, description, tags, source FROM skills WHERE name LIKE ? OR description LIKE ? OR tags LIKE ? LIMIT 5')
+              .all(`%${args.query}%`, `%${args.query}%`, `%${args.query}%`)
+            for (const s of internal) {
+              results.push({ name: s.name, slug: s.slug, description: s.description, tags: JSON.parse(s.tags || '[]'), source: 'installed', already_installed: true })
+            }
+          } catch {}
+        }
+        return { results, count: results.length, query: args.query, tip: 'Use install_skill with the install_url to add any skill to Hive' }
       } catch (e) { return { error: e.message, results: [] } }
     }
   },
   {
-    name: 'install_skill',
-    description: 'Install a SKILL.md skill from a GitHub URL. Downloads the skill content and saves it to the skills database for agent use.',
+    name: 'browse_skills_marketplace',
+    description: 'Browse trending and popular AI agent skills from skills.sh marketplace. Great for discovering new capabilities to install.',
     params: {
-      url: { type: 'string', required: true, description: 'GitHub raw URL or repo URL containing SKILL.md' },
-      agent_ids: { type: 'string', required: false, description: 'Comma-separated agent IDs to assign skill to (default: auto-detect from skill)' }
+      category: { type: 'string', required: false, description: 'Optional filter: "trending", "popular", or a keyword like "coding", "research", "writing"' }
     },
-    agents: ['nexus', 'forge'],
+    agents: ['scout', 'nexus', 'forge'],
     execute: async (args) => {
       try {
-        // Convert GitHub URL to raw content URL
+        const res = await fetch('https://skills.sh', {
+          headers: { 'User-Agent': 'Hive-Agent/1.0', 'Accept': 'text/html' }
+        })
+        if (!res.ok) return { error: `skills.sh returned ${res.status}` }
+        const html = await res.text()
+        const skills = []
+        const seen = new Set()
+        // Extract skill links and their context
+        const skillPattern = /href="\/([^"]+?)\/([^"]+?)\/([^"]+?)"/g
+        let match
+        while ((match = skillPattern.exec(html)) !== null) {
+          const [, owner, repo, skill] = match
+          if (owner === 'audits' || owner === 'docs' || owner === '_next' || seen.has(`${owner}/${repo}/${skill}`)) continue
+          seen.add(`${owner}/${repo}/${skill}`)
+          skills.push({
+            name: skill,
+            repo: `${owner}/${repo}`,
+            url: `https://skills.sh/${owner}/${repo}/${skill}`,
+            install_url: `https://raw.githubusercontent.com/${owner}/${repo}/main/skills/${skill}/SKILL.md`
+          })
+        }
+        // Filter by category keyword if provided
+        let filtered = skills
+        if (args.category && args.category !== 'trending' && args.category !== 'popular') {
+          const kw = args.category.toLowerCase()
+          filtered = skills.filter(s => s.name.toLowerCase().includes(kw) || s.repo.toLowerCase().includes(kw))
+        }
+        return {
+          skills: filtered.slice(0, 15),
+          total_found: filtered.length,
+          marketplace: 'skills.sh',
+          tip: 'Use install_skill with the install_url to add any of these skills to Hive'
+        }
+      } catch (e) { return { error: e.message } }
+    }
+  },
+  {
+    name: 'install_skill',
+    description: 'Install a SKILL.md skill from a URL. Supports GitHub URLs, raw GitHub URLs, and skills.sh marketplace URLs.',
+    params: {
+      url: { type: 'string', required: true, description: 'GitHub URL, raw GitHub URL, or skills.sh URL (e.g. "https://skills.sh/vercel-labs/skills/find-skills")' },
+      agent_ids: { type: 'string', required: false, description: 'Comma-separated agent IDs to assign skill to (default: auto-detect from skill)' }
+    },
+    agents: ['nexus', 'forge', 'scout'],
+    execute: async (args) => {
+      try {
         let rawUrl = args.url
+        // Convert skills.sh URL to raw GitHub URL
+        // Format: skills.sh/owner/repo/skill-name → raw.githubusercontent.com/owner/repo/main/skills/skill-name/SKILL.md
+        if (rawUrl.includes('skills.sh/')) {
+          const sshMatch = rawUrl.match(/skills\.sh\/([^/]+)\/([^/]+)\/([^/]+)/)
+          if (sshMatch) {
+            const [, owner, repo, skill] = sshMatch
+            // Try skills/ subdirectory first, then root SKILL.md
+            rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/main/skills/${skill}/SKILL.md`
+          }
+        }
+        // Convert GitHub URL to raw content URL
         if (rawUrl.includes('github.com') && !rawUrl.includes('raw.githubusercontent.com')) {
           rawUrl = rawUrl.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/')
         }
-        const res = await fetch(rawUrl, { headers: { 'User-Agent': 'Hive-Agent/1.0' } })
-        if (!res.ok) return { error: `Failed to fetch skill: ${res.status}` }
+        let res = await fetch(rawUrl, { headers: { 'User-Agent': 'Hive-Agent/1.0' } })
+        // Fallback: if skills/name/SKILL.md 404s, try root SKILL.md or name/SKILL.md
+        if (!res.ok && args.url.includes('skills.sh/')) {
+          const sshMatch = args.url.match(/skills\.sh\/([^/]+)\/([^/]+)\/([^/]+)/)
+          if (sshMatch) {
+            const [, owner, repo, skill] = sshMatch
+            const fallbacks = [
+              `https://raw.githubusercontent.com/${owner}/${repo}/main/${skill}/SKILL.md`,
+              `https://raw.githubusercontent.com/${owner}/${repo}/main/SKILL.md`,
+              `https://raw.githubusercontent.com/${owner}/${repo}/master/skills/${skill}/SKILL.md`,
+              `https://raw.githubusercontent.com/${owner}/${repo}/master/SKILL.md`
+            ]
+            for (const fb of fallbacks) {
+              res = await fetch(fb, { headers: { 'User-Agent': 'Hive-Agent/1.0' } })
+              if (res.ok) { rawUrl = fb; break }
+            }
+          }
+        }
+        if (!res.ok) return { error: `Failed to fetch skill: ${res.status} from ${rawUrl}` }
         const content = await res.text()
         if (content.length < 10) return { error: 'Empty or invalid SKILL.md content' }
 
