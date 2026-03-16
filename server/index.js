@@ -1749,10 +1749,10 @@ const TOOL_REGISTRY = [
   },
   {
     name: 'search_skills',
-    description: 'Search for AI agent skills on skills.sh marketplace, GitHub, and internal registry. Returns installable SKILL.md skills that can enhance agent capabilities.',
+    description: 'Search for AI agent skills on skills.sh, agent-skills.md (27K+ skills), GitHub, and internal registry. Returns installable SKILL.md skills.',
     params: {
       query: { type: 'string', required: true, description: 'Search query (e.g. "trading bot", "web scraping", "email outreach")' },
-      source: { type: 'string', required: false, description: 'Source to search: skillssh, github, internal, or all (default: all)' }
+      source: { type: 'string', required: false, description: 'Source to search: skillssh, agentskills, github, internal, or all (default: all)' }
     },
     agents: ['scout', 'nexus', 'forge'],
     execute: async (args) => {
@@ -1805,6 +1805,62 @@ const TOOL_REGISTRY = [
             }
           } catch (e) { /* skills.sh may be unavailable */ }
         }
+        // Search agent-skills.md directory (27K+ skills)
+        if (source === 'all' || source === 'agentskills') {
+          try {
+            // Search by tag (most reliable) — convert query to tag format
+            const tag = args.query.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
+            const tagRes = await fetch(`https://agent-skills.md/tags/${tag}`, {
+              headers: { 'User-Agent': 'Hive-Agent/1.0', 'Accept': 'text/html' }
+            })
+            if (tagRes.ok) {
+              const html = await tagRes.text()
+              // Extract skill links: /skills/author/repo/skill-name
+              const pattern = /href="\/skills\/([^"]+?)\/([^"]+?)\/([^"]+?)"/g
+              const seen = new Set()
+              let m
+              while ((m = pattern.exec(html)) !== null) {
+                const [, author, repo, skill] = m
+                const key = `${author}/${repo}/${skill}`
+                if (seen.has(key)) continue
+                seen.add(key)
+                results.push({
+                  name: skill,
+                  author,
+                  repo: `${author}/${repo}`,
+                  url: `https://agent-skills.md/skills/${key}`,
+                  install_url: `https://raw.githubusercontent.com/${author}/${repo}/main/skills/${skill}/SKILL.md`,
+                  source: 'agent-skills.md'
+                })
+              }
+            }
+            // Also try the main page with keyword matching if tag search returned nothing for this source
+            if (results.filter(r => r.source === 'agent-skills.md').length === 0) {
+              const mainRes = await fetch('https://agent-skills.md', {
+                headers: { 'User-Agent': 'Hive-Agent/1.0', 'Accept': 'text/html' }
+              })
+              if (mainRes.ok) {
+                const html = await mainRes.text()
+                const pattern = /href="\/skills\/([^"]+?)\/([^"]+?)\/([^"]+?)"/g
+                let m
+                while ((m = pattern.exec(html)) !== null) {
+                  const [, author, repo, skill] = m
+                  const key = `${author}/${repo}/${skill}`
+                  if (skill.includes(query) || repo.includes(query) || author.includes(query)) {
+                    results.push({
+                      name: skill,
+                      author,
+                      repo: `${author}/${repo}`,
+                      url: `https://agent-skills.md/skills/${key}`,
+                      install_url: `https://raw.githubusercontent.com/${author}/${repo}/main/skills/${skill}/SKILL.md`,
+                      source: 'agent-skills.md'
+                    })
+                  }
+                }
+              }
+            }
+          } catch (e) { /* agent-skills.md may be unavailable */ }
+        }
         // Search GitHub for SKILL.md files
         if (source === 'all' || source === 'github') {
           try {
@@ -1843,44 +1899,80 @@ const TOOL_REGISTRY = [
   },
   {
     name: 'browse_skills_marketplace',
-    description: 'Browse trending and popular AI agent skills from skills.sh marketplace. Great for discovering new capabilities to install.',
+    description: 'Browse trending/popular AI agent skills from skills.sh and agent-skills.md (27K+ skills). Discover new capabilities to install.',
     params: {
-      category: { type: 'string', required: false, description: 'Optional filter: "trending", "popular", or a keyword like "coding", "research", "writing"' }
+      category: { type: 'string', required: false, description: 'Optional filter: "trending", "popular", or a keyword/tag like "coding", "research", "marketing", "UI", "React"' },
+      marketplace: { type: 'string', required: false, description: 'Which marketplace: "skillssh", "agentskills", or "all" (default: all)' }
     },
     agents: ['scout', 'nexus', 'forge'],
     execute: async (args) => {
+      const allSkills = []
+      const mp = args.marketplace || 'all'
       try {
-        const res = await fetch('https://skills.sh', {
-          headers: { 'User-Agent': 'Hive-Agent/1.0', 'Accept': 'text/html' }
-        })
-        if (!res.ok) return { error: `skills.sh returned ${res.status}` }
-        const html = await res.text()
-        const skills = []
-        const seen = new Set()
-        // Extract skill links and their context
-        const skillPattern = /href="\/([^"]+?)\/([^"]+?)\/([^"]+?)"/g
-        let match
-        while ((match = skillPattern.exec(html)) !== null) {
-          const [, owner, repo, skill] = match
-          if (owner === 'audits' || owner === 'docs' || owner === '_next' || seen.has(`${owner}/${repo}/${skill}`)) continue
-          seen.add(`${owner}/${repo}/${skill}`)
-          skills.push({
-            name: skill,
-            repo: `${owner}/${repo}`,
-            url: `https://skills.sh/${owner}/${repo}/${skill}`,
-            install_url: `https://raw.githubusercontent.com/${owner}/${repo}/main/skills/${skill}/SKILL.md`
-          })
+        // skills.sh
+        if (mp === 'all' || mp === 'skillssh') {
+          try {
+            const res = await fetch('https://skills.sh', {
+              headers: { 'User-Agent': 'Hive-Agent/1.0', 'Accept': 'text/html' }
+            })
+            if (res.ok) {
+              const html = await res.text()
+              const seen = new Set()
+              const skillPattern = /href="\/([^"]+?)\/([^"]+?)\/([^"]+?)"/g
+              let match
+              while ((match = skillPattern.exec(html)) !== null) {
+                const [, owner, repo, skill] = match
+                if (owner === 'audits' || owner === 'docs' || owner === '_next' || seen.has(`${owner}/${repo}/${skill}`)) continue
+                seen.add(`${owner}/${repo}/${skill}`)
+                allSkills.push({
+                  name: skill, repo: `${owner}/${repo}`,
+                  url: `https://skills.sh/${owner}/${repo}/${skill}`,
+                  install_url: `https://raw.githubusercontent.com/${owner}/${repo}/main/skills/${skill}/SKILL.md`,
+                  source: 'skills.sh'
+                })
+              }
+            }
+          } catch {}
+        }
+        // agent-skills.md (27K+ skills — browse by tag or main page)
+        if (mp === 'all' || mp === 'agentskills') {
+          try {
+            const tag = (args.category || '').toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
+            const url = tag && tag !== 'trending' && tag !== 'popular'
+              ? `https://agent-skills.md/tags/${tag}`
+              : 'https://agent-skills.md'
+            const res = await fetch(url, { headers: { 'User-Agent': 'Hive-Agent/1.0', 'Accept': 'text/html' } })
+            if (res.ok) {
+              const html = await res.text()
+              const pattern = /href="\/skills\/([^"]+?)\/([^"]+?)\/([^"]+?)"/g
+              const seen = new Set()
+              let m
+              while ((m = pattern.exec(html)) !== null) {
+                const [, author, repo, skill] = m
+                const key = `${author}/${repo}/${skill}`
+                if (seen.has(key)) continue
+                seen.add(key)
+                allSkills.push({
+                  name: skill, author, repo: `${author}/${repo}`,
+                  url: `https://agent-skills.md/skills/${key}`,
+                  install_url: `https://raw.githubusercontent.com/${author}/${repo}/main/skills/${skill}/SKILL.md`,
+                  source: 'agent-skills.md'
+                })
+              }
+            }
+          } catch {}
         }
         // Filter by category keyword if provided
-        let filtered = skills
+        let filtered = allSkills
         if (args.category && args.category !== 'trending' && args.category !== 'popular') {
           const kw = args.category.toLowerCase()
-          filtered = skills.filter(s => s.name.toLowerCase().includes(kw) || s.repo.toLowerCase().includes(kw))
+          const exact = allSkills.filter(s => s.name.toLowerCase().includes(kw) || (s.repo || '').toLowerCase().includes(kw))
+          if (exact.length > 0) filtered = exact
         }
         return {
-          skills: filtered.slice(0, 15),
+          skills: filtered.slice(0, 20),
           total_found: filtered.length,
-          marketplace: 'skills.sh',
+          marketplaces: ['skills.sh', 'agent-skills.md'],
           tip: 'Use install_skill with the install_url to add any of these skills to Hive'
         }
       } catch (e) { return { error: e.message } }
@@ -1888,15 +1980,24 @@ const TOOL_REGISTRY = [
   },
   {
     name: 'install_skill',
-    description: 'Install a SKILL.md skill from a URL. Supports GitHub URLs, raw GitHub URLs, and skills.sh marketplace URLs.',
+    description: 'Install a SKILL.md skill from a URL. Supports GitHub, raw GitHub, skills.sh, and agent-skills.md URLs.',
     params: {
-      url: { type: 'string', required: true, description: 'GitHub URL, raw GitHub URL, or skills.sh URL (e.g. "https://skills.sh/vercel-labs/skills/find-skills")' },
+      url: { type: 'string', required: true, description: 'GitHub URL, skills.sh URL, or agent-skills.md URL (e.g. "https://agent-skills.md/skills/author/repo/skill")' },
       agent_ids: { type: 'string', required: false, description: 'Comma-separated agent IDs to assign skill to (default: auto-detect from skill)' }
     },
     agents: ['nexus', 'forge', 'scout'],
     execute: async (args) => {
       try {
         let rawUrl = args.url
+        // Convert agent-skills.md URL to raw GitHub URL
+        // Format: agent-skills.md/skills/author/repo/skill → raw.githubusercontent.com/author/repo/main/skills/skill/SKILL.md
+        if (rawUrl.includes('agent-skills.md/')) {
+          const asmMatch = rawUrl.match(/agent-skills\.md\/skills\/([^/]+)\/([^/]+)\/([^/]+)/)
+          if (asmMatch) {
+            const [, author, repo, skill] = asmMatch
+            rawUrl = `https://raw.githubusercontent.com/${author}/${repo}/main/skills/${skill}/SKILL.md`
+          }
+        }
         // Convert skills.sh URL to raw GitHub URL
         // Format: skills.sh/owner/repo/skill-name → raw.githubusercontent.com/owner/repo/main/skills/skill-name/SKILL.md
         if (rawUrl.includes('skills.sh/')) {
@@ -1912,13 +2013,16 @@ const TOOL_REGISTRY = [
           rawUrl = rawUrl.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/')
         }
         let res = await fetch(rawUrl, { headers: { 'User-Agent': 'Hive-Agent/1.0' } })
-        // Fallback: if skills/name/SKILL.md 404s, try root SKILL.md or name/SKILL.md
-        if (!res.ok && args.url.includes('skills.sh/')) {
-          const sshMatch = args.url.match(/skills\.sh\/([^/]+)\/([^/]+)\/([^/]+)/)
-          if (sshMatch) {
-            const [, owner, repo, skill] = sshMatch
+        // Fallback: if skills/name/SKILL.md 404s, try alternative paths
+        if (!res.ok) {
+          // Extract owner/repo/skill from any marketplace URL
+          const urlMatch = args.url.match(/(?:skills\.sh|agent-skills\.md\/skills)\/([^/]+)\/([^/]+)\/([^/]+)/)
+          if (urlMatch) {
+            const [, owner, repo, skill] = urlMatch
             const fallbacks = [
               `https://raw.githubusercontent.com/${owner}/${repo}/main/${skill}/SKILL.md`,
+              `https://raw.githubusercontent.com/${owner}/${repo}/main/.claude/skills/${skill}/SKILL.md`,
+              `https://raw.githubusercontent.com/${owner}/${repo}/main/.agents/skills/${skill}/SKILL.md`,
               `https://raw.githubusercontent.com/${owner}/${repo}/main/SKILL.md`,
               `https://raw.githubusercontent.com/${owner}/${repo}/master/skills/${skill}/SKILL.md`,
               `https://raw.githubusercontent.com/${owner}/${repo}/master/SKILL.md`
