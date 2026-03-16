@@ -621,7 +621,7 @@ const TOOL_REGISTRY = [
   },
   {
     name: 'create_task',
-    description: 'Create a new task for any agent',
+    description: 'Create a new task for any agent. Tasks MUST relate to one of our 3 pillars: Ember (restaurant SaaS), Hive (AI agent platform), or Trading (Alpaca).',
     params: {
       agent_id: { type: 'string', required: true, description: 'Agent to assign: scout, forge, quill, dealer, oracle, nexus' },
       title: { type: 'string', required: true, description: 'Task title' },
@@ -630,6 +630,18 @@ const TOOL_REGISTRY = [
     },
     agents: ['nexus', 'scout', 'forge', 'quill', 'dealer', 'oracle'],
     execute: async (args, ctx) => {
+      // ANTI-SPIRAL: block off-topic tasks
+      const titleLower = (args.title + ' ' + (args.description || '')).toLowerCase()
+      const BLOCKED_TOPICS = ['healthcare', 'hipaa', 'hospital', 'ciso', 'credential validation', 'infrastructure blocker',
+        'enterprise outreach', 'security incident', 'credential restoration', 'compliance audit', 'api sentinel',
+        'chrome web store', 'chrome extension', 'forensic audit', 'credential harvesting', 'production credential']
+      const blocked = BLOCKED_TOPICS.find(t => titleLower.includes(t))
+      if (blocked) return { error: `Blocked: "${blocked}" is not one of our business pillars (Ember, Hive, Trading). Only create tasks for those 3 areas.` }
+
+      // ANTI-SPIRAL: max 10 agent-created tasks per day
+      const todayAgentTasks = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE spawned_by IS NOT NULL AND created_at >= datetime('now', '-24 hours')").get().c
+      if (todayAgentTasks >= 10) return { error: 'Daily auto-task limit reached (10/day). Wait for existing tasks to complete.' }
+
       const id = uuid()
       const parentId = ctx?.taskId || ''
       db.prepare('INSERT INTO tasks (id, title, description, agent_id, priority, status, spawned_by) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
@@ -2140,8 +2152,28 @@ async function generateFollowUpTasks(completedTask, agent, output) {
   try {
     // Cap: don't generate more if queue is already full
     const pendingCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo', 'in_progress')").get().c
-    if (pendingCount >= 15) {
-      console.log(`⏸️ Skipping follow-up generation — ${pendingCount} tasks already pending (max 15)`)
+    if (pendingCount >= 10) {
+      console.log(`⏸️ Skipping follow-up generation — ${pendingCount} tasks already pending (max 10)`)
+      return
+    }
+
+    // ANTI-SPIRAL: max 5 auto-generated tasks per day
+    const todayAutoCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE spawned_by IS NOT NULL AND created_at >= datetime('now', '-24 hours')").get().c
+    if (todayAutoCount >= 5) {
+      console.log(`⏸️ Skipping follow-up — ${todayAutoCount} auto-tasks today (max 5/day)`)
+      return
+    }
+
+    // ANTI-SPIRAL: don't chain more than 3 deep
+    let depth = 0, parentId = completedTask.spawned_by
+    while (parentId && depth < 5) {
+      const parent = db.prepare('SELECT spawned_by FROM tasks WHERE id = ?').get(parentId)
+      if (!parent) break
+      parentId = parent.spawned_by
+      depth++
+    }
+    if (depth >= 3) {
+      console.log(`⏸️ Skipping follow-up — chain depth ${depth} (max 3)`)
       return
     }
 
@@ -2156,11 +2188,18 @@ async function generateFollowUpTasks(completedTask, agent, output) {
 Available agents:
 ${agents.map(a => `- ${a.id}: ${a.name} — ${a.role}`).join('\n')}
 
+OUR THREE BUSINESS PILLARS (only generate tasks for these):
+1. EMBER — Restaurant kitchen SaaS (sous-frontend.vercel.app). Find restaurant leads, build features, write sales content.
+2. HIVE — This AI agent platform. Build the 6 features in the build queue, create landing page, find users.
+3. TRADING — Alpaca paper trading on SPY/QQQ. Execute trades, backtest strategies, analyze markets.
+
 Rules:
 - Generate EXACTLY 1 task, not 2 or 3
 - The task must be DIRECTLY actionable — not "research" or "analyze" unless that research produces a specific deliverable
 - Do NOT create tasks similar to any existing task in the list below
 - Do NOT create meta-tasks (tracking systems, dashboards, frameworks, playbooks)
+- Do NOT create tasks about healthcare, enterprise, infrastructure validation, or credential management
+- MUST relate to one of the 3 pillars above
 - Focus on tasks that DIRECTLY generate income: place a trade, submit a proposal, publish content, build a product
 
 Respond with ONLY valid JSON array with 1 object: [{title, description, agent_id, priority}]`,
