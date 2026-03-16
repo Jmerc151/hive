@@ -6263,6 +6263,11 @@ app.get('/api/health', (req, res) => {
   })
 })
 
+// ── Serve landing page (no auth) ─────────────────
+app.get('/landing', (req, res) => {
+  res.sendFile(join(__dirname, '..', 'public', 'landing.html'))
+})
+
 // ── Serve static frontend ─────────────────────────
 const distPath = join(__dirname, '..', 'dist')
 if (existsSync(distPath)) {
