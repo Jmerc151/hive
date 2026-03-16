@@ -4975,16 +4975,26 @@ registerHeartbeat('skill-discovery', 7 * 24 * 60 * 60 * 1000, async () => {
 
   const existing = db.prepare('SELECT name FROM skills').all().map(s => s.name.toLowerCase())
   const id = uuid()
-  const description = `Search GitHub, Reddit, X, and AI forums for new agent skills and techniques.
+  const description = `Search GitHub, Reddit, X, HackerNews, and AI forums for new agent skills focused on OUR THREE business pillars.
 
 Currently installed skills: ${existing.join(', ') || 'none'}
 DO NOT suggest skills that duplicate the above.
 
-Search for:
-- GitHub repos with prompt engineering techniques or agent frameworks
-- Reddit r/ChatGPT, r/LocalLLaMA, r/artificial for new prompting patterns
-- X/Twitter threads about AI agent optimization
-- New research methodologies, content frameworks, sales templates
+OUR BUSINESS PILLARS — only search for skills that help with these:
+
+1. EMBER (Restaurant SaaS) — Kitchen Bible app for restaurant managers
+   - Search for: restaurant tech sales strategies, SaaS outreach templates, restaurant owner lead generation, B2B SaaS growth hacks, onboarding optimization, churn reduction
+   - Useful skills: cold email frameworks for SaaS, restaurant industry databases, Yelp/Google scraping for leads, demo booking workflows
+
+2. HIVE (AI Agent Platform) — autonomous AI agent dashboard we built
+   - Search for: AI agent marketplace strategies, developer tool marketing, open source monetization, SKILL.md format skills from ClawHub/SkillsMP, MCP server integration patterns
+   - Useful skills: Product Hunt launch playbooks, developer community outreach, AI tool comparison frameworks
+
+3. TRADING (Alpaca Paper Trading) — Oracle agent executes strategies on SPY/QQQ
+   - Search for: algorithmic trading strategies, options flow analysis, mean reversion setups, momentum indicators, Alpaca API advanced patterns
+   - Useful skills: earnings play strategies, sector rotation, volatility trading, news-driven trade signals
+
+DO NOT search for generic prompt engineering or AI theory. We need ACTIONABLE skills that help sell Ember, grow Hive, or make profitable trades.
 
 Output a JSON array of up to 5 skills:
 [{"name":"Skill Name","description":"What it does","skill_md":"# Skill Name\\n\\nDetailed step-by-step instructions...","tags":["tag1"],"suggested_agents":["scout"]}]`
