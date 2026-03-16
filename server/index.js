@@ -3290,7 +3290,7 @@ START WITH TOOL CALLS NOW.`
         callClaude({
           model: agentModel,
           max_tokens: 4096,
-          system: agent.systemPrompt + toolsPrompt + skillsContext + knowledgeContext,
+          system: `## BUSINESS FOCUS — 3 PILLARS ONLY\nAll work must relate to: (1) Ember — restaurant kitchen management SaaS, (2) Hive — this AI agent platform, (3) Trading — Alpaca paper trading strategies.\nDo NOT work on healthcare, enterprise outreach, credential validation, or anything outside these 3 pillars.\n\n` + agent.systemPrompt + toolsPrompt + skillsContext + knowledgeContext,
           messages,
           tools: toolsSchema || undefined,
         }, agent.id, task.id, abortController.signal),
