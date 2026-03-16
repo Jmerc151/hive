@@ -6153,8 +6153,8 @@ For queries, add a "query_type" field: "spend"|"tasks"|"intel"|"general".`,
     )
     res.json({ is_query: false, task: { id: taskId, ...parsed } })
   } catch (err) {
-    log('error', 'command_parse_failed', { error: err.message })
-    res.status(500).json({ error: 'Failed to parse command' })
+    log('error', 'command_parse_failed', { error: err.message, stack: err.stack?.slice(0, 300) })
+    res.status(500).json({ error: 'Failed to parse command', detail: err.message })
   }
 })
 
