@@ -346,17 +346,17 @@ export default function App() {
       <main className="flex-1 overflow-hidden flex flex-col min-w-0">
         {/* Topbar */}
         <header className="bg-s2 flex items-center gap-[10px] px-4 md:px-[20px] pt-3 pb-[10px] safe-top flex-shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
-          <h1 className="font-display text-[24px] text-t1 tracking-[2.5px] leading-none">DELIVERABLES</h1>
-          <span className="text-xs text-t4">
-            {tasks.length} outputs
-          </span>
+          <h1 className="font-display text-[22px] text-t1 tracking-[2px] leading-none">HIVE</h1>
           {activeCount > 0 && (
-            <div className="flex items-center gap-[5px] text-[11px] font-medium text-success px-[9px] py-[3px] rounded-[9px]" style={{ background: 'rgba(40,167,69,0.09)', border: '0.5px solid rgba(40,167,69,0.2)' }}>
+            <div className="flex items-center gap-[5px] text-[10px] font-medium text-success px-[7px] py-[3px] rounded-[8px]" style={{ background: 'rgba(40,167,69,0.09)', border: '0.5px solid rgba(40,167,69,0.2)' }}>
               <span className="w-[5px] h-[5px] rounded-full bg-success dot-pulse" />
               {activeCount} active
             </div>
           )}
-          <div className="flex-1" />
+          <div className="flex-1 hidden md:block max-w-md mx-auto">
+            <CommandBar agents={agents} onTaskCreated={() => refresh()} />
+          </div>
+          <div className="flex-1 md:hidden" />
           <SearchBar agents={agents} onSelectTask={setSelectedTask} />
         </header>
 

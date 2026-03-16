@@ -5923,19 +5923,19 @@ app.get('/api/history', (req, res) => {
 
 // ── Deliverables — finished agent work with real output ──
 app.get('/api/deliverables', (req, res) => {
-  const { agent, limit = 30, offset = 0 } = req.query
+  const { agent, limit = 30, offset = 0, quality, type: typeFilter } = req.query
   let where = "WHERE status = 'done' AND LENGTH(output) > 200"
   const params = []
   if (agent) { where += ' AND agent_id = ?'; params.push(agent) }
 
-  const total = db.prepare(`SELECT COUNT(*) as c FROM tasks ${where}`).get(...params).c
-  const tasks = db.prepare(`SELECT id, title, agent_id, output, evidence, spawned_by, tokens_used, estimated_cost, nexus_score, completed_at FROM tasks ${where} ORDER BY completed_at DESC LIMIT ? OFFSET ?`).all(...params, parseInt(limit), parseInt(offset))
+  const tasks = db.prepare(`SELECT id, title, agent_id, output, evidence, spawned_by, tokens_used, estimated_cost, nexus_score, completed_at FROM tasks ${where} ORDER BY completed_at DESC LIMIT 500`).all(...params)
 
   const deliverables = tasks.map(t => {
     const output = t.output || ''
     const hasTools = output.includes('[TOOL_RESULT')
     const hasCode = output.includes('```')
     const hasFiles = /(?:^#{1,3}\s+`?[\w\-/.]+\.\w+`?\s*$)/m.test(output)
+    const hasUrls = /https?:\/\/[^\s)]+/.test(output)
 
     // Determine type
     let type = 'text'
@@ -5958,13 +5958,36 @@ app.get('/api/deliverables', (req, res) => {
     let ev = {}
     try { ev = JSON.parse(t.evidence || '{}') } catch { /* empty */ }
 
+    // Quality scoring (0-100)
+    let qualityScore = 0
+    const toolsUsed = ev.tools_used || 0
+    if (toolsUsed >= 3) qualityScore += 30
+    else if (toolsUsed >= 1) qualityScore += 15
+    if (hasTools) qualityScore += 10
+    if (hasCode) qualityScore += 15
+    if (hasUrls) qualityScore += 10
+    if (hasFiles) qualityScore += 10
+    if (cleanOutput.length > 1000) qualityScore += 15
+    else if (cleanOutput.length > 500) qualityScore += 8
+    if (t.nexus_score >= 7) qualityScore += 15
+    else if (t.nexus_score >= 4) qualityScore += 5
+    // Penalize repetitive/low-substance output
+    const uniqueLines = new Set(cleanOutput.split('\n').map(l => l.trim()).filter(Boolean))
+    const totalLines = cleanOutput.split('\n').filter(l => l.trim()).length
+    if (totalLines > 5 && uniqueLines.size < totalLines * 0.5) qualityScore -= 20
+    // Penalize "I'll do X" without actually doing it
+    if (/^(I'll|I will|Let me|I'm going to)\s/i.test(cleanOutput) && toolsUsed === 0) qualityScore -= 15
+
+    const qualityTier = qualityScore >= 50 ? 'high' : qualityScore >= 25 ? 'medium' : 'low'
+
     return {
       id: t.id,
       title: t.title,
       agent_id: t.agent_id,
       type,
-      has_tools: hasTools || (ev.tools_used || 0) > 0,
+      has_tools: hasTools || toolsUsed > 0,
       has_code: hasCode,
+      has_urls: hasUrls,
       output_length: output.length,
       output: cleanOutput,
       tokens_used: t.tokens_used,
@@ -5972,11 +5995,40 @@ app.get('/api/deliverables', (req, res) => {
       score: t.nexus_score,
       completed_at: t.completed_at,
       evidence: ev,
-      spawned_by: t.spawned_by || null
+      spawned_by: t.spawned_by || null,
+      quality_score: Math.max(0, Math.min(100, qualityScore)),
+      quality_tier: qualityTier,
+      task_id: t.id
     }
   })
 
-  res.json({ deliverables, total })
+  // Filter by quality tier
+  let filtered = deliverables
+  if (quality === 'high') filtered = deliverables.filter(d => d.quality_tier === 'high')
+  else if (quality === 'medium') filtered = deliverables.filter(d => d.quality_tier !== 'low')
+  else if (quality === 'substantive') filtered = deliverables.filter(d => d.quality_score >= 25)
+
+  // Filter by type
+  if (typeFilter) filtered = filtered.filter(d => d.type === typeFilter)
+
+  const total = filtered.length
+  const paged = filtered.slice(parseInt(offset), parseInt(offset) + parseInt(limit))
+
+  // Stats for frontend
+  const stats = {
+    total: deliverables.length,
+    high: deliverables.filter(d => d.quality_tier === 'high').length,
+    medium: deliverables.filter(d => d.quality_tier === 'medium').length,
+    low: deliverables.filter(d => d.quality_tier === 'low').length,
+    byAgent: {},
+    byType: {}
+  }
+  deliverables.forEach(d => {
+    stats.byAgent[d.agent_id] = (stats.byAgent[d.agent_id] || 0) + 1
+    stats.byType[d.type] = (stats.byType[d.type] || 0) + 1
+  })
+
+  res.json({ deliverables: paged, total, stats })
 })
 
 // ── Global Search ─────────────────────────────────
