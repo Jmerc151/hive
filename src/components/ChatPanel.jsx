@@ -79,7 +79,7 @@ function WelcomeCard({ agents, onSuggestionClick }) {
   )
 }
 
-export default function ChatPanel({ agents, onClose, embedded, onToast }) {
+export default function ChatPanel({ agents, onClose, embedded, onToast, isMobile = false }) {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [standupLoading, setStandupLoading] = useState(false)
@@ -398,23 +398,23 @@ export default function ChatPanel({ agents, onClose, embedded, onToast }) {
       </div>
 
       {/* Input */}
-      <div className="p-3 bg-page backdrop-blur-xl shrink-0" style={{ borderTop: '0.5px solid rgba(0,0,0,0.08)' }}>
-        <div className="flex gap-2">
+      <div className="px-3 py-2 bg-page backdrop-blur-xl shrink-0" style={{ borderTop: '0.5px solid rgba(0,0,0,0.08)', paddingBottom: isMobile ? '68px' : '8px' }}>
+        <div className="flex gap-1.5 items-center">
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={mode === 'assistant' ? 'Ask the hive...' : 'Send a message...'}
-            className="flex-1 bg-s1 rounded-xl px-3.5 py-2.5 text-sm text-t1 focus:outline-none focus:ring-2 focus:ring-t1/30 placeholder:text-t4"
+            placeholder={mode === 'assistant' ? 'Ask the hive...' : 'Message...'}
+            className="flex-1 bg-s1 rounded-xl px-3 py-2 text-sm text-t1 focus:outline-none focus:ring-2 focus:ring-t1/30 placeholder:text-t4 min-w-0"
             style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}
             disabled={streaming}
           />
           <button
             onClick={handleSend}
             disabled={!input.trim() || streaming}
-            className="px-4 py-2.5 bg-t1 text-white rounded-xl text-sm font-medium hover:opacity-90 transition-all disabled:opacity-30 active:scale-95"
+            className="w-9 h-9 shrink-0 bg-t1 text-white rounded-xl text-sm font-medium hover:opacity-90 transition-all disabled:opacity-30 active:scale-95 flex items-center justify-center"
           >
-            {streaming ? '...' : mode === 'assistant' ? 'Ask' : 'Send'}
+            {streaming ? '…' : '↑'}
           </button>
         </div>
       </div>

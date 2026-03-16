@@ -378,8 +378,8 @@ export default function App() {
           </div>
         )}
         {mobileView === 'chat' && (
-          <div className="md:hidden flex-1 overflow-hidden flex flex-col pb-16">
-            <ChatPanel agents={agents} embedded onToast={addToast} />
+          <div className="md:hidden flex-1 overflow-hidden flex flex-col">
+            <ChatPanel agents={agents} embedded onToast={addToast} isMobile />
           </div>
         )}
 

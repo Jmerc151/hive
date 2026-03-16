@@ -145,15 +145,16 @@ export default function CommandBar({ agents = [], onTaskCreated }) {
       <div className="md:hidden">
         {!mobileOpen && (
           <button onClick={() => { setMobileOpen(true); setTimeout(() => inputRef.current?.focus(), 50) }}
-            className="fixed bottom-20 right-4 z-40 w-12 h-12 rounded-full bg-t1 text-white flex items-center justify-center shadow-lg text-sm font-bold">
-            ⌘K
+            className="fixed z-40 w-10 h-10 rounded-full bg-t1 text-white flex items-center justify-center shadow-lg text-xs font-bold active:scale-95 transition-transform"
+            style={{ bottom: '72px', right: '16px' }}>
+            ⌘
           </button>
         )}
         {mobileOpen && (
-          <div className="fixed inset-x-0 bottom-0 z-50 p-3 bg-page/95 backdrop-blur" style={{ borderTop: '0.5px solid rgba(0,0,0,0.08)' }}>
-            <div className="flex items-center gap-2">
-              <div className="flex-1">{inputEl}</div>
-              <button onClick={() => setMobileOpen(false)} className="text-t3 hover:text-t1 text-sm px-2 py-2 shrink-0">Close</button>
+          <div className="fixed inset-x-0 z-50 px-3 py-2 bg-page/95 backdrop-blur-xl" style={{ bottom: '60px', borderTop: '0.5px solid rgba(0,0,0,0.08)' }}>
+            <div className="flex items-center gap-1.5">
+              <div className="flex-1 min-w-0">{inputEl}</div>
+              <button onClick={() => setMobileOpen(false)} className="text-t4 hover:text-t1 text-xs px-2 py-1.5 shrink-0 active:bg-s3 rounded-lg">✕</button>
             </div>
           </div>
         )}

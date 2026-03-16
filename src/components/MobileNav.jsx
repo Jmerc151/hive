@@ -7,22 +7,22 @@ export default function MobileNav({ view, onChangeView, activeCount, onNewTask }
   ]
 
   return (
-    <nav className="md:hidden fixed bottom-0 left-0 right-0 glass-heavy safe-bottom z-40" style={{ borderTop: '0.5px solid rgba(0,0,0,0.08)' }}>
-      <div className="flex items-center justify-around px-2 py-1">
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-page/95 backdrop-blur-xl safe-bottom z-40" style={{ borderTop: '0.5px solid rgba(0,0,0,0.08)' }}>
+      <div className="flex items-center justify-around px-1">
         {tabs.map(tab => (
           <button
             key={tab.id}
             onClick={() => onChangeView(tab.id)}
-            className={`flex flex-col items-center gap-0.5 py-2 px-4 rounded-xl transition-colors relative ${
+            className={`flex flex-col items-center gap-px py-1.5 px-3 rounded-lg transition-colors relative ${
               view === tab.id
                 ? 'text-t1'
                 : 'text-t4 active:text-t2'
             }`}
           >
-            <span className="text-xl">{tab.icon}</span>
-            <span className="text-[10px] font-medium">{tab.label}</span>
+            <span className="text-lg">{tab.icon}</span>
+            <span className="text-[9px] font-medium">{tab.label}</span>
             {tab.badge && (
-              <span className="absolute -top-0.5 right-2 w-4 h-4 bg-success text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+              <span className="absolute -top-0.5 right-0.5 w-3.5 h-3.5 bg-success text-white text-[8px] font-bold rounded-full flex items-center justify-center">
                 {tab.badge}
               </span>
             )}
