@@ -1,5 +1,65 @@
 # Hive Changelog
 
+## 2026-03-16 — Master Plan: 3-Pillar Agent Refocus + Quality Sprint
+
+### Agent System Prompt Overhaul (all 6 agents)
+- Complete rewrite of all agent system prompts in agents.json
+- Scout: 4 missions (Ember intelligence, AgentForge market research, AI opportunities, trading strategies)
+- Forge: 2 missions (Ember 70% via GitHub PRs, AgentForge 30%)
+- Quill: 2 missions (Ember content 60%, AgentForge content 40%) — publishes to Dev.to/Twitter/Beehiiv
+- Dealer: 2 missions (AgentForge beta customers primary, content promotion secondary)
+- Oracle: Paper trading RSI Mean Reversion, 60-day minimum, 7-stock universe
+- Nexus: Quality review scoring, opportunity evaluation, weekly sprint planning
+
+### 11 Skills Seeded with Full Content
+- 6 Ember skills: design-system, mobile-first, onboarding-flow, performance, marketing-site, qa-checklist
+- 3 Ember dev skills: frontend-patterns, backend-patterns, github-dev-workflow
+- agentforge-context: multi-tenant architecture, pricing tiers, build phases
+- ai-services-playbook: future revenue stream activation rules
+
+### 5 Automated Pipelines + Heartbeats
+- Ember Dev Daily (9am weekdays): Scout → Forge → Nexus
+- Trading Session (9:31am weekdays): Oracle analyzes and trades
+- AgentForge Build (10am Mon/Wed/Fri): Scout → Forge → Quill
+- Opportunity Scan (weekly): Scout → Nexus → Forge
+- Weekly Sprint (Sundays): Nexus reviews → creates next week's tasks
+- scheduleWeekdayHeartbeat() helper for Mon-Fri only scheduling
+
+### Auto-Chain Rewrite
+- Terminal agents (oracle, dealer, nexus) never chain
+- Max 1 level deep, max 5 auto-tasks/day
+- Explicit allowed chains with deduplication (no similar tasks in 24h)
+- Max 3 pending tasks per target agent
+
+### Tool Failure Handling
+- "TOOL FAILED" message injected back to agent on failures
+- Consecutive failure tracking: auto-pause + email notification on 3+ failures
+- Failed steps don't count against step limit
+
+### Daily Digest Email
+- HTML email sent at 8am with Ember update, AgentForge status, trading data, top opportunity, daily schedule
+- Only sends on weekdays
+
+### Spend Limits Updated
+- Global: $8/day, $100/month
+- Per-agent caps: scout=$1.50, forge=$2.00, quill=$1.00, dealer=$0.75, oracle=$0.75, nexus=$1.00
+- checkSpendLimit() supports both old and new setting key formats
+
+### AI Services Auto-Activation
+- Checks Ember MRR >= $147 AND AgentForge Phase 2 complete
+- When triggered: enables AI services pipeline + creates Forge build task
+
+### Database Cleanup
+- Auto-deletes "Build tool based on" backlog tasks
+- Auto-deletes old auto-spawned tasks older than 7 days
+
+### CLAUDE.md Updated
+- Replaced BUILD QUEUE with Current Focus (March 2026) section
+- Documents 3 pillars, agent missions, pipelines, skills, spend limits, guardrails
+- Updated deployment instructions (always git stash first)
+
+---
+
 ## 2026-03-14 — GitHub Tools + Autonomous Ember Development
 
 ### Feature: GitHub API Tools (8 new tools)

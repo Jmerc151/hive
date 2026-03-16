@@ -554,7 +554,7 @@ try { db.exec(`ALTER TABLE tasks ADD COLUMN milestone_id TEXT DEFAULT ''`) } cat
 
 // Default settings
 const defaults = {
-  daily_limit_usd: '5.00',
+  daily_limit_usd: '8.00',
   monthly_limit_usd: '100.00',
   per_task_token_budget: '16384',
   max_concurrent_tasks: '2',
@@ -562,7 +562,7 @@ const defaults = {
   qa_reviews_enabled: 'true',
   auto_tasks_enabled: 'true',
   approval_threshold_usd: '999',
-  approval_keywords: 'live trade,real capital,withdraw funds',
+  approval_keywords: 'withdraw funds,delete all,send email,email outreach,cold email,contact restaurant,live trade,real capital',
   trading_enabled: 'true',
   trading_mode: 'paper',
   max_position_size_usd: '1000',
@@ -582,7 +582,18 @@ const defaults = {
   self_improvement_budget_percent: '20',
   max_react_steps: '8',
   step_timeout_ms: '300000',
-  auto_chain_enabled: 'true'
+  auto_chain_enabled: 'true',
+  // Per-agent daily spend limits
+  scout_daily_usd: '1.50',
+  forge_daily_usd: '2.00',
+  quill_daily_usd: '1.00',
+  dealer_daily_usd: '0.75',
+  oracle_daily_usd: '0.75',
+  nexus_daily_usd: '1.00',
+  // AI services activation
+  ai_services_activated: 'false',
+  // Digest tracking
+  digest_last_sent: ''
 }
 
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')

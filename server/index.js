@@ -287,7 +287,8 @@ function checkSpendLimit(agentId) {
   const monthSpend = getMonthSpend()
   if (monthSpend >= monthlyLimit) throw new Error(`MONTHLY_LIMIT_REACHED: $${monthSpend.toFixed(2)} / $${monthlyLimit.toFixed(2)}`)
 
-  const agentLimit = getSetting(`agent_${agentId}_daily_limit`)
+  // Per-agent daily limit (check both old format and new format)
+  const agentLimit = getSetting(`agent_${agentId}_daily_limit`) || getSetting(`${agentId}_daily_usd`)
   if (agentLimit) {
     const agentSpend = getTodaySpend(agentId)
     if (agentSpend >= parseFloat(agentLimit)) throw new Error(`AGENT_LIMIT_REACHED: ${agentId} at $${agentSpend.toFixed(2)} / $${agentLimit}`)
@@ -2590,41 +2591,75 @@ async function checkAutoChain(completedTask, output) {
   try {
     if (!output || output.length < 100) return
 
-    const chainPatterns = [
-      { match: /research|discover|find|scan/i, followAgent: 'quill', prefix: 'Write content about' },
-      { match: /write|content|blog|post/i, followAgent: 'dealer', prefix: 'Promote and distribute' },
-      { match: /build|create|develop|code/i, followAgent: 'quill', prefix: 'Write documentation for' },
-      { match: /analyze|analysis|review/i, followAgent: 'forge', prefix: 'Build tool based on' },
-    ]
-
-    const title = completedTask.title || ''
-    const matchedPattern = chainPatterns.find(p => p.match.test(title))
-    if (!matchedPattern) return
-
     const autoChainEnabled = getSetting('auto_chain_enabled')
     if (autoChainEnabled === 'false') return
 
-    const pendingCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status IN ('backlog','todo')").get(matchedPattern.followAgent)
-    if (pendingCount.c > 5) return
+    const sourceAgent = completedTask.agent_id
+    const title = completedTask.title || ''
+    const outputLower = (output || '').toLowerCase()
+
+    // NEVER chain from these agents (terminal)
+    if (['oracle', 'dealer', 'nexus'].includes(sourceAgent)) return
+
+    // Max chain depth: 1 level (a chain cannot trigger another chain)
+    if (completedTask.spawned_by) return
+
+    // Max 5 auto-tasks per day total
+    const todayAutoCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE spawned_by IS NOT NULL AND spawned_by != '' AND created_at >= datetime('now', 'start of day')").get().c
+    if (todayAutoCount >= 5) return
+
+    // ALLOWED chains with specific patterns
+    let followAgent = null
+    let prefix = ''
+
+    if (sourceAgent === 'scout') {
+      if (/content|article|blog|write about/i.test(title) || /content|article|blog/i.test(outputLower)) {
+        followAgent = 'quill'; prefix = 'Write content about'
+      } else if (/product|opportunity|build|feature|prototype/i.test(title)) {
+        followAgent = 'forge'; prefix = 'Build based on research'
+      } else if (/beta.*customer|prospect|outreach|contact/i.test(title)) {
+        followAgent = 'dealer'; prefix = 'Reach out to prospects from'
+      }
+    } else if (sourceAgent === 'quill') {
+      if (outputLower.includes('dev.to') || outputLower.includes('published')) {
+        followAgent = 'dealer'; prefix = 'Promote published content'
+      }
+    } else if (sourceAgent === 'forge') {
+      if (outputLower.includes('gumroad.com') || outputLower.includes('product')) {
+        followAgent = 'quill'; prefix = 'Write about new product'
+      } else if (outputLower.includes('github.com/pull') || outputLower.includes('PR #')) {
+        followAgent = 'nexus'; prefix = 'QA review PR from'
+      }
+    }
+
+    if (!followAgent) return
+
+    // Don't chain if 3+ tasks already queued for target agent
+    const pendingCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status IN ('backlog','todo')").get(followAgent).c
+    if (pendingCount >= 3) return
+
+    // Deduplication: check if similar task exists in last 24 hours
+    const recentSimilar = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND title LIKE ? AND created_at >= datetime('now', '-1 day')").get(followAgent, `${prefix}%`).c
+    if (recentSimilar > 0) return
 
     const chainId = uuid()
-    const chainTitle = `${matchedPattern.prefix}: ${title.slice(0, 80)}`
+    const chainTitle = `${prefix}: ${title.slice(0, 80)}`
     const chainDesc = `Auto-chained from task ${completedTask.id}.\n\nPrevious output summary:\n${output.slice(0, 2000)}`
 
     db.prepare("INSERT INTO tasks (id, title, description, agent_id, status, spawned_by) VALUES (?, ?, ?, ?, 'backlog', ?)")
-      .run(chainId, chainTitle, chainDesc, matchedPattern.followAgent, completedTask.id)
+      .run(chainId, chainTitle, chainDesc, followAgent, completedTask.id)
 
     log('info', 'auto_chain_created', {
       sourceTask: completedTask.id,
       chainTask: chainId,
-      fromAgent: completedTask.agent_id,
-      toAgent: matchedPattern.followAgent
+      fromAgent: sourceAgent,
+      toAgent: followAgent
     })
 
     db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
-      .run('system', '🔗 Auto-Chain', '🔗', '#06b6d4', `Chained: ${chainTitle} → ${matchedPattern.followAgent}`)
+      .run('system', '🔗 Auto-Chain', '🔗', '#06b6d4', `Chained: ${chainTitle} → ${followAgent}`)
 
-    traceBus.emit('task:update', { id: chainId, status: 'backlog', agent_id: matchedPattern.followAgent })
+    traceBus.emit('task:update', { id: chainId, status: 'backlog', agent_id: followAgent })
   } catch (err) {
     log('error', 'auto_chain_failed', { taskId: completedTask.id, error: err.message })
   }
@@ -3563,12 +3598,17 @@ START WITH TOOL CALLS NOW.`
         const results = await Promise.all(callsToRun.map(tc => executeTool(tc, agent.id, task.id)))
 
         let resultsText = ''
+        let consecutiveFailures = 0
         for (const r of results) {
           if (r.error) {
-            resultsText += `[TOOL_ERROR:${r.name}]${r.error}[/TOOL_ERROR]\n\n`
+            consecutiveFailures++
+            resultsText += `[TOOL_ERROR:${r.name}]TOOL FAILED: ${r.error}. This action did NOT complete. Do not report success. Either try an alternative or report you cannot complete without configuration.[/TOOL_ERROR]\n\n`
+            db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+              .run(task.id, agent.id, `Tool failed: ${r.name} — ${r.error}`, 'error')
             db.prepare('INSERT INTO task_traces (task_id, agent_id, step, type, input_summary, output_summary, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)')
               .run(task.id, agent.id, step + 1, 'tool_error', r.name, r.error, 0)
           } else {
+            consecutiveFailures = 0
             resultsText += `[TOOL_RESULT:${r.name}]${r.resultStr}[/TOOL_RESULT]\n\n`
             db.prepare('INSERT INTO task_traces (task_id, agent_id, step, type, input_summary, output_summary, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)')
               .run(task.id, agent.id, step + 1, 'tool_call', `${r.name}(${JSON.stringify(toolCalls.find(tc => tc.name === r.name)?.args || {}).slice(0, 200)})`, (r.resultStr || '').slice(0, 500), 0)
@@ -3578,6 +3618,22 @@ START WITH TOOL CALLS NOW.`
             agent_id: agent.id, task_id: task.id, event_type: 'TOOL',
             payload: { tool: r.name, error: r.error || null, result_preview: (r.resultStr || r.error || '').slice(0, 300), step: step + 1 }
           })
+        }
+
+        // If 3+ consecutive tool failures, pause task and notify
+        if (consecutiveFailures >= 3) {
+          db.prepare("UPDATE tasks SET status = 'paused', updated_at = datetime('now') WHERE id = ?").run(task.id)
+          db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+            .run(task.id, agent.id, `Task paused: ${consecutiveFailures} consecutive tool failures`, 'error')
+          try { email.sendNotificationEmail('Task Paused — Tool Failures', `Task "${task.title}" (${agent.name}) paused after ${consecutiveFailures} consecutive tool failures.`).catch(() => {}) } catch {}
+          activeRuns.delete(agent.id)
+          traceBus.emit('task:update', { id: task.id, status: 'paused', agent_id: agent.id })
+          return
+        }
+
+        // Don't count step if ALL tools failed (give agent another chance)
+        if (results.length > 0 && results.every(r => r.error)) {
+          step-- // Will be incremented by the for loop, net zero
         }
 
         messages.push({ role: 'user', content: resultsText.trim() + '\n\nContinue working on the task with these results.' })
@@ -9000,6 +9056,374 @@ if (todoCount > 15) {
     console.log(`🧹 Cleaned up ${deleted.changes} excess todo tasks (kept newest 15)`)
   }
 }
+
+// ══════════════════════════════════════════════════════
+// ██ MASTER PLAN — Skills, Pipelines, Digest, AI Svc  ██
+// ══════════════════════════════════════════════════════
+
+// ── Seed Ember Quality Skills + AgentForge Context + AI Services ──
+const masterSkills = [
+  {
+    slug: 'ember-design-system',
+    name: 'Ember Design System',
+    description: 'Visual polish guide for Ember — colors, quality standards, component rules',
+    skill_md: `# Ember Design System — Visual Polish Guide\n## Brand\nName: Ember | Tagline: "Kitchen management that actually works"\nVoice: Confident, practical, warm. Speaks to restaurant pros.\n## Color Tokens\nKitchen Bible: bg0=#0a0a0a bg1=#111 bg2=#1a1a1a\nGreens: g0=#1a2e1a g5=#4ade80 | Gold=#f59e0b | Red=#ef4444\nText: t1=#f9faf8 t2=#e5e7eb t3=#9ca3af t4=#6b7280\nAdmin: white/light gray bg, primary=#1a2e1a, accent=#f59e0b\n## Quality Standards — Every Component Must Have\n- Loading skeleton (never blank flash while fetching)\n- Empty state: helpful message + clear action button\n- Error state: user-friendly message + retry option\n- Mobile touch targets: 44px minimum height\n- Transitions: 200ms ease on interactive elements\n- Forms: inline validation, not just submit errors\n- Success feedback: toast notification not alert()\n- Destructive actions: always confirm before executing\n## What Premium Feels Like\n- Custom styled inputs (no raw HTML selects)\n- Floating labels or clear labels above inputs\n- 8px grid spacing throughout\n- Tab transitions feel smooth\n- Checklist completion has satisfying animation\n- Numbers/quantities in mono font\n- Empty states feel helpful not broken\n## Never Do\nNo generic gradients | No tiny text (min 16px) | No broken empty states\nNo hover-only interactions | No multi-step flows for common actions\nNo layout shift after loading | No silent error failures`,
+    tags: ['ember', 'design', 'frontend'],
+    agents: ['forge', 'quill']
+  },
+  {
+    slug: 'ember-mobile-first',
+    name: 'Ember Mobile-First',
+    description: 'Kitchen Bible on phones — touch targets, input handling, performance',
+    skill_md: `# Ember Mobile-First — Kitchen Bible on Phones\n## Context\nStaff use Kitchen Bible on personal phones in working kitchens.\nConditions: greasy hands, variable lighting, time pressure, one-handed.\n## Hard Requirements\nTouch targets: 44px minimum height — no exceptions\nFont size: 16px minimum on all inputs (prevents iOS auto-zoom)\nTap feedback: visual response within 100ms\nNo hover-dependent UI\n## Tab Navigation\nBottom tab bar (thumb-reachable zone)\nActive tab: clearly distinct\nMax 8 tabs visible, others in overflow\n## Input Handling\nNumber inputs: inputMode="numeric"\nText inputs: autoCorrect="off" autoCapitalize="off"\nSelects: bottom sheet on mobile\nDate/time: native picker\n## Performance\nFirst contentful paint < 2s on 4G\nNo layout shift (CLS < 0.1)\nSkeleton loading on every data fetch\n## Test Checklist\n- Test at 375px (iPhone SE)\n- Test at 390px (iPhone 14)\n- All tap targets reachable with thumb\n- Font readable at arm's length\n- Works one-handed\n- Inputs don't trigger zoom`,
+    tags: ['ember', 'mobile', 'frontend'],
+    agents: ['forge']
+  },
+  {
+    slug: 'ember-onboarding-flow',
+    name: 'Ember Onboarding Flow',
+    description: 'The 10-minute goal — signup to staff using Kitchen Bible',
+    skill_md: `# Ember Onboarding Flow\n## The 10-Minute Goal\nNew restaurant manager signs up → within 10 minutes:\n1. Restaurant profile created\n2. Kitchen Bible has sample content (not empty)\n3. Share link ready to send to staff\n4. Manager understands the core value\n## Signup Flow\nForm: Restaurant name, Your name, Email, Password\nAfter signup: go directly to onboarding (no email verify wall)\n## Sample Data — Seed on Every New Restaurant\nOpening checklist (5 items): Unlock, Check temps, Coffee on, Line check, Staff briefing\nClosing checklist (3 items): All temps logged, Deep clean, Lock and arm\nTwo sample recipes, one prep template\n## Post-Onboarding Dashboard\nShow what was created, share link PROMINENTLY, preview button\n## The Aha Moment\nHappens when manager sees staff completing checklist in real time.\nMake sharing the link the central CTA.\n## Staff Join Flow (/join/CODE)\nEnter name → directly into Kitchen Bible\nFirst time: 3-tab tooltip tour (30 seconds, skippable)`,
+    tags: ['ember', 'onboarding', 'ux'],
+    agents: ['forge', 'quill']
+  },
+  {
+    slug: 'ember-performance',
+    name: 'Ember Performance Standards',
+    description: 'TTI, loading states, optimistic updates, bundle optimization',
+    skill_md: `# Ember Performance Standards\n## Targets\nTime to Interactive: < 3s on 4G mobile\nFirst Contentful Paint: < 1.5s\nCLS: < 0.1\nAPI response: < 500ms for reads\nChecklist completion feedback: < 100ms\n## Loading States\nEvery component: loading → skeleton, !data → empty state, data → real component\nSkeleton must match dimensions of real content.\n## Optimistic Updates\nApply change to UI immediately on user action.\nSync to server in background. Rollback on error.\n## API Caching\nCache GET responses in React state during session.\nDon't re-fetch if data < 60 seconds old.\nInvalidate on write operations.\n## Bundle\nLazy load admin pages\nKitchen Bible bundle < 200KB gzipped\n## Backend\nAll queries filter by restaurant_id first (indexed)\nLog queries > 200ms`,
+    tags: ['ember', 'performance', 'backend'],
+    agents: ['forge']
+  },
+  {
+    slug: 'ember-marketing-site',
+    name: 'Ember Marketing Site',
+    description: 'Landing page copy, messaging, and structure for restaurant owners',
+    skill_md: `# Ember Marketing Site\n## Target Customer\nIndependent restaurant owner/manager: 1-3 locations, 5-50 staff\nCurrently using paper, group text, or spreadsheets\n## Core Messaging\nHeadline: "Your kitchen team, finally on the same page"\nSubheadline: "Ember replaces paper checklists, group texts, and spreadsheets with one simple app your staff will actually use."\n## Pain Points → Solutions\nPaper checklists get lost → Digital, always on their phone\nCan't tell if close was done → Real-time completion tracking\nTraining new staff takes hours → Kitchen Bible has everything\nToo expensive → Starts at $49/mo per location\n## Page Structure\n1. HERO: Headline + CTA "Start free trial — no credit card"\n2. THE PROBLEM: 3 panels\n3. THE SOLUTION: Kitchen Bible screenshot\n4. HOW IT WORKS: 3 steps\n5. FEATURES: icon grid\n6. PRICING: $49/mo per location, free 14-day trial\n7. FINAL CTA\n## Tone: Short sentences. Practical. Warm but confident.`,
+    tags: ['ember', 'marketing', 'content'],
+    agents: ['quill', 'forge']
+  },
+  {
+    slug: 'ember-qa-checklist',
+    name: 'Ember QA Checklist',
+    description: 'Quality bar for Nexus to score Ember work',
+    skill_md: `# Ember QA Checklist — The "Perfect" Bar\n## Definition of Perfect\nRestaurant owner signs up, sets up, sends share link, staff using Kitchen Bible — all within 10 minutes, zero help.\n## Pre-PR Checklist\n- Mobile tested at 375px\n- No console errors\n- Loading skeleton on every fetch\n- Empty state has message + action\n- Error state has message + retry\n- Touch targets 44px minimum\n- Font 16px minimum on inputs\n- No layout shift after load\n- Destructive actions require confirmation\n- Success shows toast\n## Kitchen Bible Quality\n- Works one-handed on mobile\n- Tab switching < 200ms\n- Checklist completion has animation\n- 86 board visually urgent\n- All 16 tabs load without errors\n## Nexus Scoring\n10/10 = Passes all, real restaurant could use today\n8-9 = Minor issues only\n6-7 = Some issues but core works\n< 6 = Needs rework`,
+    tags: ['ember', 'qa', 'review'],
+    agents: ['nexus']
+  },
+  {
+    slug: 'ember-frontend-patterns',
+    name: 'Ember Frontend Patterns',
+    description: 'React component patterns for sous-frontend repo',
+    skill_md: `# Ember Frontend Patterns\n## Repo: Jmerc151/sous-frontend\n## Stack: React 19 + Vite + Tailwind\n## Key Patterns\n- All API calls through centralized api.js\n- Kitchen Bible = staff-facing (dark theme)\n- Admin dashboard = manager-facing (light theme)\n- State: React useState + useEffect, no Redux\n- Routing: React Router v6\n- Always use Tailwind classes, never inline styles\n- Component files in src/components/\n- Shared UI in src/components/ui/\n## File Conventions\n- PascalCase component files\n- camelCase utility files\n- Always export default\n## Before Any Change\n1. github_list_files to see current structure\n2. github_read_file on the file you're changing\n3. github_get_issues for related issues\n4. github_create_branch for the change\n5. github_write_file with complete updated code\n6. github_create_pr with clear description`,
+    tags: ['ember', 'frontend', 'patterns'],
+    agents: ['forge']
+  },
+  {
+    slug: 'ember-backend-patterns',
+    name: 'Ember Backend Patterns',
+    description: 'Express API patterns for sous-backend repo',
+    skill_md: `# Ember Backend Patterns\n## Repo: Jmerc151/sous-backend\n## Stack: Express.js + PostgreSQL\n## Key Patterns\n- RESTful endpoints: GET/POST/PUT/DELETE\n- All queries parameterized (prevent SQL injection)\n- Every route scoped by restaurant_id from auth\n- Error responses: { error: "message" } with proper HTTP status\n- Input validation on all POST/PUT bodies\n- Middleware: auth → restaurant scope → handler\n## Database\n- PostgreSQL with pg library\n- Migrations in /migrations folder\n- Always add indexes for foreign keys\n- JSONB for flexible data (recipes, checklists)\n## Before Any Change\n1. github_list_files to see current structure\n2. github_read_file on relevant files\n3. github_create_branch\n4. github_write_file with changes\n5. github_create_pr`,
+    tags: ['ember', 'backend', 'patterns'],
+    agents: ['forge']
+  },
+  {
+    slug: 'ember-github-dev-workflow',
+    name: 'Ember GitHub Dev Workflow',
+    description: 'Standard workflow for making Ember code changes',
+    skill_md: `# Ember GitHub Development Workflow\n## For Every Code Change\n1. Check issues: github_get_issues on target repo\n2. Read current code: github_read_file on files to change\n3. Create branch: github_create_branch from main\n4. Write changes: github_write_file (complete file, not diffs)\n5. Create PR: github_create_pr with description of what changed and why\n## PR Description Template\n### What\n[1-2 sentence summary]\n### Why\n[What problem this solves]\n### Testing\n[How to verify this works]\n## Branch Naming\nfeature/short-description or fix/short-description\n## Repos\n- Frontend: Jmerc151/sous-frontend\n- Backend: Jmerc151/sous-backend\n- AgentForge: Jmerc151/agentforge`,
+    tags: ['ember', 'github', 'workflow'],
+    agents: ['forge']
+  },
+  {
+    slug: 'agentforge-context',
+    name: 'AgentForge Context',
+    description: 'What AgentForge is and where it stands — shared context for all agents',
+    skill_md: `# AgentForge — What We're Building\nA sellable multi-tenant AI agent platform. Users sign up, build their own agent teams, run tasks, pay per usage.\nRepo: Jmerc151/agentforge (currently being built)\nTech: Express 5 + PostgreSQL + React 19 + Vite + Stripe + Docker\nDeploy target: Railway (backend) + Vercel (frontend)\n## Build Phases\nPhase 1: PostgreSQL multi-tenant schema (CURRENT)\nPhase 2: Express API + auth + task execution\nPhase 3: React dashboard + agent builder UI\nPhase 4: Stripe billing + usage metering\nPhase 5: Multi-tenant ReAct loop\n## Target Customers\n- Developers who want agent infrastructure without building it\n- Agencies using AI for client work\n- Indie hackers building AI products\n- Beta: FREE, then $29/$99/$299/mo plans\n## Key Differentiators\n- Pre-built agent templates\n- Real tool integrations (not just LLM calls)\n- Built-in spend controls + usage metering\n- Simple UI non-developers can use\n- White-label option for agencies`,
+    tags: ['agentforge', 'product', 'context'],
+    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus']
+  },
+  {
+    slug: 'ai-services-playbook',
+    name: 'AI Services Playbook',
+    description: 'Selling AI solutions to small businesses — activates when Ember has 3+ paying customers',
+    skill_md: `# AI Services — Selling AI Solutions to Small Businesses\n## The Model\nFind small businesses with manual/repetitive processes.\nBuild custom AI solution using AgentForge as backend.\nCharge: $1,500-5,000 setup + $200-500/mo maintenance.\n## Best Target Industries\n1. Law firms — document review, contract summaries\n2. Real estate — lead follow-up, listing descriptions\n3. Marketing agencies — content production, reporting\n4. Accounting firms — data entry, reconciliation\n5. E-commerce — product descriptions, customer service\n6. Restaurants (natural Ember fit)\n## How to Find Clients\nSearch: "[industry] + [city] + still using [manual process]"\nLook for: job postings for "data entry", "virtual assistant"\nLinkedIn: operations managers at 10-50 person companies\n## Outreach Angle\n"I noticed [specific thing]. I built an AI system that automates [specific process]. Takes 2 weeks. Most clients save 10+ hours/week. 20-minute demo?"\n## Activation Criteria\nOnly when: Ember has 3+ paying restaurants AND AgentForge Phase 2 complete`,
+    tags: ['ai-services', 'sales', 'consulting'],
+    agents: [] // Assigned dynamically when activated
+  }
+]
+
+// Seed skills
+for (const skill of masterSkills) {
+  const existing = db.prepare('SELECT id FROM skills WHERE slug = ?').get(skill.slug)
+  if (!existing) {
+    const id = uuid()
+    db.prepare('INSERT INTO skills (id, slug, name, description, skill_md, tags, source) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+      id, skill.slug, skill.name, skill.description, skill.skill_md, JSON.stringify(skill.tags), 'custom'
+    )
+    // Assign to agents
+    for (const agentId of skill.agents) {
+      try { db.prepare('INSERT OR IGNORE INTO agent_skills_v2 (agent_id, skill_id) VALUES (?, ?)').run(agentId, id) } catch {}
+    }
+    console.log(`🧩 Seeded skill: ${skill.name} → [${skill.agents.join(', ')}]`)
+  } else {
+    // Update existing skill content
+    db.prepare('UPDATE skills SET skill_md = ?, description = ?, tags = ?, updated_at = datetime(\'now\') WHERE slug = ?').run(
+      skill.skill_md, skill.description, JSON.stringify(skill.tags), skill.slug
+    )
+    // Ensure agent assignments exist
+    for (const agentId of skill.agents) {
+      try { db.prepare('INSERT OR IGNORE INTO agent_skills_v2 (agent_id, skill_id) VALUES (?, ?)').run(agentId, existing.id) } catch {}
+    }
+  }
+}
+
+// ── Seed Master Plan Pipelines ──────────────────────
+const masterPipelines = [
+  {
+    name: 'Ember Dev Daily',
+    description: 'Scout researches restaurant pain point → Forge implements fix. Runs 9am weekdays.',
+    steps: [
+      { position: 1, agent_id: 'scout', prompt_template: 'Research one specific restaurant owner pain point or competitor feature gap. Find a real example with source URL. Return JSON with finding and recommended Ember feature.' },
+      { position: 2, agent_id: 'forge', prompt_template: 'Read Scout\'s finding. Check Ember GitHub issues for related existing work. If finding maps to a quick improvement (< 2 hours), implement it and open a PR. If complex, create a GitHub issue for tracking.\n\nScout\'s finding:\n{{previous_output}}' }
+    ]
+  },
+  {
+    name: 'AgentForge Build',
+    description: 'Forge builds next AgentForge phase. Runs 10am Mon/Wed/Fri.',
+    steps: [
+      { position: 1, agent_id: 'forge', prompt_template: 'Check current AgentForge repo state with github_list_files on Jmerc151/agentforge. Identify what\'s been built vs what\'s next in the build order (Phase 1→5 in your mission). Build the next logical piece. Open a PR.' }
+    ]
+  },
+  {
+    name: 'Trading Session',
+    description: 'Oracle checks indicators and executes trades. Runs 9:31am weekdays.',
+    steps: [
+      { position: 1, agent_id: 'oracle', prompt_template: 'Check is_market_open. If open: check get_positions for current holdings. Run get_indicators on SPY, QQQ, AAPL, NVDA, MSFT, TSLA, AMZN. Execute any RSI signals found (RSI<32 buy, RSI>72 sell existing position). Log all decisions to memory. Report: positions checked, signals found, trades executed.' }
+    ]
+  },
+  {
+    name: 'Opportunity Scan',
+    description: 'Scout finds AI opportunities → Nexus evaluates. Runs 9am Mondays.',
+    steps: [
+      { position: 1, agent_id: 'scout', prompt_template: 'Scan for AI business opportunities this week. Search Product Hunt AI section, r/SideProject, IndieHackers, Acquire.com. Find 3 opportunities with revenue potential. Output JSON: [{business_type, problem, ai_solution, effort, revenue_potential}]' },
+      { position: 2, agent_id: 'nexus', prompt_template: 'Evaluate Scout\'s 3 opportunities. Score each on profitability, speed to revenue, technical fit. Brief each in one paragraph. Create task for Forge to prototype if score > 7.\n\nScout\'s findings:\n{{previous_output}}' }
+    ]
+  },
+  {
+    name: 'Weekly Sprint',
+    description: 'Nexus reviews week and plans next sprint. Runs 6pm Sundays.',
+    steps: [
+      { position: 1, agent_id: 'nexus', prompt_template: 'Review all tasks completed this week. Score quality. Identify what moved Ember and AgentForge forward vs what was noise. Create next week\'s priority task list: 3 Forge tasks (Ember improvements), 2 Scout tasks, 1 Quill article, 1 Dealer outreach batch. Create all tasks immediately.' }
+    ]
+  }
+]
+
+for (const p of masterPipelines) {
+  const existing = db.prepare('SELECT id FROM pipelines WHERE name = ?').get(p.name)
+  if (!existing) {
+    db.prepare('INSERT INTO pipelines (id, name, description, steps) VALUES (?, ?, ?, ?)').run(uuid(), p.name, p.description, JSON.stringify(p.steps))
+    console.log(`🔗 Seeded pipeline: ${p.name}`)
+  }
+}
+
+// ── Pipeline Heartbeats ─────────────────────────────
+
+function runPipelineByName(name) {
+  const pipeline = db.prepare('SELECT * FROM pipelines WHERE name = ?').get(name)
+  if (!pipeline) return
+  const steps = JSON.parse(pipeline.steps)
+  if (!steps || steps.length === 0) return
+  const firstStep = steps[0]
+  const taskId = uuid()
+  db.prepare("INSERT INTO tasks (id, title, description, agent_id, status, pipeline_id, pipeline_step) VALUES (?, ?, ?, ?, 'todo', ?, ?)")
+    .run(taskId, `[Pipeline: ${name}] Step 1`, firstStep.prompt_template, firstStep.agent_id, pipeline.id, 1)
+  setTimeout(() => processAgentQueue(firstStep.agent_id), 3000)
+  console.log(`🔗 Pipeline "${name}" started → ${firstStep.agent_id}`)
+}
+
+// Ember Dev Daily — 9am weekdays
+function scheduleWeekdayHeartbeat(name, hour, minute, fn) {
+  const now = new Date()
+  const next = new Date(now)
+  next.setHours(hour, minute, 0, 0)
+  if (now >= next) next.setDate(next.getDate() + 1)
+  // Skip weekends
+  while (next.getDay() === 0 || next.getDay() === 6) next.setDate(next.getDate() + 1)
+  const delay = next - now
+  setTimeout(() => {
+    fn()
+    // Re-register daily
+    registerHeartbeat(name, 24 * 60 * 60 * 1000, () => {
+      const d = new Date()
+      if (d.getDay() >= 1 && d.getDay() <= 5) fn()
+    })
+  }, delay)
+  console.log(`📅 ${name} scheduled for ${next.toLocaleString()} (in ${Math.round(delay / 60000)}min)`)
+}
+
+scheduleWeekdayHeartbeat('ember-dev-daily', 9, 0, () => runPipelineByName('Ember Dev Daily'))
+scheduleWeekdayHeartbeat('trading-session', 9, 31, () => runPipelineByName('Trading Session'))
+
+// AgentForge Build — 10am Mon/Wed/Fri
+registerHeartbeat('agentforge-build', 24 * 60 * 60 * 1000, () => {
+  const d = new Date()
+  if ([1, 3, 5].includes(d.getDay()) && d.getHours() >= 9 && d.getHours() <= 11) {
+    runPipelineByName('AgentForge Build')
+  }
+})
+
+// Opportunity Scan — Monday 9am (handled by ember-dev-daily schedule checking day)
+registerHeartbeat('opportunity-scan-weekly', 7 * 24 * 60 * 60 * 1000, () => {
+  runPipelineByName('Opportunity Scan')
+})
+
+// Weekly Sprint — Sunday 6pm
+registerHeartbeat('weekly-sprint', 7 * 24 * 60 * 60 * 1000, () => {
+  runPipelineByName('Weekly Sprint')
+})
+
+// ── Daily Digest Email — 7am daily ─────────────────
+async function sendDailyDigest() {
+  try {
+    const lastSent = getSetting('digest_last_sent')
+    const today = new Date().toISOString().slice(0, 10)
+    if (lastSent === today) return
+
+    // Gather data
+    const weekPRs = db.prepare("SELECT title, output FROM tasks WHERE status = 'done' AND output LIKE '%github.com/pull%' AND completed_at >= datetime('now', '-7 days')").all()
+    const issuesFixed = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'done' AND title LIKE '%fix%' AND completed_at >= datetime('now', '-7 days')").get().c
+    const todayTasks = db.prepare("SELECT title, agent_id, status FROM tasks WHERE created_at >= datetime('now', 'start of day')").all()
+    const tradesToday = db.prepare("SELECT COUNT(*) as c FROM trades WHERE created_at >= datetime('now', 'start of day')").get().c
+
+    // Trading data
+    let portfolioValue = 'N/A', openPositions = 'None'
+    try {
+      const acct = await broker.getAccount()
+      portfolioValue = '$' + parseFloat(acct.equity).toFixed(2)
+      const positions = await broker.getPositions()
+      openPositions = positions.length > 0 ? positions.map(p => `${p.symbol} (${p.qty} @ $${parseFloat(p.avg_entry_price).toFixed(2)})`).join(', ') : 'None'
+    } catch {}
+
+    // Top opportunity from Nexus
+    const topOpportunity = db.prepare("SELECT title, description FROM proposals WHERE proposed_by = 'nexus' AND status = 'pending' ORDER BY created_at DESC LIMIT 1").get()
+
+    // Spend
+    const todaySpend = getTodaySpend()
+    const monthSpend = getMonthSpend()
+
+    // Pipelines running today
+    const d = new Date()
+    const dayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][d.getDay()]
+    const scheduleItems = []
+    if (d.getDay() >= 1 && d.getDay() <= 5) {
+      scheduleItems.push('9:00am — Ember Dev Daily')
+      scheduleItems.push('9:31am — Trading Session')
+    }
+    if ([1, 3, 5].includes(d.getDay())) scheduleItems.push('10:00am — AgentForge Build')
+    if (d.getDay() === 1) scheduleItems.push('9:00am — Opportunity Scan')
+    if (d.getDay() === 0) scheduleItems.push('6:00pm — Weekly Sprint')
+
+    const html = `
+<div style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto; background: #0a0a0a; color: #f9faf8; padding: 24px; border-radius: 12px;">
+  <h1 style="color: #f59e0b; margin-bottom: 4px;">🐝 Hive Daily — ${dayName} ${today}</h1>
+  <hr style="border-color: #333; margin: 16px 0;">
+
+  <h2 style="color: #4ade80;">🏗️ EMBER UPDATE</h2>
+  <p>PRs this week: ${weekPRs.length > 0 ? weekPRs.map(p => p.title).join(', ') : 'None yet'}</p>
+  <p>Issues fixed: ${issuesFixed}</p>
+
+  <h2 style="color: #3b82f6;">🤖 AGENTFORGE BUILD</h2>
+  <p>Check Jmerc151/agentforge for latest PRs.</p>
+
+  <h2 style="color: #E8C547;">📈 TRADING</h2>
+  <p>Portfolio: ${portfolioValue}</p>
+  <p>Positions: ${openPositions}</p>
+  <p>Trades today: ${tradesToday}</p>
+
+  <h2 style="color: #ec4899;">💡 TOP OPPORTUNITY</h2>
+  <p>${topOpportunity ? `<strong>${topOpportunity.title}</strong><br>${topOpportunity.description.slice(0, 200)}` : 'No new opportunities evaluated'}</p>
+
+  <h2 style="color: #06b6d4;">📋 TODAY'S SCHEDULE</h2>
+  <ul>${scheduleItems.map(s => `<li>${s}</li>`).join('')}</ul>
+
+  <hr style="border-color: #333; margin: 16px 0;">
+  <p style="color: #6b7280; font-size: 12px;">Spend: $${todaySpend.toFixed(2)} today | $${monthSpend.toFixed(2)} this month</p>
+</div>`
+
+    await email.sendNotificationEmail(`Hive Daily — ${dayName} ${today}`, html)
+    db.prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('digest_last_sent', ?, datetime('now'))").run(today)
+    console.log('📧 Daily digest sent')
+  } catch (e) {
+    log('error', 'daily_digest_failed', { error: e.message })
+  }
+}
+
+// Schedule daily digest for 7am
+const _digestNow = new Date(), _next7am = new Date(_digestNow)
+_next7am.setHours(7, 0, 0, 0)
+if (_digestNow >= _next7am) _next7am.setDate(_next7am.getDate() + 1)
+setTimeout(() => {
+  sendDailyDigest()
+  registerHeartbeat('daily-digest', 24 * 60 * 60 * 1000, sendDailyDigest)
+}, _next7am - _digestNow)
+console.log(`📧 Daily digest scheduled for 7am (in ${Math.round((_next7am - _digestNow) / 60000)}min)`)
+
+// ── AI Services Auto-Activation Check ───────────────
+registerHeartbeat('ai-services-check', 24 * 60 * 60 * 1000, () => {
+  try {
+    const activated = getSetting('ai_services_activated')
+    if (activated === 'true') return
+
+    // Check if Ember has 3+ paying restaurants (check revenue entries or Stripe)
+    const emberRevenue = db.prepare("SELECT SUM(amount) as total FROM revenue_entries WHERE source LIKE '%ember%' OR source LIKE '%stripe%'").get()
+    const hasEmberMRR = (emberRevenue?.total || 0) >= 147 // 3 x $49
+
+    // Check AgentForge phase (look in Nexus memory for phase tracking)
+    const nexusMemory = readAgentMemory('nexus')
+    const hasPhase2 = nexusMemory.includes('agentforge_phase') && nexusMemory.includes('phase 2')
+
+    if (hasEmberMRR && hasPhase2) {
+      db.prepare("UPDATE settings SET value = 'true', updated_at = datetime('now') WHERE key = 'ai_services_activated'").run()
+
+      // Assign ai-services-playbook to scout and dealer
+      const skillId = db.prepare("SELECT id FROM skills WHERE slug = 'ai-services-playbook'").get()?.id
+      if (skillId) {
+        db.prepare('INSERT OR IGNORE INTO agent_skills_v2 (agent_id, skill_id) VALUES (?, ?)').run('scout', skillId)
+        db.prepare('INSERT OR IGNORE INTO agent_skills_v2 (agent_id, skill_id) VALUES (?, ?)').run('dealer', skillId)
+      }
+
+      // Create initial task
+      db.prepare("INSERT INTO tasks (id, title, description, agent_id, status, priority) VALUES (?, ?, ?, 'scout', 'todo', 'high')")
+        .run(uuid(), 'Find 10 businesses needing AI automation — prioritize law firms and real estate agencies',
+          'AI Services pipeline activated! Ember has 3+ paying customers and AgentForge Phase 2 is complete. Search for businesses with obvious manual processes that AI can automate. Focus on law firms and real estate agencies first.')
+
+      // Notify
+      try {
+        email.sendNotificationEmail('🚀 AI Services Pipeline Activated',
+          'Ember has 3 paying customers and AgentForge Phase 2 is complete. Scout is now hunting for AI services clients.').catch(() => {})
+      } catch {}
+
+      console.log('🚀 AI Services pipeline activated!')
+    }
+  } catch (e) {
+    log('error', 'ai_services_check_failed', { error: e.message })
+  }
+})
+
+// ── Nexus Opportunity Pipeline (Task 9) ─────────────
+// When Nexus evaluates an opportunity scoring > 7, create proposal + notify
+// This is handled in Nexus's system prompt now — when Nexus calls create_task
+// for Forge after scoring > 7, it also stores in proposals via the existing
+// proposal creation flow in the heartbeat output parser.
+
+// ── Database Cleanup (Task 11) ──────────────────────
+try {
+  const cleanBuild = db.prepare("DELETE FROM tasks WHERE status = 'backlog' AND title LIKE 'Build tool based on:%'").run()
+  if (cleanBuild.changes > 0) console.log(`🧹 Cleaned ${cleanBuild.changes} "Build tool based on" backlog tasks`)
+  const cleanOld = db.prepare("DELETE FROM tasks WHERE status IN ('backlog', 'todo') AND created_at < datetime('now', '-7 days') AND spawned_by IS NOT NULL AND spawned_by != ''").run()
+  if (cleanOld.changes > 0) console.log(`🧹 Cleaned ${cleanOld.changes} old auto-spawned tasks`)
+} catch (e) { console.error('Cleanup error:', e.message) }
 
 const PORT = process.env.API_PORT || process.env.PORT || 3002
 app.listen(PORT, '0.0.0.0', () => {
