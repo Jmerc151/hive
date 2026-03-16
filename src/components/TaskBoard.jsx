@@ -67,8 +67,16 @@ export default function TaskBoard({ tasks, agents, onSelectTask, onRunTask, onUp
             )
           })}
           {tasks.filter(t => t.status === mobileColumn).length === 0 && (
-            <div className="text-center py-16">
-              <p className="text-sm text-t4">No tasks here</p>
+            <div className="text-center py-12 px-6">
+              <div className="text-t5 text-3xl mb-3">
+                {mobileColumn === 'todo' ? '📋' : mobileColumn === 'in_progress' ? '⚡' : mobileColumn === 'done' ? '✓' : mobileColumn === 'failed' ? '✕' : '—'}
+              </div>
+              <p className="text-sm text-t3 font-medium mb-1">
+                {mobileColumn === 'todo' ? 'No tasks queued' : mobileColumn === 'in_progress' ? 'Nothing running' : `No ${COLUMNS.find(c => c.id === mobileColumn)?.label?.toLowerCase() || ''} tasks`}
+              </p>
+              <p className="text-xs text-t4">
+                {mobileColumn === 'todo' ? 'Create a task to get your agents working' : mobileColumn === 'in_progress' ? 'Run a task to see agents in action' : 'Tasks will appear here as they progress'}
+              </p>
             </div>
           )}
         </div>

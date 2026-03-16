@@ -53,7 +53,7 @@ function truncateClean(text, max = 140) {
 
 const PAGE_SIZE = 20
 
-export default function DeliverablesFeed({ agents = [], tasks = [], filterAgent, onSelectTask }) {
+export default function DeliverablesFeed({ agents = [], tasks = [], filterAgent, onSelectTask, onNav, onNewTask }) {
   const [items, setItems] = useState([])
   const [stats, setStats] = useState({})
   const [total, setTotal] = useState(0)
@@ -180,16 +180,54 @@ export default function DeliverablesFeed({ agents = [], tasks = [], filterAgent,
           {/* Loading */}
           {loading && <div className="text-center text-t4 py-12 text-sm">Loading…</div>}
 
-          {/* Empty */}
+          {/* Empty — welcome state */}
           {!loading && items.length === 0 && (
-            <div className="text-center py-16">
-              <div className="text-t4 text-2xl mb-2">∅</div>
-              <p className="text-t3 text-sm">
-                {qualityFilter === 'substantive' ? 'No high-quality deliverables yet' : 'No deliverables found'}
-              </p>
-              <p className="text-t4 text-xs mt-1">
-                {qualityFilter === 'substantive' && 'Try switching to "All" to see everything'}
-              </p>
+            <div className="py-8 px-2">
+              {qualityFilter === 'substantive' && stats.total > 0 ? (
+                <div className="text-center py-12">
+                  <div className="text-t4 text-lg mb-2">No high-quality deliverables yet</div>
+                  <button onClick={() => setQualityFilter('')} className="text-xs text-t3 hover:text-t1 underline underline-offset-2">Show all deliverables</button>
+                </div>
+              ) : (
+                <div className="max-w-md mx-auto">
+                  <div className="text-center mb-6">
+                    <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-t1 mb-3">
+                      <span className="font-display text-white text-xl tracking-wider">H</span>
+                    </div>
+                    <h3 className="font-display text-lg tracking-[1px] text-t1 mb-1">WELCOME TO HIVE</h3>
+                    <p className="text-sm text-t3">Your AI agents are ready. Create a task to get started.</p>
+                  </div>
+
+                  {/* Quick actions */}
+                  <div className="space-y-[6px]">
+                    {[
+                      { icon: 'S', tile: 'tile-scout', label: 'Research a topic', desc: 'Scout finds opportunities, trends, and insights', example: 'scout research telegram bot monetization' },
+                      { icon: 'F', tile: 'tile-forge', label: 'Build something', desc: 'Forge writes code, creates landing pages, builds tools', example: 'forge build a pricing calculator' },
+                      { icon: 'Q', tile: 'tile-quill', label: 'Write content', desc: 'Quill drafts blog posts, emails, and copy', example: 'quill write a blog post about AI agents' },
+                      { icon: 'O', tile: 'tile-oracle', label: 'Analyze markets', desc: 'Oracle runs multi-lens analysis on stocks and trends', example: 'oracle analyze AAPL outlook' },
+                    ].map(action => (
+                      <button
+                        key={action.label}
+                        onClick={() => onNewTask?.()}
+                        className="w-full hive-card flex items-center gap-3 px-3 py-[10px] text-left transition-all hover:shadow-sm group cursor-pointer"
+                      >
+                        <div className={`agent-tile w-[28px] h-[28px] rounded-[8px] text-[11px] flex-shrink-0 ${action.tile}`}>{action.icon}</div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[13px] font-medium text-t1 group-hover:text-t1">{action.label}</div>
+                          <div className="text-[11px] text-t4 truncate">{action.desc}</div>
+                        </div>
+                        <span className="text-t5 text-xs flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">+</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="text-center mt-5">
+                    <p className="text-[11px] text-t4">
+                      Tip: Press <kbd className="px-1.5 py-0.5 bg-s3 rounded text-t3 font-mono text-[10px]" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}>⌘K</kbd> to type natural language commands
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -339,63 +377,115 @@ export default function DeliverablesFeed({ agents = [], tasks = [], filterAgent,
         </div>
       </div>
 
-      {/* Right sidebar — stats */}
+      {/* Right sidebar — stats or quick links */}
       <div className="hidden lg:flex w-[200px] flex-shrink-0 bg-s1 flex-col overflow-y-auto" style={{ borderLeft: '0.5px solid rgba(0,0,0,0.07)' }}>
-        {/* Quality breakdown */}
-        <div className="p-[13px]" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
-          <div className="font-display text-[11px] tracking-[2px] text-t5 mb-[9px]">QUALITY</div>
-          <div className="space-y-[5px]">
-            {[
-              { label: 'High quality', count: stats.high || 0, color: 'bg-success', pct: ((stats.high || 0) / Math.max(stats.total || 1, 1)) * 100 },
-              { label: 'Medium', count: stats.medium || 0, color: 'bg-warning', pct: ((stats.medium || 0) / Math.max(stats.total || 1, 1)) * 100 },
-              { label: 'Low / empty', count: stats.low || 0, color: 'bg-t5', pct: ((stats.low || 0) / Math.max(stats.total || 1, 1)) * 100 },
-            ].map(q => (
-              <div key={q.label}>
-                <div className="flex items-center justify-between text-[11px]">
-                  <div className="flex items-center gap-[5px]">
-                    <span className={`w-[5px] h-[5px] rounded-full ${q.color}`} />
-                    <span className="text-t3">{q.label}</span>
+        {(stats.total || 0) > 0 ? (
+          <>
+            {/* Quality breakdown */}
+            <div className="p-[13px]" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
+              <div className="font-display text-[11px] tracking-[2px] text-t5 mb-[9px]">QUALITY</div>
+              <div className="space-y-[5px]">
+                {[
+                  { label: 'High quality', count: stats.high || 0, color: 'bg-success', pct: ((stats.high || 0) / Math.max(stats.total || 1, 1)) * 100 },
+                  { label: 'Medium', count: stats.medium || 0, color: 'bg-warning', pct: ((stats.medium || 0) / Math.max(stats.total || 1, 1)) * 100 },
+                  { label: 'Low / empty', count: stats.low || 0, color: 'bg-t5', pct: ((stats.low || 0) / Math.max(stats.total || 1, 1)) * 100 },
+                ].map(q => (
+                  <div key={q.label}>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <div className="flex items-center gap-[5px]">
+                        <span className={`w-[5px] h-[5px] rounded-full ${q.color}`} />
+                        <span className="text-t3">{q.label}</span>
+                      </div>
+                      <span className="text-t4 tabular-nums">{q.count}</span>
+                    </div>
+                    <div className="h-[2px] bg-page rounded-[1px] mt-[3px]">
+                      <div className={`h-full rounded-[1px] ${q.color}`} style={{ width: `${q.pct}%`, opacity: 0.6 }} />
+                    </div>
                   </div>
-                  <span className="text-t4 tabular-nums">{q.count}</span>
-                </div>
-                <div className="h-[2px] bg-page rounded-[1px] mt-[3px]">
-                  <div className={`h-full rounded-[1px] ${q.color}`} style={{ width: `${q.pct}%`, opacity: 0.6 }} />
-                </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
+            </div>
 
-        {/* By agent */}
-        <div className="p-[13px]" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
-          <div className="font-display text-[11px] tracking-[2px] text-t5 mb-[9px]">BY AGENT</div>
-          {agents.map(a => {
-            const tile = AGENT_TILES[a.id] || { letter: '?', class: 'tile-nexus' }
-            const count = stats.byAgent?.[a.id] || 0
-            const maxCount = Math.max(...Object.values(stats.byAgent || { _: 1 }), 1)
-            const pct = (count / maxCount) * 100
-            const colorMap = { scout: 'var(--color-scout)', forge: 'var(--color-forge)', quill: 'var(--color-quill)', dealer: 'var(--color-dealer)', oracle: 'var(--color-oracle)', nexus: 'var(--color-nexus)' }
-            return (
-              <div key={a.id} className="mb-[5px]">
-                <div className="flex items-center gap-[6px] py-[2px]">
-                  <div className={`agent-tile w-[18px] h-[18px] rounded-[5px] text-[9px] ${tile.class}`}>{tile.letter}</div>
-                  <span className="text-[11px] text-t2 flex-1">{a.name}</span>
-                  <span className="text-[10px] text-t4 tabular-nums">{count}</span>
-                </div>
-                <div className="h-[2px] bg-page rounded-[1px] my-[2px]">
-                  <div className="h-full rounded-[1px]" style={{ width: `${pct}%`, background: colorMap[a.id] || 'var(--color-t4)' }} />
-                </div>
+            {/* By agent */}
+            <div className="p-[13px]" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
+              <div className="font-display text-[11px] tracking-[2px] text-t5 mb-[9px]">BY AGENT</div>
+              {agents.map(a => {
+                const tile = AGENT_TILES[a.id] || { letter: '?', class: 'tile-nexus' }
+                const count = stats.byAgent?.[a.id] || 0
+                const maxCount = Math.max(...Object.values(stats.byAgent || { _: 1 }), 1)
+                const pct = (count / maxCount) * 100
+                const colorMap = { scout: 'var(--color-scout)', forge: 'var(--color-forge)', quill: 'var(--color-quill)', dealer: 'var(--color-dealer)', oracle: 'var(--color-oracle)', nexus: 'var(--color-nexus)' }
+                return (
+                  <div key={a.id} className="mb-[5px]">
+                    <div className="flex items-center gap-[6px] py-[2px]">
+                      <div className={`agent-tile w-[18px] h-[18px] rounded-[5px] text-[9px] ${tile.class}`}>{tile.letter}</div>
+                      <span className="text-[11px] text-t2 flex-1">{a.name}</span>
+                      <span className="text-[10px] text-t4 tabular-nums">{count}</span>
+                    </div>
+                    <div className="h-[2px] bg-page rounded-[1px] my-[2px]">
+                      <div className="h-full rounded-[1px]" style={{ width: `${pct}%`, background: colorMap[a.id] || 'var(--color-t4)' }} />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Revenue */}
+            <div className="p-[13px]">
+              <div className="font-display text-[11px] tracking-[2px] text-t5 mb-[6px]">REVENUE</div>
+              <div className="font-display text-[28px] tracking-[1px] leading-none text-t1">${Math.round(estRevenue)}</div>
+              <div className="text-[10px] text-t4 mt-[2px]">Estimated total</div>
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Quick links when no deliverables */}
+            <div className="p-[13px]" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
+              <div className="font-display text-[11px] tracking-[2px] text-t5 mb-[9px]">QUICK START</div>
+              <div className="space-y-[4px]">
+                {[
+                  { label: 'Create a task', key: 'newTask', icon: '+' },
+                  { label: 'View roadmap', key: 'projects', icon: '\u25A4' },
+                  { label: 'Trading dashboard', key: 'trading', icon: '\u25AA' },
+                  { label: 'Skills library', key: 'skillsV2', icon: '\u29C9' },
+                ].map(link => (
+                  <button
+                    key={link.key}
+                    onClick={() => link.key === 'newTask' ? onNewTask?.() : onNav?.(link.key)}
+                    className="w-full flex items-center gap-2 px-2 py-[6px] rounded-lg text-left text-[12px] text-t3 hover:bg-[rgba(0,0,0,0.04)] hover:text-t1 transition-all cursor-pointer"
+                  >
+                    <span className="w-5 h-5 rounded-md bg-[rgba(0,0,0,0.05)] flex items-center justify-center text-[10px] text-t4 flex-shrink-0">{link.icon}</span>
+                    {link.label}
+                  </button>
+                ))}
               </div>
-            )
-          })}
-        </div>
+            </div>
 
-        {/* Revenue */}
-        <div className="p-[13px]">
-          <div className="font-display text-[11px] tracking-[2px] text-t5 mb-[6px]">REVENUE</div>
-          <div className="font-display text-[28px] tracking-[1px] leading-none text-t1">${Math.round(estRevenue)}</div>
-          <div className="text-[10px] text-t4 mt-[2px]">Estimated total</div>
-        </div>
+            {/* Agent roster */}
+            <div className="p-[13px]" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
+              <div className="font-display text-[11px] tracking-[2px] text-t5 mb-[9px]">YOUR AGENTS</div>
+              {agents.map(a => {
+                const tile = AGENT_TILES[a.id] || { letter: '?', class: 'tile-nexus' }
+                const roles = { scout: 'Research', forge: 'Build', quill: 'Write', dealer: 'Sell', oracle: 'Analyze', nexus: 'Manage' }
+                return (
+                  <div key={a.id} className="flex items-center gap-[6px] py-[3px]">
+                    <div className={`agent-tile w-[18px] h-[18px] rounded-[5px] text-[9px] ${tile.class}`}>{tile.letter}</div>
+                    <span className="text-[11px] text-t2 flex-1">{a.name}</span>
+                    <span className="text-[10px] text-t4">{roles[a.id] || ''}</span>
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Tip */}
+            <div className="p-[13px]">
+              <div className="font-display text-[11px] tracking-[2px] text-t5 mb-[6px]">TIP</div>
+              <p className="text-[11px] text-t3 leading-relaxed">
+                Use the command bar to create tasks in natural language. Try: "scout research AI agent pricing models"
+              </p>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )

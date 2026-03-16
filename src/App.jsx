@@ -350,6 +350,13 @@ export default function App() {
         {/* Topbar */}
         <header className="bg-s2 flex items-center gap-[10px] px-4 md:px-[20px] pt-3 pb-[10px] safe-top flex-shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
           <h1 className="font-display text-[22px] text-t1 tracking-[2px] leading-none">HIVE</h1>
+          {/* Connection status */}
+          <div className="flex items-center gap-[5px]" title={sseConnected ? 'Live — real-time updates active' : 'Reconnecting…'}>
+            <span className={`w-[6px] h-[6px] rounded-full flex-shrink-0 ${sseConnected ? 'bg-success' : 'bg-warning dot-pulse'}`} />
+            <span className={`text-[10px] hidden sm:inline ${sseConnected ? 'text-t4' : 'text-warning'}`}>
+              {sseConnected ? 'Live' : 'Reconnecting'}
+            </span>
+          </div>
           {activeCount > 0 && (
             <div className="flex items-center gap-[5px] text-[10px] font-medium text-success px-[7px] py-[3px] rounded-[8px]" style={{ background: 'rgba(40,167,69,0.09)', border: '0.5px solid rgba(40,167,69,0.2)' }}>
               <span className="w-[5px] h-[5px] rounded-full bg-success dot-pulse" />
@@ -388,34 +395,39 @@ export default function App() {
 
         {/* Desktop: Main content area */}
         <ErrorBoundary>
-        <div className={`flex-1 overflow-hidden ${mobileView !== 'board' ? 'hidden md:flex' : 'flex'} flex-col`}>
+        <div className="flex-1 overflow-hidden hidden md:flex flex-col">
           {/* Agent strip — pill chips */}
           <div className="hidden md:flex gap-[6px] px-[20px] py-2 bg-s2 overflow-x-auto flex-shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
-            {agents.map(agent => {
-              const agentTask = tasks.find(t => t.agent_id === agent.id && t.status === 'in_progress')
-              const isActive = !!agentTask
-              const isFiltered = filterAgent === agent.id
-              return (
-                <div
-                  key={agent.id}
-                  className={`flex-shrink-0 flex items-center gap-[6px] py-[5px] pl-2 pr-[10px] rounded-[18px] cursor-pointer transition-all whitespace-nowrap ${
-                    isFiltered
-                      ? 'bg-t1 text-white'
-                      : 'bg-s3 hover:bg-card'
-                  }`}
-                  style={{ border: isFiltered ? '0.5px solid var(--color-t1)' : '0.5px solid rgba(0,0,0,0.07)' }}
-                  onClick={() => setFilterAgent(filterAgent === agent.id ? null : agent.id)}
-                >
-                  <span className={`w-[6px] h-[6px] rounded-full flex-shrink-0 ${
-                    isActive ? `bg-success ${isFiltered ? '' : 'dot-pulse'}` : isFiltered ? 'bg-white/50' : 'bg-t5'
-                  }`} />
-                  <span className={`text-xs font-medium ${isFiltered ? 'text-white' : 'text-t1'}`}>{agent.name}</span>
-                  <span className={`text-[10px] ${isFiltered ? 'text-white/55' : 'text-t4'}`}>
-                    {isActive ? 'Working' : 'Idle'}
-                  </span>
-                </div>
-              )
-            })}
+            {(() => {
+              const AGENT_ROLES = { scout: 'Research', forge: 'Build', quill: 'Write', dealer: 'Sell', oracle: 'Analyze', nexus: 'Manage' }
+              return agents.map(agent => {
+                const agentTask = tasks.find(t => t.agent_id === agent.id && t.status === 'in_progress')
+                const isActive = !!agentTask
+                const isFiltered = filterAgent === agent.id
+                const agentDoneCount = tasks.filter(t => t.agent_id === agent.id && t.status === 'done').length
+                const statusText = isActive ? 'Working' : agentDoneCount > 0 ? `${agentDoneCount} done` : AGENT_ROLES[agent.id] || 'Idle'
+                return (
+                  <div
+                    key={agent.id}
+                    className={`flex-shrink-0 flex items-center gap-[6px] py-[5px] pl-2 pr-[10px] rounded-[18px] cursor-pointer transition-all whitespace-nowrap ${
+                      isFiltered
+                        ? 'bg-t1 text-white'
+                        : 'bg-s3 hover:bg-card'
+                    }`}
+                    style={{ border: isFiltered ? '0.5px solid var(--color-t1)' : '0.5px solid rgba(0,0,0,0.07)' }}
+                    onClick={() => setFilterAgent(filterAgent === agent.id ? null : agent.id)}
+                  >
+                    <span className={`w-[6px] h-[6px] rounded-full flex-shrink-0 ${
+                      isActive ? `bg-success ${isFiltered ? '' : 'dot-pulse'}` : isFiltered ? 'bg-white/50' : 'bg-t5'
+                    }`} />
+                    <span className={`text-xs font-medium ${isFiltered ? 'text-white' : 'text-t1'}`}>{agent.name}</span>
+                    <span className={`text-[10px] ${isFiltered ? 'text-white/55' : 'text-t4'}`}>
+                      {statusText}
+                    </span>
+                  </div>
+                )
+              })
+            })()}
           </div>
 
           {/* Deliverables feed (default main view) */}
@@ -424,6 +436,15 @@ export default function App() {
             tasks={tasks}
             filterAgent={filterAgent}
             onSelectTask={setSelectedTask}
+            onNewTask={() => setShowCreate(true)}
+            onNav={(key) => {
+              const navMap = {
+                projects: () => setShowRoadmap(true),
+                trading: () => setShowTrading(true),
+                skillsV2: () => setShowSkillsV2(true),
+              }
+              navMap[key]?.()
+            }}
           />
         </div>
 
