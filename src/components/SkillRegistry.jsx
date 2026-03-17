@@ -10,7 +10,7 @@ const SKILL_TYPES = [
   { value: 'custom', label: 'Custom', icon: '⚙️' },
 ]
 
-export default function SkillRegistry({ agent, onClose }) {
+export default function SkillRegistry({ agent, onClose, inline }) {
   const [skills, setSkills] = useState([])
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
@@ -38,23 +38,22 @@ export default function SkillRegistry({ agent, onClose }) {
 
   if (!agent) return null
 
-  return (
-    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-s1 border border-s4 rounded-xl w-full max-w-md shadow-2xl max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+  const content = (
+    <div className={inline ? "h-full overflow-y-auto" : "bg-s1 border border-s4 rounded-xl w-full max-w-md shadow-2xl max-h-[85vh] overflow-y-auto"} onClick={e => e.stopPropagation()}>
 
-        {/* Header */}
-        <div className="p-5 border-b border-s4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-xl">{agent.avatar}</span>
-            <div>
-              <h2 className="text-lg font-semibold" style={{ color: agent.color }}>Skills</h2>
-              <p className="text-xs text-t3">{agent.name} — {agent.role}</p>
-            </div>
+      {/* Header */}
+      <div className="p-5 border-b border-s4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-xl">{agent.avatar}</span>
+          <div>
+            <h2 className="text-lg font-semibold" style={{ color: agent.color }}>Skills</h2>
+            <p className="text-xs text-t3">{agent.name} — {agent.role}</p>
           </div>
-          <button onClick={onClose} className="text-t3 hover:text-t1 text-xl">&times;</button>
         </div>
+        {!inline && <button onClick={onClose} className="text-t3 hover:text-t1 text-xl">&times;</button>}
+      </div>
 
-        <div className="p-5 space-y-3">
+      <div className="p-5 space-y-3">
           {/* Skills List */}
           {skills.map(skill => {
             const st = SKILL_TYPES.find(s => s.value === skill.type)
@@ -108,8 +107,14 @@ export default function SkillRegistry({ agent, onClose }) {
               </button>
             </form>
           )}
-        </div>
       </div>
+    </div>
+  )
+
+  if (inline) return content
+  return (
+    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      {content}
     </div>
   )
 }

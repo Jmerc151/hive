@@ -27,6 +27,7 @@ const NAV_GROUPS = [
     label: 'Insights',
     items: [
       { key: 'analytics', icon: '\u25A3', label: 'Analytics' },
+      { key: 'graph',     icon: '\u25CB', label: 'Network' },
       { key: 'revenue',   icon: '\u25AB', label: 'Revenue' },
       { key: 'trading',   icon: '\u25AA', label: 'Trading' },
       { key: 'intel',     icon: '\u25C9', label: 'Intel Feed' },
@@ -59,17 +60,15 @@ const NAV_GROUPS = [
   }
 ]
 
-export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgent, onNewTask, taskCount, onScorecard, onSkills, onNav, currentUser, onLogout }) {
+export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgent, onNewTask, taskCount, onScorecard, onSkills, onNav, currentUser, onLogout, activeView }) {
   const [collapsed, setCollapsed] = useState(false)
   const [expandedGroups, setExpandedGroups] = useState({})
-  const [activeNav, setActiveNav] = useState('deliverables')
 
   const toggleGroup = (label) => {
     setExpandedGroups(prev => ({ ...prev, [label]: !prev[label] }))
   }
 
   const handleNav = (key) => {
-    setActiveNav(key)
     onNav?.(key)
   }
 
@@ -189,7 +188,7 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
 
               {/* Nav items */}
               {!group.agentSection && isOpen && group.items?.map(item => {
-                const isActive = activeNav === item.key
+                const isActive = activeView === item.key
                 return (
                   <button
                     key={item.key}
@@ -219,7 +218,7 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
           <button
             onClick={() => handleNav('users')}
             className={`flex items-center gap-2.5 w-full px-4 py-[7px] text-[13px] transition-all relative ${
-              activeNav === 'users'
+              activeView === 'users'
                 ? 'bg-[rgba(28,28,30,0.06)] text-t1 font-medium'
                 : 'text-t2 hover:bg-[rgba(28,28,30,0.04)]'
             }`}

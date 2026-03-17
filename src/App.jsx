@@ -20,7 +20,6 @@ import ABTestPanel from './components/ABTestPanel'
 import TraceView from './components/TraceView'
 import TradingDashboard from './components/TradingDashboard'
 import ProposalsPanel from './components/ProposalsPanel'
-import ProjectsPanel from './components/ProjectsPanel'
 import HistoryPanel from './components/HistoryPanel'
 import SearchBar from './components/SearchBar'
 import LiveTraceStream from './components/LiveTraceStream'
@@ -48,43 +47,23 @@ export default function App() {
   const { toasts, addToast, removeToast } = useToast()
   const [agents, setAgents] = useState([])
   const [tasks, setTasks] = useState([])
-  const [showCreate, setShowCreate] = useState(false)
-  const [selectedTask, setSelectedTask] = useState(null)
   const [filterAgent, setFilterAgent] = useState(null)
-  const [showChat, setShowChat] = useState(false)
-  const [showSpend, setShowSpend] = useState(false)
-  const [showBotGen, setShowBotGen] = useState(false)
-  const [reviewTaskId, setReviewTaskId] = useState(null)
   const [mobileView, setMobileView] = useState('board')
-  const [showScorecard, setShowScorecard] = useState(null) // agent object
-  const [showRevenue, setShowRevenue] = useState(false)
-  const [showPipelines, setShowPipelines] = useState(false)
-  const [showTriggers, setShowTriggers] = useState(false)
-  const [showSkills, setShowSkills] = useState(null) // agent object
-  const [abTestTask, setAbTestTask] = useState(null) // task object
-  const [showTrading, setShowTrading] = useState(false)
-  const [showProposals, setShowProposals] = useState(false)
-  const [showProjects, setShowProjects] = useState(false)
-  const [showHistory, setShowHistory] = useState(false)
-  const [showTrace, setShowTrace] = useState(false)
-  const [showGraph, setShowGraph] = useState(false)
-  const [showCostTimeline, setShowCostTimeline] = useState(false)
-  const [showIntel, setShowIntel] = useState(false)
-  const [showSkillsV2, setShowSkillsV2] = useState(false)
-  const [showDeliverables, setShowDeliverables] = useState(false)
-  const [showEval, setShowEval] = useState(false)
-  const [showKnowledge, setShowKnowledge] = useState(false)
-  const [showSchedule, setShowSchedule] = useState(false)
-  const [showMemory, setShowMemory] = useState(false)
-  const [showShortcuts, setShowShortcuts] = useState(false)
-  const [showSandbox, setShowSandbox] = useState(false)
-  const [showUsers, setShowUsers] = useState(false)
-  const [showMission, setShowMission] = useState(false)
-  const [showRoadmap, setShowRoadmap] = useState(false)
-  const [showMCP, setShowMCP] = useState(false)
-  const [showGuardrails, setShowGuardrails] = useState(false)
   const [currentUser, setCurrentUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
+  const [sseConnected, setSseConnected] = useState(false)
+
+  // Main view state — replaces 25+ individual show* states
+  const [activeView, setActiveView] = useState('deliverables')
+
+  // True overlay modals — stack on top of any view
+  const [showCreate, setShowCreate] = useState(false)
+  const [selectedTask, setSelectedTask] = useState(null)
+  const [reviewTaskId, setReviewTaskId] = useState(null)
+  const [showScorecard, setShowScorecard] = useState(null)
+  const [abTestTask, setAbTestTask] = useState(null)
+  const [showShortcuts, setShowShortcuts] = useState(false)
+  const [showSkills, setShowSkills] = useState(null)
 
   // Check auth on mount
   useEffect(() => {
@@ -94,7 +73,6 @@ export default function App() {
         setCurrentUser(user)
         setAuthChecked(true)
       }).catch(() => {
-        // Session expired or invalid — clear and show login if API key is set
         setSessionToken(null)
         setAuthChecked(true)
       })
@@ -125,10 +103,8 @@ export default function App() {
     }
   }, [])
 
-  const [sseConnected, setSseConnected] = useState(false)
   const debounceRef = useRef(null)
 
-  // Debounced refresh — batches rapid SSE events into one fetch per second
   const debouncedRefresh = useCallback(() => {
     if (debounceRef.current) return
     debounceRef.current = setTimeout(() => {
@@ -138,10 +114,7 @@ export default function App() {
   }, [refresh])
 
   useEffect(() => {
-    // Initial fetch
     refresh()
-
-    // SSE connection for real-time updates
     const authToken = getAuthToken()
     const sseUrl = `${BASE}/events/stream${authToken ? `?token=${authToken}` : ''}`
     let es = null
@@ -149,33 +122,14 @@ export default function App() {
 
     function connect() {
       es = new EventSource(sseUrl)
-
-      es.addEventListener('connected', () => {
-        setSseConnected(true)
-        refresh() // Full refresh on reconnect
-      })
-
-      es.addEventListener('task_update', () => {
-        debouncedRefresh()
-      })
-
-      es.addEventListener('agent_status', () => {
-        debouncedRefresh()
-      })
-
-      es.addEventListener('spend_update', () => {
-        // Spend updates don't need task/agent refresh
-      })
-
-      es.onerror = () => {
-        setSseConnected(false)
-        // EventSource auto-reconnects, but we mark disconnected
-      }
+      es.addEventListener('connected', () => { setSseConnected(true); refresh() })
+      es.addEventListener('task_update', () => debouncedRefresh())
+      es.addEventListener('agent_status', () => debouncedRefresh())
+      es.addEventListener('spend_update', () => {})
+      es.onerror = () => setSseConnected(false)
     }
 
     connect()
-
-    // Fallback poll every 30s for robustness
     const fallback = setInterval(refresh, 30000)
 
     return () => {
@@ -192,37 +146,16 @@ export default function App() {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return
 
       if (e.key === 'Escape') {
-        setShowCreate(false)
-        setSelectedTask(null)
-        setShowSpend(false)
-        setShowBotGen(false)
-        setReviewTaskId(null)
-        setShowScorecard(null)
-        setShowRevenue(false)
-        setShowPipelines(false)
-        setShowTriggers(false)
-        setShowSkills(null)
-        setAbTestTask(null)
-        setShowTrading(false)
-        setShowProposals(false)
-        setShowProjects(false)
-        setShowHistory(false)
-        setShowTrace(false)
-        setShowGraph(false)
-        setShowCostTimeline(false)
-        setShowIntel(false)
-        setShowSkillsV2(false)
-        setShowDeliverables(false)
-        setShowEval(false)
-        setShowKnowledge(false)
-        setShowSchedule(false)
-        setShowMemory(false)
-        setShowShortcuts(false)
-        setShowSandbox(false)
-        setShowUsers(false)
-        setShowRoadmap(false)
-        setShowMCP(false)
-        setShowGuardrails(false)
+        // Close overlay modals first (highest priority)
+        if (selectedTask) { setSelectedTask(null); return }
+        if (showCreate) { setShowCreate(false); return }
+        if (reviewTaskId) { setReviewTaskId(null); return }
+        if (abTestTask) { setAbTestTask(null); return }
+        if (showScorecard) { setShowScorecard(null); return }
+        if (showSkills) { setShowSkills(null); return }
+        if (showShortcuts) { setShowShortcuts(false); return }
+        // Navigate back to default view
+        setActiveView('deliverables')
         return
       }
 
@@ -241,7 +174,7 @@ export default function App() {
 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [])
+  }, [selectedTask, showCreate, reviewTaskId, abTestTask, showScorecard, showSkills, showShortcuts])
 
   useEffect(() => {
     async function setupPush() {
@@ -250,12 +183,8 @@ export default function App() {
         const reg = await navigator.serviceWorker.ready
         const existing = await reg.pushManager.getSubscription()
         if (existing) return
-
         const { key } = await api.getVapidKey()
-        const sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: key
-        })
+        const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key })
         await api.subscribePush(sub.toJSON())
       } catch (e) {
         console.log('Push subscription skipped:', e.message)
@@ -270,9 +199,7 @@ export default function App() {
     refresh()
   }
 
-  const handleRunTask = (taskId) => {
-    setReviewTaskId(taskId)
-  }
+  const handleRunTask = (taskId) => setReviewTaskId(taskId)
 
   const handleDirectRun = async (taskId) => {
     await api.runTask(taskId)
@@ -295,15 +222,81 @@ export default function App() {
     refresh()
   }
 
-  const filteredTasks = filterAgent
-    ? tasks.filter(t => t.agent_id === filterAgent)
-    : tasks
-
+  const filteredTasks = filterAgent ? tasks.filter(t => t.agent_id === filterAgent) : tasks
   const activeCount = agents.filter(a => a.isRunning).length
+  const goBack = () => setActiveView('deliverables')
 
-  // Show login screen if no API key and no session
   if (authChecked && !currentUser && !API_KEY) {
     return <LoginScreen onLogin={handleLogin} />
+  }
+
+  // Render the active view inline (no modal overlay)
+  const renderActiveView = () => {
+    switch (activeView) {
+      case 'deliverables':
+        return (
+          <DeliverablesFeed
+            agents={agents}
+            tasks={tasks}
+            filterAgent={filterAgent}
+            onSelectTask={setSelectedTask}
+            onNewTask={() => setShowCreate(true)}
+            onNav={(key) => setActiveView(key)}
+          />
+        )
+      case 'graph':
+        return <AgentGraph inline onClose={goBack} />
+      case 'analytics':
+        return <CostTimeline inline onClose={goBack} />
+      case 'intel':
+        return <IntelFeed inline onClose={goBack} />
+      case 'skillsV2':
+        return <SkillRegistryV2 inline onClose={goBack} />
+      case 'projects':
+        return <ProjectRoadmap inline agents={agents} onClose={goBack} onSelectTask={(id) => { setActiveView('deliverables'); setSelectedTask(id) }} />
+      case 'history':
+        return <HistoryPanel inline agents={agents} onSelectTask={(id) => { setSelectedTask(id) }} onClose={goBack} />
+      case 'trace':
+        return <LiveTraceStream inline onClose={goBack} />
+      case 'triggers':
+        return <EventTriggers inline agents={agents} pipelines={[]} onClose={goBack} />
+      case 'pipelines':
+        return <PipelineBuilder inline agents={agents} onClose={goBack} />
+      case 'revenue':
+        return <RevenuePanel inline agents={agents} onClose={goBack} />
+      case 'trading':
+        return <TradingDashboard inline agents={agents} onClose={goBack} />
+      case 'proposals':
+        return <ProposalsPanel inline agents={agents} onClose={goBack} />
+      case 'botGen':
+        return <BotGenerator inline onSubmit={(data) => { handleCreateTask(data); setActiveView('deliverables') }} onClose={goBack} />
+      case 'sandbox':
+        return <AgentSandbox inline agents={agents} onClose={goBack} />
+      case 'eval':
+        return <EvalHarness inline onClose={goBack} agents={agents} />
+      case 'knowledge':
+        return <KnowledgeBase inline onClose={goBack} />
+      case 'schedule':
+        return <ScheduledJobs inline agents={agents} onClose={goBack} />
+      case 'memory':
+        return <MemoryDashboard inline agents={agents} onClose={goBack} />
+      case 'spend':
+        return <SpendDashboard inline onClose={goBack} />
+      case 'chat':
+        return <ChatPanel inline agents={agents} onClose={goBack} onToast={addToast} />
+      case 'users':
+        return <UserManagement inline onClose={goBack} />
+      case 'mission':
+        return <MissionControl inline agents={agents} onClose={goBack} onSelectTask={(task) => { setActiveView('deliverables'); setSelectedTask(task) }} />
+      case 'mcp':
+        return <MCPServers inline onClose={goBack} />
+      case 'guardrails':
+        return <GuardrailMonitor inline onClose={goBack} />
+      case 'deliverablesFull':
+        return <DeliverablesPanel inline agents={agents} onClose={goBack} />
+      default:
+        return null
+    }
   }
 
   return (
@@ -321,36 +314,8 @@ export default function App() {
           onSkills={(agent) => setShowSkills(agent)}
           currentUser={currentUser}
           onLogout={handleLogout}
-          onNav={(key) => {
-            const navMap = {
-              deliverables: () => setShowDeliverables(true),
-              graph: () => setShowGraph(true),
-              analytics: () => setShowCostTimeline(true),
-              intel: () => setShowIntel(true),
-              skillsV2: () => setShowSkillsV2(true),
-              projects: () => setShowRoadmap(true),
-              history: () => setShowHistory(true),
-              trace: () => setShowTrace(true),
-              triggers: () => setShowTriggers(true),
-              pipelines: () => setShowPipelines(true),
-              revenue: () => setShowRevenue(true),
-              trading: () => setShowTrading(true),
-              proposals: () => setShowProposals(true),
-              botGen: () => setShowBotGen(true),
-              sandbox: () => setShowSandbox(true),
-              eval: () => setShowEval(true),
-              knowledge: () => setShowKnowledge(true),
-              schedule: () => setShowSchedule(true),
-              memory: () => setShowMemory(true),
-              spend: () => setShowSpend(true),
-              chat: () => setShowChat(true),
-              users: () => setShowUsers(true),
-              mission: () => setShowMission(true),
-              mcp: () => setShowMCP(true),
-              guardrails: () => setShowGuardrails(true),
-            }
-            navMap[key]?.()
-          }}
+          activeView={activeView}
+          onNav={setActiveView}
         />
       </div>
 
@@ -358,8 +323,7 @@ export default function App() {
         {/* Topbar */}
         <header className="bg-s2 flex items-center gap-[10px] px-4 md:px-[20px] pt-3 pb-[10px] safe-top flex-shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
           <h1 className="font-display text-[22px] text-t1 tracking-[2px] leading-none">HIVE</h1>
-          {/* Connection status */}
-          <div className="flex items-center gap-[5px]" title={sseConnected ? 'Live — real-time updates active' : 'Reconnecting…'}>
+          <div className="flex items-center gap-[5px]" title={sseConnected ? 'Live — real-time updates active' : 'Reconnecting\u2026'}>
             <span className={`w-[6px] h-[6px] rounded-full flex-shrink-0 ${sseConnected ? 'bg-success' : 'bg-warning dot-pulse'}`} />
             <span className={`text-[10px] hidden sm:inline ${sseConnected ? 'text-t4' : 'text-warning'}`}>
               {sseConnected ? 'Live' : 'Reconnecting'}
@@ -381,13 +345,7 @@ export default function App() {
         {/* Mobile views */}
         {mobileView === 'agents' && (
           <div className="md:hidden flex-1 overflow-y-auto">
-            <AgentCards
-              agents={agents}
-              tasks={tasks}
-              filterAgent={filterAgent}
-              onFilterAgent={setFilterAgent}
-              onStopAgent={handleStopAgent}
-            />
+            <AgentCards agents={agents} tasks={tasks} filterAgent={filterAgent} onFilterAgent={setFilterAgent} onStopAgent={handleStopAgent} />
           </div>
         )}
         {mobileView === 'trace' && (
@@ -401,104 +359,60 @@ export default function App() {
           </div>
         )}
 
-        {/* Desktop: Main content area */}
+        {/* Desktop: Main content area — renders active view */}
         <ErrorBoundary>
         <div className="flex-1 overflow-hidden hidden md:flex flex-col">
-          {/* Agent strip — pill chips */}
-          <div className="hidden md:flex gap-[6px] px-[20px] py-2 bg-s2 overflow-x-auto flex-shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
-            {(() => {
-              const AGENT_ROLES = { scout: 'Research', forge: 'Build', quill: 'Write', dealer: 'Sell', oracle: 'Analyze', nexus: 'Manage' }
-              return agents.map(agent => {
-                const agentTask = tasks.find(t => t.agent_id === agent.id && t.status === 'in_progress')
-                const isActive = !!agentTask
-                const isFiltered = filterAgent === agent.id
-                const agentDoneCount = tasks.filter(t => t.agent_id === agent.id && t.status === 'done').length
-                const statusText = isActive ? 'Working' : agentDoneCount > 0 ? `${agentDoneCount} done` : AGENT_ROLES[agent.id] || 'Idle'
-                return (
-                  <div
-                    key={agent.id}
-                    className={`flex-shrink-0 flex items-center gap-[6px] py-[5px] pl-2 pr-[10px] rounded-[18px] cursor-pointer transition-all whitespace-nowrap ${
-                      isFiltered
-                        ? 'bg-t1 text-white'
-                        : 'bg-s3 hover:bg-card'
-                    }`}
-                    style={{ border: isFiltered ? '0.5px solid var(--color-t1)' : '0.5px solid rgba(0,0,0,0.07)' }}
-                    onClick={() => setFilterAgent(filterAgent === agent.id ? null : agent.id)}
-                  >
-                    <span className={`w-[6px] h-[6px] rounded-full flex-shrink-0 ${
-                      isActive ? `bg-success ${isFiltered ? '' : 'dot-pulse'}` : isFiltered ? 'bg-white/50' : 'bg-t5'
-                    }`} />
-                    <span className={`text-xs font-medium ${isFiltered ? 'text-white' : 'text-t1'}`}>{agent.name}</span>
-                    <span className={`text-[10px] ${isFiltered ? 'text-white/55' : 'text-t4'}`}>
-                      {statusText}
-                    </span>
-                  </div>
-                )
-              })
-            })()}
-          </div>
+          {/* Agent strip — only show on deliverables view */}
+          {activeView === 'deliverables' && (
+            <div className="hidden md:flex gap-[6px] px-[20px] py-2 bg-s2 overflow-x-auto flex-shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
+              {(() => {
+                const AGENT_ROLES = { scout: 'Research', forge: 'Build', quill: 'Write', dealer: 'Sell', oracle: 'Analyze', nexus: 'Manage' }
+                return agents.map(agent => {
+                  const agentTask = tasks.find(t => t.agent_id === agent.id && t.status === 'in_progress')
+                  const isActive = !!agentTask
+                  const isFiltered = filterAgent === agent.id
+                  const agentDoneCount = tasks.filter(t => t.agent_id === agent.id && t.status === 'done').length
+                  const statusText = isActive ? 'Working' : agentDoneCount > 0 ? `${agentDoneCount} done` : AGENT_ROLES[agent.id] || 'Idle'
+                  return (
+                    <div
+                      key={agent.id}
+                      className={`flex-shrink-0 flex items-center gap-[6px] py-[5px] pl-2 pr-[10px] rounded-[18px] cursor-pointer transition-all whitespace-nowrap ${
+                        isFiltered ? 'bg-t1 text-white' : 'bg-s3 hover:bg-card'
+                      }`}
+                      style={{ border: isFiltered ? '0.5px solid var(--color-t1)' : '0.5px solid rgba(0,0,0,0.07)' }}
+                      onClick={() => setFilterAgent(filterAgent === agent.id ? null : agent.id)}
+                    >
+                      <span className={`w-[6px] h-[6px] rounded-full flex-shrink-0 ${
+                        isActive ? `bg-success ${isFiltered ? '' : 'dot-pulse'}` : isFiltered ? 'bg-white/50' : 'bg-t5'
+                      }`} />
+                      <span className={`text-xs font-medium ${isFiltered ? 'text-white' : 'text-t1'}`}>{agent.name}</span>
+                      <span className={`text-[10px] ${isFiltered ? 'text-white/55' : 'text-t4'}`}>{statusText}</span>
+                    </div>
+                  )
+                })
+              })()}
+            </div>
+          )}
 
-          {/* Deliverables feed (default main view) */}
-          <DeliverablesFeed
-            agents={agents}
-            tasks={tasks}
-            filterAgent={filterAgent}
-            onSelectTask={setSelectedTask}
-            onNewTask={() => setShowCreate(true)}
-            onNav={(key) => {
-              const navMap = {
-                projects: () => setShowRoadmap(true),
-                trading: () => setShowTrading(true),
-                skillsV2: () => setShowSkillsV2(true),
-              }
-              navMap[key]?.()
-            }}
-          />
+          {/* Active view */}
+          <div className="flex-1 overflow-hidden flex flex-col">
+            {renderActiveView()}
+          </div>
         </div>
 
-        {/* Mobile: Full task board (no split) */}
+        {/* Mobile: Full task board */}
         <div className={`flex-1 overflow-hidden md:hidden ${mobileView !== 'board' ? 'hidden' : 'flex'}`}>
-          <TaskBoard
-            tasks={filteredTasks}
-            agents={agents}
-            onSelectTask={setSelectedTask}
-            onRunTask={handleRunTask}
-            onUpdateTask={handleUpdateTask}
-          />
+          <TaskBoard tasks={filteredTasks} agents={agents} onSelectTask={setSelectedTask} onRunTask={handleRunTask} onUpdateTask={handleUpdateTask} />
         </div>
         </ErrorBoundary>
       </main>
 
       {/* Mobile bottom nav */}
-      <MobileNav
-        view={mobileView}
-        onChangeView={setMobileView}
-        activeCount={activeCount}
-        onNewTask={() => setShowCreate(true)}
-      />
+      <MobileNav view={mobileView} onChangeView={setMobileView} activeCount={activeCount} onNewTask={() => setShowCreate(true)} />
 
-      {/* Modals */}
+      {/* TRUE overlay modals — stack on any view */}
       {showCreate && (
-        <CreateTaskModal
-          agents={agents}
-          onSubmit={handleCreateTask}
-          onClose={() => setShowCreate(false)}
-        />
-      )}
-
-      {showChat && (
-        <ChatPanel agents={agents} onClose={() => setShowChat(false)} onToast={addToast} />
-      )}
-
-      {showSpend && (
-        <SpendDashboard onClose={() => setShowSpend(false)} />
-      )}
-
-      {showBotGen && (
-        <BotGenerator
-          onSubmit={(data) => { handleCreateTask(data); setShowBotGen(false) }}
-          onClose={() => setShowBotGen(false)}
-        />
+        <CreateTaskModal agents={agents} onSubmit={handleCreateTask} onClose={() => setShowCreate(false)} />
       )}
 
       {selectedTask && (
@@ -524,154 +438,18 @@ export default function App() {
       )}
 
       {showScorecard && (
-        <AgentScorecard
-          agent={showScorecard}
-          onClose={() => setShowScorecard(null)}
-        />
-      )}
-
-      {showRevenue && (
-        <RevenuePanel
-          agents={agents}
-          onClose={() => setShowRevenue(false)}
-        />
-      )}
-
-      {showPipelines && (
-        <PipelineBuilder
-          agents={agents}
-          onClose={() => setShowPipelines(false)}
-        />
-      )}
-
-      {showTriggers && (
-        <EventTriggers
-          agents={agents}
-          pipelines={[]}
-          onClose={() => setShowTriggers(false)}
-        />
-      )}
-
-      {showSkills && (
-        <SkillRegistry
-          agent={showSkills}
-          onClose={() => setShowSkills(null)}
-        />
-      )}
-
-      {showTrading && (
-        <TradingDashboard
-          agents={agents}
-          onClose={() => setShowTrading(false)}
-        />
-      )}
-
-      {showProposals && (
-        <ProposalsPanel
-          agents={agents}
-          onClose={() => setShowProposals(false)}
-        />
+        <AgentScorecard agent={showScorecard} onClose={() => setShowScorecard(null)} />
       )}
 
       {abTestTask && (
-        <ABTestPanel
-          task={abTestTask}
-          agent={agents.find(a => a.id === abTestTask?.agent_id)}
-          onClose={() => setAbTestTask(null)}
-        />
+        <ABTestPanel task={abTestTask} agent={agents.find(a => a.id === abTestTask?.agent_id)} onClose={() => setAbTestTask(null)} />
       )}
 
-      {showProjects && (
-        <ProjectsPanel
-          agents={agents}
-          onSelectTask={(id) => { setSelectedTask(id); setShowProjects(false) }}
-          onClose={() => setShowProjects(false)}
-        />
+      {showSkills && (
+        <SkillRegistry agent={showSkills} onClose={() => setShowSkills(null)} />
       )}
 
-      {showHistory && (
-        <HistoryPanel
-          agents={agents}
-          onSelectTask={(id) => { setSelectedTask(id); setShowHistory(false) }}
-          onClose={() => setShowHistory(false)}
-        />
-      )}
-
-      {showTrace && (
-        <LiveTraceStream onClose={() => setShowTrace(false)} />
-      )}
-
-      {showGraph && (
-        <AgentGraph onClose={() => setShowGraph(false)} />
-      )}
-
-      {showCostTimeline && (
-        <CostTimeline onClose={() => setShowCostTimeline(false)} />
-      )}
-
-      {showIntel && (
-        <IntelFeed onClose={() => setShowIntel(false)} />
-      )}
-
-      {showSkillsV2 && (
-        <SkillRegistryV2 onClose={() => setShowSkillsV2(false)} />
-      )}
-
-      {showEval && (
-        <EvalHarness onClose={() => setShowEval(false)} agents={agents} />
-      )}
-
-      {showSandbox && (
-        <AgentSandbox agents={agents} onClose={() => setShowSandbox(false)} />
-      )}
-      {showDeliverables && (
-        <DeliverablesPanel
-          agents={agents}
-          onClose={() => setShowDeliverables(false)}
-        />
-      )}
-
-      {showKnowledge && (
-        <KnowledgeBase onClose={() => setShowKnowledge(false)} />
-      )}
-
-      {showSchedule && (
-        <ScheduledJobs agents={agents} onClose={() => setShowSchedule(false)} />
-      )}
-
-      {showMemory && (
-        <MemoryDashboard agents={agents} onClose={() => setShowMemory(false)} />
-      )}
-
-      {showUsers && (
-        <UserManagement onClose={() => setShowUsers(false)} />
-      )}
-
-      {showRoadmap && (
-        <ProjectRoadmap
-          agents={agents}
-          onClose={() => setShowRoadmap(false)}
-          onSelectTask={(id) => { setShowRoadmap(false); setSelectedTask(id) }}
-        />
-      )}
-
-      {showMCP && (
-        <MCPServers onClose={() => setShowMCP(false)} />
-      )}
-
-      {showGuardrails && (
-        <GuardrailMonitor onClose={() => setShowGuardrails(false)} />
-      )}
-
-      {showMission && (
-        <MissionControl
-          agents={agents}
-          onClose={() => setShowMission(false)}
-          onSelectTask={(task) => { setShowMission(false); setSelectedTask(task) }}
-        />
-      )}
-
-      {/* Mobile CommandBar — hide when chat is open since chat has its own input */}
+      {/* Mobile CommandBar */}
       {mobileView !== 'chat' && (
         <div className="md:hidden">
           <CommandBar agents={agents} onTaskCreated={() => refresh()} />
@@ -686,7 +464,7 @@ export default function App() {
             <h3 className="font-display text-xl tracking-wider text-t1 mb-4">KEYBOARD SHORTCUTS</h3>
             <div className="space-y-2 text-sm">
               {[
-                ['⌘K', 'Command bar'],
+                ['\u2318K', 'Command bar'],
                 ['N', 'New task'],
                 ['Esc', 'Close panel'],
                 ['?', 'This help'],
@@ -701,7 +479,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Toasts */}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>
   )

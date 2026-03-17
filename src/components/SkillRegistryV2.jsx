@@ -65,7 +65,7 @@ function parseTags(raw) {
   try { return JSON.parse(raw) } catch { return [] }
 }
 
-export default function SkillRegistryV2({ onClose }) {
+export default function SkillRegistryV2({ onClose, inline }) {
   const [activeTab, setActiveTab] = useState('skills')
   const [skills, setSkills] = useState([])
   const [search, setSearch] = useState('')
@@ -244,66 +244,83 @@ export default function SkillRegistryV2({ onClose }) {
 
   if (detail && !creating) {
     const tags = parseTags(detail.tags)
-    return (
-      <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-        <div className="bg-s1 rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto shadow-2xl" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
-          <div className="flex items-center justify-between p-4" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
-            <div className="flex items-center gap-3">
-              <button onClick={() => { setDetail(null); setEditing(false) }} className="text-t3 hover:text-t1 text-sm">← Back</button>
-              <h2 className="text-lg font-bold font-display text-t1">{detail.name}</h2>
-              <span className="text-xs text-t4">v{detail.version}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              {!editing && <button onClick={() => setEditing(true)} className="px-3 py-1 bg-s3 text-t1 rounded-lg text-xs hover:bg-s3">Edit</button>}
-              <button onClick={() => setConfirmDelete({ slug: detail.slug, name: detail.name })} className="px-3 py-1 rounded-lg text-xs text-danger" style={{ background: 'rgba(255,59,48,0.1)' }}>Delete</button>
-              <button onClick={onClose} className="text-t3 hover:text-t1 text-xl ml-2">&times;</button>
-            </div>
+    const detailContent = (
+      <div className={inline ? "h-full overflow-y-auto" : "bg-s1 rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto shadow-2xl"} style={inline ? {} : { border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
+          <div className="flex items-center gap-3">
+            <button onClick={() => { setDetail(null); setEditing(false) }} className="text-t3 hover:text-t1 text-sm">← Back</button>
+            <h2 className="text-lg font-bold font-display text-t1">{detail.name}</h2>
+            <span className="text-xs text-t4">v{detail.version}</span>
           </div>
-
-          <div className="p-4 space-y-4">
-            {editing ? (
-              <>
-                {editorForm}
-                <div className="flex gap-2">
-                  <button onClick={handleUpdate} className="px-4 py-2 bg-t1 text-white rounded-lg text-sm font-medium hover:opacity-80">Save</button>
-                  <button onClick={() => setEditing(false)} className="px-4 py-2 bg-s3 text-t1 rounded-lg text-sm hover:bg-s3">Cancel</button>
-                </div>
-              </>
-            ) : (
-              <>
-                <p className="text-sm text-t2">{detail.description}</p>
-                {tags.length > 0 && (
-                  <div className="flex flex-wrap gap-1">
-                    {tags.map(t => <span key={t} className="text-[10px] bg-s3 text-t2 px-2 py-0.5 rounded">{t}</span>)}
-                  </div>
-                )}
-                <div className="bg-s2 rounded-lg p-4" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}>
-                  <pre className="text-xs text-t1 font-mono whitespace-pre-wrap">{detail.skill_md}</pre>
-                </div>
-
-                <div>
-                  <h3 className="text-sm font-medium text-t1 mb-2">Assign to Agents</h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {AGENTS.map(agentId => {
-                      const assigned = detail.assigned_agents?.includes(agentId)
-                      return (
-                        <button key={agentId} onClick={() => assigned ? handleUnassign(agentId, detail.slug) : handleAssign(agentId, detail.slug)}
-                          className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
-                            assigned ? 'bg-s3 text-t1' : 'bg-s2 text-t3 hover:bg-s3'
-                          }`}
-                          style={{ border: assigned ? '1px solid rgba(28,28,30,0.3)' : '0.5px solid rgba(0,0,0,0.08)' }}>
-                          <span className="w-2 h-2 rounded-full" style={{ background: AGENT_COLORS[agentId] }} />
-                          <span className="capitalize">{agentId}</span>
-                          {assigned && <span className="ml-auto">✓</span>}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              </>
-            )}
+          <div className="flex items-center gap-2">
+            {!editing && <button onClick={() => setEditing(true)} className="px-3 py-1 bg-s3 text-t1 rounded-lg text-xs hover:bg-s3">Edit</button>}
+            <button onClick={() => setConfirmDelete({ slug: detail.slug, name: detail.name })} className="px-3 py-1 rounded-lg text-xs text-danger" style={{ background: 'rgba(255,59,48,0.1)' }}>Delete</button>
+            {!inline && <button onClick={onClose} className="text-t3 hover:text-t1 text-xl ml-2">&times;</button>}
           </div>
         </div>
+
+        <div className="p-4 space-y-4">
+          {editing ? (
+            <>
+              {editorForm}
+              <div className="flex gap-2">
+                <button onClick={handleUpdate} className="px-4 py-2 bg-t1 text-white rounded-lg text-sm font-medium hover:opacity-80">Save</button>
+                <button onClick={() => setEditing(false)} className="px-4 py-2 bg-s3 text-t1 rounded-lg text-sm hover:bg-s3">Cancel</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-t2">{detail.description}</p>
+              {tags.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {tags.map(t => <span key={t} className="text-[10px] bg-s3 text-t2 px-2 py-0.5 rounded">{t}</span>)}
+                </div>
+              )}
+              <div className="bg-s2 rounded-lg p-4" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}>
+                <pre className="text-xs text-t1 font-mono whitespace-pre-wrap">{detail.skill_md}</pre>
+              </div>
+
+              <div>
+                <h3 className="text-sm font-medium text-t1 mb-2">Assign to Agents</h3>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {AGENTS.map(agentId => {
+                    const assigned = detail.assigned_agents?.includes(agentId)
+                    return (
+                      <button key={agentId} onClick={() => assigned ? handleUnassign(agentId, detail.slug) : handleAssign(agentId, detail.slug)}
+                        className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                          assigned ? 'bg-s3 text-t1' : 'bg-s2 text-t3 hover:bg-s3'
+                        }`}
+                        style={{ border: assigned ? '1px solid rgba(28,28,30,0.3)' : '0.5px solid rgba(0,0,0,0.08)' }}>
+                        <span className="w-2 h-2 rounded-full" style={{ background: AGENT_COLORS[agentId] }} />
+                        <span className="capitalize">{agentId}</span>
+                        {assigned && <span className="ml-auto">✓</span>}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    )
+
+    if (inline) return (
+      <>
+        {detailContent}
+        <ConfirmDialog
+          isOpen={!!confirmDelete}
+          title="Delete Skill?"
+          message={`Are you sure you want to delete "${confirmDelete?.name}"? This action cannot be undone.`}
+          onConfirm={() => { handleDelete(confirmDelete.slug); setConfirmDelete(null) }}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      </>
+    )
+
+    return (
+      <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+        {detailContent}
         <ConfirmDialog
           isOpen={!!confirmDelete}
           title="Delete Skill?"
@@ -316,22 +333,28 @@ export default function SkillRegistryV2({ onClose }) {
   }
 
   if (creating) {
-    return (
-      <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-        <div className="bg-s1 rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto shadow-2xl" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
-          <div className="flex items-center justify-between p-4" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
-            <h2 className="text-lg font-bold font-display text-t1">Create Skill</h2>
-            <button onClick={() => setCreating(false)} className="text-t3 hover:text-t1 text-xl">&times;</button>
-          </div>
-          <div className="p-4 space-y-4">
-            {editorForm}
-            <div className="flex gap-2">
-              <button onClick={handleCreate} disabled={!form.name || !form.skill_md}
-                className="px-4 py-2 bg-t1 text-white rounded-lg text-sm font-medium hover:opacity-80 disabled:opacity-50">Create Skill</button>
-              <button onClick={() => setCreating(false)} className="px-4 py-2 bg-s3 text-t1 rounded-lg text-sm hover:bg-s3">Cancel</button>
-            </div>
+    const createContent = (
+      <div className={inline ? "h-full overflow-y-auto" : "bg-s1 rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto shadow-2xl"} style={inline ? {} : { border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
+          <h2 className="text-lg font-bold font-display text-t1">Create Skill</h2>
+          <button onClick={() => setCreating(false)} className="text-t3 hover:text-t1 text-xl">&times;</button>
+        </div>
+        <div className="p-4 space-y-4">
+          {editorForm}
+          <div className="flex gap-2">
+            <button onClick={handleCreate} disabled={!form.name || !form.skill_md}
+              className="px-4 py-2 bg-t1 text-white rounded-lg text-sm font-medium hover:opacity-80 disabled:opacity-50">Create Skill</button>
+            <button onClick={() => setCreating(false)} className="px-4 py-2 bg-s3 text-t1 rounded-lg text-sm hover:bg-s3">Cancel</button>
           </div>
         </div>
+      </div>
+    )
+
+    if (inline) return createContent
+
+    return (
+      <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+        {createContent}
       </div>
     )
   }
@@ -409,89 +432,95 @@ export default function SkillRegistryV2({ onClose }) {
     </div>
   )
 
-  return (
-    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-s1 rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between p-4 shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
-          <div className="flex items-center gap-4">
-            <h2 className="text-lg font-bold font-display text-t1">Skills & Agents</h2>
-            <div className="flex bg-s2 rounded-lg p-0.5">
-              <button onClick={() => setActiveTab('skills')}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${activeTab === 'skills' ? 'bg-s3 text-t1' : 'text-t3 hover:text-t1'}`}>
-                Skills
-              </button>
-              <button onClick={() => setActiveTab('a2a')}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${activeTab === 'a2a' ? 'bg-s3 text-t1' : 'text-t3 hover:text-t1'}`}>
-                External Agents (A2A)
-              </button>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {activeTab === 'skills' && (
-              <>
-                <button onClick={() => {
-                  const url = prompt('Enter SKILL.md URL to import:')
-                  if (url) api.importSkillUrl(url).then(() => refresh()).catch(e => alert(e.message))
-                }} className="px-3 py-1.5 bg-s3 text-t1 rounded-lg text-xs hover:bg-s3">Import URL</button>
-                <button onClick={() => {
-                  const content = prompt('Paste SKILL.md content:')
-                  if (content) api.importSkill(content).then(() => refresh()).catch(e => alert(e.message))
-                }} className="px-3 py-1.5 bg-s3 text-t1 rounded-lg text-xs hover:bg-s3">Import</button>
-                <button onClick={() => { setCreating(true); setForm({ name: '', description: '', skill_md: '', tags: '' }) }}
-                  className="px-3 py-1.5 bg-t1 text-white rounded-lg text-xs font-medium hover:opacity-80">+ New Skill</button>
-              </>
-            )}
-            <button onClick={onClose} className="text-t3 hover:text-t1 text-xl">&times;</button>
+  const mainContent = (
+    <div className={inline ? "h-full flex flex-col" : "bg-s1 rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl"} style={inline ? {} : { border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
+      <div className="flex items-center justify-between p-4 shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
+        <div className="flex items-center gap-4">
+          <h2 className="text-lg font-bold font-display text-t1">Skills & Agents</h2>
+          <div className="flex bg-s2 rounded-lg p-0.5">
+            <button onClick={() => setActiveTab('skills')}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${activeTab === 'skills' ? 'bg-s3 text-t1' : 'text-t3 hover:text-t1'}`}>
+              Skills
+            </button>
+            <button onClick={() => setActiveTab('a2a')}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${activeTab === 'a2a' ? 'bg-s3 text-t1' : 'text-t3 hover:text-t1'}`}>
+              External Agents (A2A)
+            </button>
           </div>
         </div>
-
-        {activeTab === 'skills' ? (
-          <>
-            <div className="p-4 shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search skills..."
-                className="w-full bg-s2 rounded-lg px-3 py-2 text-sm text-t1 placeholder:text-t4 focus:outline-none focus:ring-1 focus:ring-t1/30" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }} />
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4">
-              {loading && skills.length === 0 && <div className="text-center text-t3 py-8">Loading...</div>}
-              {!loading && skills.length === 0 && (
-                <div className="text-center text-t3 py-12">
-                  <div className="text-sm">No skills yet.</div>
-                  <div className="text-xs mt-1 text-t4">Create your first SKILL.md instruction package.</div>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {skills.map(skill => {
-                  const tags = parseTags(skill.tags)
-                  return (
-                    <div key={skill.id || skill.slug} onClick={() => loadDetail(skill.slug)}
-                      className="bg-s2 rounded-lg p-4 cursor-pointer hover:bg-s3 transition-colors" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}>
-                      <div className="flex items-start justify-between mb-2">
-                        <h3 className="text-sm font-medium text-t1">{skill.name}</h3>
-                        <span className="text-[10px] text-t4">v{skill.version || '1.0.0'}</span>
-                      </div>
-                      <p className="text-xs text-t3 line-clamp-2 mb-2">{skill.description}</p>
-                      {tags.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mb-2">
-                          {tags.map(t => <span key={t} className="text-[10px] bg-s3 text-t2 px-1.5 py-0.5 rounded">{t}</span>)}
-                        </div>
-                      )}
-                      <div className="flex items-center justify-between text-[10px] text-t4">
-                        <span>{skill.source || 'custom'} · {skill.author || 'john'}</span>
-                        <a href={api.exportSkill(skill.slug)} target="_blank" rel="noopener noreferrer"
-                          onClick={e => e.stopPropagation()} className="text-t1 hover:opacity-80">Export</a>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          </>
-        ) : (
-          a2aContent
-        )}
+        <div className="flex items-center gap-2">
+          {activeTab === 'skills' && (
+            <>
+              <button onClick={() => {
+                const url = prompt('Enter SKILL.md URL to import:')
+                if (url) api.importSkillUrl(url).then(() => refresh()).catch(e => alert(e.message))
+              }} className="px-3 py-1.5 bg-s3 text-t1 rounded-lg text-xs hover:bg-s3">Import URL</button>
+              <button onClick={() => {
+                const content = prompt('Paste SKILL.md content:')
+                if (content) api.importSkill(content).then(() => refresh()).catch(e => alert(e.message))
+              }} className="px-3 py-1.5 bg-s3 text-t1 rounded-lg text-xs hover:bg-s3">Import</button>
+              <button onClick={() => { setCreating(true); setForm({ name: '', description: '', skill_md: '', tags: '' }) }}
+                className="px-3 py-1.5 bg-t1 text-white rounded-lg text-xs font-medium hover:opacity-80">+ New Skill</button>
+            </>
+          )}
+          {!inline && <button onClick={onClose} className="text-t3 hover:text-t1 text-xl">&times;</button>}
+        </div>
       </div>
+
+      {activeTab === 'skills' ? (
+        <>
+          <div className="p-4 shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search skills..."
+              className="w-full bg-s2 rounded-lg px-3 py-2 text-sm text-t1 placeholder:text-t4 focus:outline-none focus:ring-1 focus:ring-t1/30" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }} />
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4">
+            {loading && skills.length === 0 && <div className="text-center text-t3 py-8">Loading...</div>}
+            {!loading && skills.length === 0 && (
+              <div className="text-center text-t3 py-12">
+                <div className="text-sm">No skills yet.</div>
+                <div className="text-xs mt-1 text-t4">Create your first SKILL.md instruction package.</div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {skills.map(skill => {
+                const tags = parseTags(skill.tags)
+                return (
+                  <div key={skill.id || skill.slug} onClick={() => loadDetail(skill.slug)}
+                    className="bg-s2 rounded-lg p-4 cursor-pointer hover:bg-s3 transition-colors" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}>
+                    <div className="flex items-start justify-between mb-2">
+                      <h3 className="text-sm font-medium text-t1">{skill.name}</h3>
+                      <span className="text-[10px] text-t4">v{skill.version || '1.0.0'}</span>
+                    </div>
+                    <p className="text-xs text-t3 line-clamp-2 mb-2">{skill.description}</p>
+                    {tags.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mb-2">
+                        {tags.map(t => <span key={t} className="text-[10px] bg-s3 text-t2 px-1.5 py-0.5 rounded">{t}</span>)}
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between text-[10px] text-t4">
+                      <span>{skill.source || 'custom'} · {skill.author || 'john'}</span>
+                      <a href={api.exportSkill(skill.slug)} target="_blank" rel="noopener noreferrer"
+                        onClick={e => e.stopPropagation()} className="text-t1 hover:opacity-80">Export</a>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </>
+      ) : (
+        a2aContent
+      )}
+    </div>
+  )
+
+  if (inline) return mainContent
+
+  return (
+    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      {mainContent}
     </div>
   )
 }

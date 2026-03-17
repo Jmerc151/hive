@@ -714,7 +714,7 @@ function ProjectDetailView({ project, detail, onBack, onRefresh, onSelectTask, o
 /* ── MAIN COMPONENT ── */
 /* ═══════════════════════════════════════════════════ */
 
-export default function ProjectRoadmap({ agents = [], onClose, onSelectTask }) {
+export default function ProjectRoadmap({ agents = [], onClose, onSelectTask, inline }) {
   const [projects, setProjects] = useState([])
   const [details, setDetails] = useState({}) // { projectId: detailObj }
   const [loading, setLoading] = useState(true)
@@ -803,30 +803,35 @@ export default function ProjectRoadmap({ agents = [], onClose, onSelectTask }) {
   if (selectedProject) {
     const proj = projects.find(p => p.id === selectedProject)
     if (!proj) { setSelectedProject(null); return null }
+    const detailContent = (
+      <div className={inline ? "h-full flex flex-col overflow-y-auto" : "w-full max-w-2xl h-[85vh] bg-page rounded-2xl shadow-2xl flex flex-col overflow-hidden mx-4"}
+        onClick={inline ? undefined : e => e.stopPropagation()} style={inline ? undefined : { border: '0.5px solid rgba(0,0,0,0.1)' }}>
+        <ProjectDetailView
+          project={proj}
+          detail={details[proj.id]}
+          onBack={() => setSelectedProject(null)}
+          onRefresh={fetchAll}
+          onSelectTask={(id) => { onClose(); onSelectTask?.(id) }}
+          onGenerate={handleGenerate}
+          generating={generating}
+        />
+      </div>
+    )
+
+    if (inline) return detailContent
+
     return (
       <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center" onClick={onClose}>
-        <div className="w-full max-w-2xl h-[85vh] bg-page rounded-2xl shadow-2xl flex flex-col overflow-hidden mx-4"
-          onClick={e => e.stopPropagation()} style={{ border: '0.5px solid rgba(0,0,0,0.1)' }}>
-          <ProjectDetailView
-            project={proj}
-            detail={details[proj.id]}
-            onBack={() => setSelectedProject(null)}
-            onRefresh={fetchAll}
-            onSelectTask={(id) => { onClose(); onSelectTask?.(id) }}
-            onGenerate={handleGenerate}
-            generating={generating}
-          />
-        </div>
+        {detailContent}
       </div>
     )
   }
 
-  return (
-    <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center" onClick={onClose}>
-      <div className="w-full max-w-5xl h-[88vh] bg-page rounded-2xl shadow-2xl flex flex-col overflow-hidden mx-4"
-        onClick={e => e.stopPropagation()} style={{ border: '0.5px solid rgba(0,0,0,0.1)' }}>
+  const mainContent = (
+    <div className={inline ? "h-full flex flex-col overflow-y-auto" : "w-full max-w-5xl h-[88vh] bg-page rounded-2xl shadow-2xl flex flex-col overflow-hidden mx-4"}
+      onClick={inline ? undefined : e => e.stopPropagation()} style={inline ? undefined : { border: '0.5px solid rgba(0,0,0,0.1)' }}>
 
-        {/* Header */}
+      {/* Header */}
         <div className="px-5 pt-4 pb-3 flex items-center gap-3 flex-shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.07)' }}>
           <div className="flex items-center gap-[6px]">
             <span className="text-[18px]">🗺️</span>
@@ -898,7 +903,14 @@ export default function ProjectRoadmap({ agents = [], onClose, onSelectTask }) {
         )}
 
         {showCreate && <CreateProjectModal onClose={() => setShowCreate(false)} onCreate={handleCreate} />}
-      </div>
+    </div>
+  )
+
+  if (inline) return mainContent
+
+  return (
+    <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center" onClick={onClose}>
+      {mainContent}
     </div>
   )
 }

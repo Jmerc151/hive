@@ -225,7 +225,7 @@ function ReplayModal({ pipeline, agents, onClose, onReplay }) {
 
 // ── Main Component ──
 
-export default function PipelineBuilder({ agents, onClose }) {
+export default function PipelineBuilder({ agents, onClose, inline }) {
   const [pipelines, setPipelines] = useState([])
   const [editing, setEditing] = useState(null)
   const [name, setName] = useState('')
@@ -355,21 +355,20 @@ export default function PipelineBuilder({ agents, onClose }) {
     setListSteps(updated)
   }
 
-  return (
-    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-2 md:p-4" onClick={onClose}>
-      <div className="bg-s1 rounded-xl w-full max-w-5xl shadow-2xl max-h-[90vh] flex flex-col" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
+  const content = (
+    <div className={inline ? "h-full flex flex-col" : "bg-s1 rounded-xl w-full max-w-5xl shadow-2xl max-h-[90vh] flex flex-col"} style={inline ? {} : { border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
 
-        {/* Header */}
-        <div className="p-4 flex items-center justify-between shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
-          <div className="flex items-center gap-2">
-            <span className="text-xl">🔗</span>
-            <h2 className="text-lg font-semibold font-display">{editing ? (editing === 'new' ? 'New Pipeline' : 'Edit Pipeline') : 'Pipelines'}</h2>
-          </div>
-          <div className="flex gap-2">
-            {editing && <button onClick={() => setEditing(null)} className="text-sm text-t3 hover:text-t1">Back</button>}
-            <button onClick={onClose} className="text-t3 hover:text-t1 text-xl">&times;</button>
-          </div>
+      {/* Header */}
+      <div className="p-4 flex items-center justify-between shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
+        <div className="flex items-center gap-2">
+          <span className="text-xl">🔗</span>
+          <h2 className="text-lg font-semibold font-display">{editing ? (editing === 'new' ? 'New Pipeline' : 'Edit Pipeline') : 'Pipelines'}</h2>
         </div>
+        <div className="flex gap-2">
+          {editing && <button onClick={() => setEditing(null)} className="text-sm text-t3 hover:text-t1">Back</button>}
+          {!inline && <button onClick={onClose} className="text-t3 hover:text-t1 text-xl">&times;</button>}
+        </div>
+      </div>
 
         <div className="flex-1 overflow-hidden flex flex-col">
           {!editing ? (
@@ -518,7 +517,29 @@ export default function PipelineBuilder({ agents, onClose }) {
             </div>
           )}
         </div>
-      </div>
+    </div>
+  )
+
+  if (inline) return (
+    <>
+      {content}
+      {editingNode && (
+        <PromptEditor node={editingNode} onSave={handlePromptSave} onClose={() => setEditingNode(null)} />
+      )}
+      {replayingPipeline && (
+        <ReplayModal
+          pipeline={replayingPipeline}
+          agents={agents}
+          onClose={() => setReplayingPipeline(null)}
+          onReplay={handleReplay}
+        />
+      )}
+    </>
+  )
+
+  return (
+    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-2 md:p-4" onClick={onClose}>
+      {content}
 
       {/* Prompt editor modal */}
       {editingNode && (

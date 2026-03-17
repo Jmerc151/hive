@@ -79,7 +79,7 @@ function WelcomeCard({ agents, onSuggestionClick }) {
   )
 }
 
-export default function ChatPanel({ agents, onClose, embedded, onToast, isMobile = false }) {
+export default function ChatPanel({ agents, onClose, embedded, inline, onToast, isMobile = false }) {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [standupLoading, setStandupLoading] = useState(false)
@@ -444,7 +444,7 @@ export default function ChatPanel({ agents, onClose, embedded, onToast, isMobile
     </div>
   )
 
-  if (embedded) {
+  if (embedded || inline) {
     return content
   }
 

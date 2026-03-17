@@ -9,7 +9,7 @@ const STATUS_COLORS = {
   implemented: 'bg-blue-500/10 text-blue-600 border-blue-500/20'
 }
 
-export default function ProposalsPanel({ agents, onClose }) {
+export default function ProposalsPanel({ agents, onClose, inline }) {
   const [proposals, setProposals] = useState([])
   const [filter, setFilter] = useState('pending')
   const [expanded, setExpanded] = useState(null)
@@ -32,11 +32,12 @@ export default function ProposalsPanel({ agents, onClose }) {
 
   const pendingCount = proposals.filter(p => p.status === 'pending').length
 
-  return (
-    <div className="fixed inset-0 bg-page backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-s1 rounded-xl w-full max-w-2xl shadow-2xl max-h-[85vh] overflow-y-auto" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
+  const content = (
+    <div className={inline ? "h-full flex flex-col overflow-y-auto" : "bg-s1 rounded-xl w-full max-w-2xl shadow-2xl max-h-[85vh] overflow-y-auto"}
+      style={inline ? undefined : { border: '0.5px solid rgba(0,0,0,0.08)' }}
+      onClick={inline ? undefined : e => e.stopPropagation()}>
 
-        {/* Header */}
+      {/* Header */}
         <div className="p-5 flex items-center justify-between" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
           <div className="flex items-center gap-2">
             <span className="text-xl">💡</span>
@@ -152,7 +153,14 @@ export default function ProposalsPanel({ agents, onClose }) {
             )
           })}
         </div>
-      </div>
+    </div>
+  )
+
+  if (inline) return content
+
+  return (
+    <div className="fixed inset-0 bg-page backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      {content}
     </div>
   )
 }

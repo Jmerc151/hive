@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api'
 
-export default function RevenuePanel({ agents, onClose }) {
+export default function RevenuePanel({ agents, onClose, inline }) {
   const [entries, setEntries] = useState([])
   const [summary, setSummary] = useState(null)
   const [showForm, setShowForm] = useState(false)
@@ -26,18 +26,17 @@ export default function RevenuePanel({ agents, onClose }) {
     refresh()
   }
 
-  return (
-    <div className="fixed inset-0 bg-page backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-s1 rounded-xl w-full max-w-lg shadow-2xl max-h-[85vh] overflow-y-auto" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
+  const content = (
+    <div className={inline ? "h-full overflow-y-auto" : "bg-s1 rounded-xl w-full max-w-lg shadow-2xl max-h-[85vh] overflow-y-auto"} style={inline ? {} : { border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
 
-        {/* Header */}
-        <div className="p-5 flex items-center justify-between" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
-          <div className="flex items-center gap-2">
-            <span className="text-xl">💰</span>
-            <h2 className="text-lg font-semibold font-display text-t1">Revenue & ROI</h2>
-          </div>
-          <button onClick={onClose} className="text-t3 hover:text-t1 text-xl">&times;</button>
+      {/* Header */}
+      <div className="p-5 flex items-center justify-between" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
+        <div className="flex items-center gap-2">
+          <span className="text-xl">💰</span>
+          <h2 className="text-lg font-semibold font-display text-t1">Revenue & ROI</h2>
         </div>
+        {!inline && <button onClick={onClose} className="text-t3 hover:text-t1 text-xl">&times;</button>}
+      </div>
 
         {summary && (
           <div className="p-5 space-y-4">
@@ -146,7 +145,14 @@ export default function RevenuePanel({ agents, onClose }) {
             )}
           </div>
         )}
-      </div>
+    </div>
+  )
+
+  if (inline) return content
+
+  return (
+    <div className="fixed inset-0 bg-page backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      {content}
     </div>
   )
 }

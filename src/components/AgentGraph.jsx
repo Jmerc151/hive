@@ -15,7 +15,7 @@ const AGENT_AVATARS = {
   dealer: '🤝', oracle: '🔮', nexus: '🧬'
 }
 
-export default function AgentGraph({ onClose }) {
+export default function AgentGraph({ onClose, inline }) {
   const [nodes, setNodes] = useState([])
   const [edges, setEdges] = useState([])
   const [range, setRange] = useState('24h')
@@ -116,69 +116,75 @@ export default function AgentGraph({ onClose }) {
     ctx.fill()
   }, [])
 
-  return (
-    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-s1 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between p-4" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
-          <h2 className="text-lg font-bold font-display text-t1">Agent Network</h2>
-          <div className="flex items-center gap-2">
-            {RANGES.map(r => (
-              <button key={r} onClick={() => setRange(r)}
-                className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${range === r ? 'bg-t1 text-white' : 'bg-s3 text-t3 hover:text-t1'}`}
-                style={range !== r ? { border: '0.5px solid rgba(0,0,0,0.08)' } : {}}>
-                {r}
-              </button>
+  const content = (
+    <div className={inline ? "h-full flex flex-col" : "bg-s1 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl"} style={inline ? {} : { border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
+      <div className="flex items-center justify-between p-4" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
+        <h2 className="text-lg font-bold font-display text-t1">Agent Network</h2>
+        <div className="flex items-center gap-2">
+          {RANGES.map(r => (
+            <button key={r} onClick={() => setRange(r)}
+              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${range === r ? 'bg-t1 text-white' : 'bg-s3 text-t3 hover:text-t1'}`}
+              style={range !== r ? { border: '0.5px solid rgba(0,0,0,0.08)' } : {}}>
+              {r}
+            </button>
+          ))}
+          {!inline && <button onClick={onClose} className="ml-2 text-t3 hover:text-t1 text-xl" aria-label="Close agent graph">&times;</button>}
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 p-4">
+        {loading ? (
+          <SkeletonChart />
+        ) : isMobile ? (
+          <div className="space-y-2 overflow-y-auto max-h-[60vh]">
+            {edges.length === 0 && <p className="text-t3 text-sm text-center py-8">No interactions in this time range</p>}
+            {edges.map((edge, i) => (
+              <div key={i} className="flex items-center gap-2 bg-s2 rounded-lg px-3 py-2 text-sm">
+                <span>{AGENT_AVATARS[edge.source?.id || edge.source] || '🤖'}</span>
+                <span className="text-t1 font-medium">{edge.source?.name || edge.source}</span>
+                <span className="text-t4">→</span>
+                <span>{AGENT_AVATARS[edge.target?.id || edge.target] || '🤖'}</span>
+                <span className="text-t1 font-medium">{edge.target?.name || edge.target}</span>
+                <span className="ml-auto text-t1 font-mono text-xs">{edge.count}x</span>
+              </div>
             ))}
-            <button onClick={onClose} className="ml-2 text-t3 hover:text-t1 text-xl" aria-label="Close agent graph">&times;</button>
           </div>
-        </div>
-
-        <div className="flex-1 min-h-0 p-4">
-          {loading ? (
-            <SkeletonChart />
-          ) : isMobile ? (
-            <div className="space-y-2 overflow-y-auto max-h-[60vh]">
-              {edges.length === 0 && <p className="text-t3 text-sm text-center py-8">No interactions in this time range</p>}
-              {edges.map((edge, i) => (
-                <div key={i} className="flex items-center gap-2 bg-s2 rounded-lg px-3 py-2 text-sm">
-                  <span>{AGENT_AVATARS[edge.source?.id || edge.source] || '🤖'}</span>
-                  <span className="text-t1 font-medium">{edge.source?.name || edge.source}</span>
-                  <span className="text-t4">→</span>
-                  <span>{AGENT_AVATARS[edge.target?.id || edge.target] || '🤖'}</span>
-                  <span className="text-t1 font-medium">{edge.target?.name || edge.target}</span>
-                  <span className="ml-auto text-t1 font-mono text-xs">{edge.count}x</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div ref={containerRef} className="w-full h-[500px] rounded-lg overflow-hidden bg-s2">
-              <ForceGraph2D
-                ref={graphRef} width={dims.w} height={dims.h}
-                graphData={{ nodes, links: edges }}
-                nodeCanvasObject={nodeCanvasObject}
-                nodePointerAreaPaint={(node, color, ctx) => { ctx.beginPath(); ctx.arc(node.x, node.y, 20, 0, 2 * Math.PI); ctx.fillStyle = color; ctx.fill() }}
-                linkCanvasObject={linkCanvasObject}
-                linkDirectionalParticles={link => Math.min(link.count, 4)}
-                linkDirectionalParticleWidth={2}
-                linkDirectionalParticleColor={() => '#1c1c1e'}
-                d3AlphaDecay={0.05} d3VelocityDecay={0.3} cooldownTicks={80}
-                backgroundColor="transparent"
-                onEngineStop={() => graphRef.current?.zoomToFit(300, 60)}
-              />
-            </div>
-          )}
-        </div>
-
-        {!isMobile && edges.length > 0 && (
-          <div className="px-4 pb-4">
-            <div className="flex flex-wrap gap-3 text-xs text-t3">
-              <span className="flex items-center gap-1"><span className="w-6 h-0.5 bg-black/15 inline-block" /> consult</span>
-              <span className="flex items-center gap-1"><span className="w-6 h-0.5 border-t border-dashed border-black/15 inline-block" /> tool_call</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-t1 inline-block" /> particles = frequency</span>
-            </div>
+        ) : (
+          <div ref={containerRef} className="w-full h-[500px] rounded-lg overflow-hidden bg-s2">
+            <ForceGraph2D
+              ref={graphRef} width={dims.w} height={dims.h}
+              graphData={{ nodes, links: edges }}
+              nodeCanvasObject={nodeCanvasObject}
+              nodePointerAreaPaint={(node, color, ctx) => { ctx.beginPath(); ctx.arc(node.x, node.y, 20, 0, 2 * Math.PI); ctx.fillStyle = color; ctx.fill() }}
+              linkCanvasObject={linkCanvasObject}
+              linkDirectionalParticles={link => Math.min(link.count, 4)}
+              linkDirectionalParticleWidth={2}
+              linkDirectionalParticleColor={() => '#1c1c1e'}
+              d3AlphaDecay={0.05} d3VelocityDecay={0.3} cooldownTicks={80}
+              backgroundColor="transparent"
+              onEngineStop={() => graphRef.current?.zoomToFit(300, 60)}
+            />
           </div>
         )}
       </div>
+
+      {!isMobile && edges.length > 0 && (
+        <div className="px-4 pb-4">
+          <div className="flex flex-wrap gap-3 text-xs text-t3">
+            <span className="flex items-center gap-1"><span className="w-6 h-0.5 bg-black/15 inline-block" /> consult</span>
+            <span className="flex items-center gap-1"><span className="w-6 h-0.5 border-t border-dashed border-black/15 inline-block" /> tool_call</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-t1 inline-block" /> particles = frequency</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+
+  if (inline) return content
+
+  return (
+    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      {content}
     </div>
   )
 }

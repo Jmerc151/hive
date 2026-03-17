@@ -15,7 +15,7 @@ const STATUS_BG = {
   pending: 'rgba(0,0,0,0.04)',
 }
 
-export default function EvalHarness({ onClose, agents }) {
+export default function EvalHarness({ onClose, agents, inline }) {
   const [cases, setCases] = useState([])
   const [history, setHistory] = useState([])
   const [running, setRunning] = useState(false)
@@ -71,9 +71,8 @@ export default function EvalHarness({ onClose, agents }) {
 
   const passRate = cases.length === 0 ? 0 : Math.round(cases.filter(c => latestByCase[c.id]?.status === 'passed').length / cases.length * 100)
 
-  return (
-    <div className="fixed inset-0 bg-black/20 z-50 flex items-start justify-center pt-8 overflow-y-auto">
-      <div className="bg-s1 rounded-xl w-full max-w-4xl mx-4 mb-8" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }}>
+  const content = (
+    <div className={inline ? "h-full flex flex-col overflow-y-auto" : "bg-s1 rounded-xl w-full max-w-4xl mx-4 mb-8"} style={inline ? undefined : { border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={inline ? undefined : e => e.stopPropagation()}>
         <div className="flex items-center justify-between p-4" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
           <div className="flex items-center gap-3">
             <span className="text-2xl">🧪</span>
@@ -165,7 +164,14 @@ export default function EvalHarness({ onClose, agents }) {
             <div className="p-8 text-center text-t3 text-sm">No eval cases. Click "+ Add Case" to create one.</div>
           )}
         </div>
-      </div>
+    </div>
+  )
+
+  if (inline) return content
+
+  return (
+    <div className="fixed inset-0 bg-black/20 z-50 flex items-start justify-center pt-8 overflow-y-auto" onClick={onClose}>
+      {content}
     </div>
   )
 }

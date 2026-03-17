@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api'
 
-export default function SpendDashboard({ onClose }) {
+export default function SpendDashboard({ onClose, inline }) {
   const [spend, setSpend] = useState(null)
   const [settings, setSettings] = useState(null)
 
@@ -27,14 +27,13 @@ export default function SpendDashboard({ onClose }) {
   const todayPct = spend.today.limit > 0 ? (spend.today.spend / spend.today.limit) * 100 : 0
   const monthPct = spend.month.limit > 0 ? (spend.month.spend / spend.month.limit) * 100 : 0
 
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-backdrop" />
-      <div className="modal-content w-full max-w-lg max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between p-4" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
-          <h2 className="text-lg font-bold font-display tracking-wider text-t1">Spend Dashboard</h2>
-          <button onClick={onClose} className="text-t4 hover:text-t1 text-xl">&times;</button>
-        </div>
+  const content = (
+    <div className={inline ? "h-full overflow-y-auto" : "modal-content w-full max-w-lg max-h-[80vh] overflow-y-auto"}
+      onClick={inline ? undefined : e => e.stopPropagation()}>
+      <div className="flex items-center justify-between p-4" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
+        <h2 className="text-lg font-bold font-display tracking-wider text-t1">Spend Dashboard</h2>
+        <button onClick={onClose} className="text-t4 hover:text-t1 text-xl">&times;</button>
+      </div>
 
         <div className="p-4 space-y-6">
           {/* Today's Spend */}
@@ -140,8 +139,16 @@ export default function SpendDashboard({ onClose }) {
               {settings.pause_all_agents === 'true' ? '⏸ All Agents PAUSED — Click to Resume' : '⏸ Pause All Agents'}
             </button>
           </div>
-        </div>
       </div>
+    </div>
+  )
+
+  if (inline) return content
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-backdrop" />
+      {content}
     </div>
   )
 }

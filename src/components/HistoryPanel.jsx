@@ -7,7 +7,7 @@ function formatDuration(ms) {
   return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`
 }
 
-export default function HistoryPanel({ agents = [], onClose, onSelectTask }) {
+export default function HistoryPanel({ agents = [], onClose, onSelectTask, inline }) {
   const [data, setData] = useState({ tasks: [], total: 0 })
   const [search, setSearch] = useState('')
   const [filterAgent, setFilterAgent] = useState('')
@@ -35,18 +35,19 @@ export default function HistoryPanel({ agents = [], onClose, onSelectTask }) {
   const handleFilterAgent = (v) => { setFilterAgent(v); setOffset(0); fetchHistory(search, v, filterStatus, 0) }
   const handleFilterStatus = (v) => { setFilterStatus(v); setOffset(0); fetchHistory(search, filterAgent, v, 0) }
 
-  return (
-    <div className="fixed inset-0 bg-page backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-s1 rounded-xl w-full max-w-3xl shadow-2xl max-h-[85vh] flex flex-col" style={{ border: '0.5px solid rgba(0,0,0,0.08)' }} onClick={e => e.stopPropagation()}>
-        <div className="p-5 shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <span className="text-xl">📜</span>
-              <h2 className="text-lg font-semibold font-display text-t1">History</h2>
-              <span className="text-xs bg-s3 text-t3 rounded-full px-2 py-0.5">{data.total}</span>
-            </div>
-            <button onClick={onClose} className="text-t3 hover:text-t1 text-xl">&times;</button>
+  const content = (
+    <div className={inline ? "h-full flex flex-col overflow-y-auto" : "bg-s1 rounded-xl w-full max-w-3xl shadow-2xl max-h-[85vh] flex flex-col"}
+      style={inline ? undefined : { border: '0.5px solid rgba(0,0,0,0.08)' }}
+      onClick={inline ? undefined : e => e.stopPropagation()}>
+      <div className="p-5 shrink-0" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <span className="text-xl">📜</span>
+            <h2 className="text-lg font-semibold font-display text-t1">History</h2>
+            <span className="text-xs bg-s3 text-t3 rounded-full px-2 py-0.5">{data.total}</span>
           </div>
+          <button onClick={onClose} className="text-t3 hover:text-t1 text-xl">&times;</button>
+        </div>
           <div className="flex gap-2">
             <input
               type="text" value={search} onChange={e => handleSearch(e.target.value)}
@@ -113,8 +114,15 @@ export default function HistoryPanel({ agents = [], onClose, onSelectTask }) {
               Load more ({data.total - offset - 30} remaining)
             </button>
           )}
-        </div>
       </div>
+    </div>
+  )
+
+  if (inline) return content
+
+  return (
+    <div className="fixed inset-0 bg-page backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      {content}
     </div>
   )
 }

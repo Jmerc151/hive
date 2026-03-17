@@ -4,7 +4,7 @@ import ConfirmDialog from './ConfirmDialog'
 
 const thinBorder = { border: '0.5px solid rgba(0,0,0,0.08)' }
 
-export default function MCPServers({ onClose }) {
+export default function MCPServers({ onClose, inline }) {
   const [servers, setServers] = useState([])
   const [tools, setTools] = useState([])
   const [loading, setLoading] = useState(true)
@@ -74,11 +74,10 @@ export default function MCPServers({ onClose }) {
 
   const serverTools = (serverId) => tools.filter(t => t.server_id === serverId)
 
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-backdrop" />
-      <div className="modal-content w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
-        {/* Header */}
+  const content = (
+    <div className={inline ? "h-full flex flex-col overflow-y-auto" : "modal-content w-full max-w-2xl max-h-[85vh] flex flex-col"}
+      onClick={inline ? undefined : e => e.stopPropagation()}>
+      {/* Header */}
         <div className="flex items-center justify-between p-5" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-s3 flex items-center justify-center text-sm" style={thinBorder}>&#x1F50C;</div>
@@ -243,8 +242,27 @@ export default function MCPServers({ onClose }) {
               )
             })
           )}
-        </div>
       </div>
+    </div>
+  )
+
+  if (inline) return (
+    <>
+      {content}
+      <ConfirmDialog
+        isOpen={!!confirmDelete}
+        title="Delete Server?"
+        message={`Remove "${confirmDelete?.name}"? Connected tools will no longer be available to agents.`}
+        onConfirm={() => handleDelete(confirmDelete.id)}
+        onCancel={() => setConfirmDelete(null)}
+      />
+    </>
+  )
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-backdrop" />
+      {content}
       <ConfirmDialog
         isOpen={!!confirmDelete}
         title="Delete Server?"

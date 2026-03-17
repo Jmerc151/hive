@@ -14,7 +14,7 @@ const SOURCE_BADGE = {
   file: 'bg-purple-500/15 text-purple-400',
 }
 
-export default function KnowledgeBase({ onClose }) {
+export default function KnowledgeBase({ onClose, inline }) {
   const [docs, setDocs] = useState([])
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState(null)
@@ -109,9 +109,8 @@ export default function KnowledgeBase({ onClose }) {
     finally { setSearching(false) }
   }
 
-  return (
-    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex justify-end" onClick={onClose}>
-      <div className="bg-s1 border-l border-s4 w-full max-w-lg shadow-2xl h-full flex flex-col" onClick={e => e.stopPropagation()}>
+  const content = (
+    <div className={inline ? "h-full flex flex-col overflow-y-auto" : "bg-s1 border-l border-s4 w-full max-w-lg shadow-2xl h-full flex flex-col"} onClick={inline ? undefined : e => e.stopPropagation()}>
         {/* Header */}
         <div className="p-5 border-b border-s4 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
@@ -319,7 +318,14 @@ export default function KnowledgeBase({ onClose }) {
             </div>
           )}
         </div>
-      </div>
+    </div>
+  )
+
+  if (inline) return content
+
+  return (
+    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex justify-end" onClick={onClose}>
+      {content}
     </div>
   )
 }

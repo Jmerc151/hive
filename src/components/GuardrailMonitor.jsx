@@ -12,7 +12,7 @@ const AGENT_TILES = {
 
 const thinBorder = { border: '0.5px solid rgba(0,0,0,0.08)' }
 
-export default function GuardrailMonitor({ onClose }) {
+export default function GuardrailMonitor({ onClose, inline }) {
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
@@ -39,11 +39,10 @@ export default function GuardrailMonitor({ onClose }) {
   })
   const topTool = Object.entries(toolCounts).sort((a, b) => b[1] - a[1])[0]
 
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-backdrop" />
-      <div className="modal-content w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
-        {/* Header */}
+  const content = (
+    <div className={inline ? "h-full flex flex-col overflow-y-auto" : "modal-content w-full max-w-2xl max-h-[85vh] flex flex-col"}
+      onClick={inline ? undefined : e => e.stopPropagation()}>
+      {/* Header */}
         <div className="flex items-center justify-between p-5" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-s3 flex items-center justify-center text-sm" style={thinBorder}>&#x1F6E1;</div>
@@ -150,8 +149,16 @@ export default function GuardrailMonitor({ onClose }) {
               )
             })
           )}
-        </div>
       </div>
+    </div>
+  )
+
+  if (inline) return content
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-backdrop" />
+      {content}
     </div>
   )
 }

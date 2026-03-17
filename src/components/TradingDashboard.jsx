@@ -4,7 +4,7 @@ import { SkeletonList } from './Skeleton'
 
 const TABS = ['overview', 'analysis', 'positions', 'strategies', 'trades', 'watchlist']
 
-export default function TradingDashboard({ agents, onClose }) {
+export default function TradingDashboard({ agents, onClose, inline }) {
   const [tab, setTab] = useState('overview')
   const [account, setAccount] = useState(null)
   const [positions, setPositions] = useState([])
@@ -147,49 +147,48 @@ export default function TradingDashboard({ agents, onClose }) {
     return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${colors[status] || 'bg-s4 text-t2'}`}>{status}</span>
   }
 
-  return (
-    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-s1 border border-s4 rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div className="p-5 border-b border-s4 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-3">
-            <span className="text-2xl">📈</span>
-            <div>
-              <h2 className="text-lg font-semibold">Trading Dashboard</h2>
-              <div className="flex items-center gap-2 text-xs text-t3">
-                {marketStatus && (
-                  <span className={`flex items-center gap-1 ${marketStatus.isOpen ? 'text-success' : 'text-danger'}`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${marketStatus.isOpen ? 'bg-success' : 'bg-danger'}`} />
-                    Market {marketStatus.isOpen ? 'Open' : 'Closed'}
-                  </span>
-                )}
-                <span>Paper Trading</span>
-              </div>
+  const content = (
+    <div className={inline ? "h-full flex flex-col" : "bg-s1 border border-s4 rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl"} onClick={e => e.stopPropagation()}>
+      {/* Header */}
+      <div className="p-5 border-b border-s4 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-3">
+          <span className="text-2xl">📈</span>
+          <div>
+            <h2 className="text-lg font-semibold">Trading Dashboard</h2>
+            <div className="flex items-center gap-2 text-xs text-t3">
+              {marketStatus && (
+                <span className={`flex items-center gap-1 ${marketStatus.isOpen ? 'text-success' : 'text-danger'}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${marketStatus.isOpen ? 'bg-success' : 'bg-danger'}`} />
+                  Market {marketStatus.isOpen ? 'Open' : 'Closed'}
+                </span>
+              )}
+              <span>Paper Trading</span>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button onClick={handleToggleTrading} className={`px-3 py-1 rounded-lg text-xs font-medium ${config.trading_enabled === 'true' ? 'bg-green-500/20 text-success border border-green-500/30' : 'bg-red-500/20 text-danger border border-red-500/30'}`}>
-              {config.trading_enabled === 'true' ? '🟢 Trading On' : '🔴 Trading Off'}
-            </button>
-            <button onClick={onClose} className="text-t3 hover:text-t1 text-xl" aria-label="Close trading dashboard">&times;</button>
-          </div>
         </div>
-
-        {/* Tabs */}
-        <div className="flex gap-1 px-5 pt-3 border-b border-s4 shrink-0">
-          {TABS.map(t => (
-            <button key={t} onClick={() => setTab(t)} className={`px-3 py-2 text-sm font-medium rounded-t-lg transition-colors ${tab === t ? 'bg-s4 text-t1 border-b-2 border-t1' : 'text-t3 hover:text-t1'}`}>
-              {t.charAt(0).toUpperCase() + t.slice(1)}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <button onClick={handleToggleTrading} className={`px-3 py-1 rounded-lg text-xs font-medium ${config.trading_enabled === 'true' ? 'bg-green-500/20 text-success border border-green-500/30' : 'bg-red-500/20 text-danger border border-red-500/30'}`}>
+            {config.trading_enabled === 'true' ? '🟢 Trading On' : '🔴 Trading Off'}
+          </button>
+          {!inline && <button onClick={onClose} className="text-t3 hover:text-t1 text-xl" aria-label="Close trading dashboard">&times;</button>}
         </div>
+      </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto p-5">
-          {loading ? <SkeletonList count={3} /> :
-           error ? <div className="text-center text-danger py-8">Error: {error}<br/><span className="text-xs text-t4">Make sure ALPACA_API_KEY is set on the server</span></div> :
+      {/* Tabs */}
+      <div className="flex gap-1 px-5 pt-3 border-b border-s4 shrink-0">
+        {TABS.map(t => (
+          <button key={t} onClick={() => setTab(t)} className={`px-3 py-2 text-sm font-medium rounded-t-lg transition-colors ${tab === t ? 'bg-s4 text-t1 border-b-2 border-t1' : 'text-t3 hover:text-t1'}`}>
+            {t.charAt(0).toUpperCase() + t.slice(1)}
+          </button>
+        ))}
+      </div>
 
-          tab === 'overview' ? (
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto p-5">
+        {loading ? <SkeletonList count={3} /> :
+         error ? <div className="text-center text-danger py-8">Error: {error}<br/><span className="text-xs text-t4">Make sure ALPACA_API_KEY is set on the server</span></div> :
+
+        tab === 'overview' ? (
             <div className="space-y-4">
               {/* Account cards */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -516,9 +515,16 @@ export default function TradingDashboard({ agents, onClose }) {
                 </div>
               )}
             </div>
-          ) : null}
-        </div>
+        ) : null}
       </div>
+    </div>
+  )
+
+  if (inline) return content
+
+  return (
+    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      {content}
     </div>
   )
 }

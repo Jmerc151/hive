@@ -8,7 +8,7 @@ const ROLE_COLORS = {
   viewer: 'bg-s3 text-t3 border-s4',
 }
 
-export default function UserManagement({ onClose }) {
+export default function UserManagement({ onClose, inline }) {
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
@@ -102,51 +102,58 @@ export default function UserManagement({ onClose }) {
 
   // Edit view
   if (editing) {
-    return (
-      <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-        <div className="bg-s1 rounded-2xl border border-s4 w-full max-w-md max-h-[85vh] overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
-          <div className="flex items-center justify-between p-4 border-b border-s4">
-            <h2 className="text-lg font-bold text-t1">Edit User: {editing.username}</h2>
-            <button onClick={() => { setEditing(null); setError('') }} className="text-t3 hover:text-t1 text-xl">&times;</button>
-          </div>
-          <div className="p-4 space-y-4">
-            {userForm(true)}
-            <div className="flex gap-2">
-              <button onClick={handleUpdate} className="px-4 py-2 bg-t1 text-white rounded-lg text-sm font-medium hover:bg-t2">Save</button>
-              <button onClick={() => { setEditing(null); setError('') }} className="px-4 py-2 bg-s4 text-t1 rounded-lg text-sm hover:bg-s5">Cancel</button>
-            </div>
+    const editContent = (
+      <div className={inline ? "h-full flex flex-col overflow-y-auto" : "bg-s1 rounded-2xl border border-s4 w-full max-w-md max-h-[85vh] overflow-y-auto shadow-2xl"} onClick={inline ? undefined : e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-s4">
+          <h2 className="text-lg font-bold text-t1">Edit User: {editing.username}</h2>
+          <button onClick={() => { setEditing(null); setError('') }} className="text-t3 hover:text-t1 text-xl">&times;</button>
+        </div>
+        <div className="p-4 space-y-4">
+          {userForm(true)}
+          <div className="flex gap-2">
+            <button onClick={handleUpdate} className="px-4 py-2 bg-t1 text-white rounded-lg text-sm font-medium hover:bg-t2">Save</button>
+            <button onClick={() => { setEditing(null); setError('') }} className="px-4 py-2 bg-s4 text-t1 rounded-lg text-sm hover:bg-s5">Cancel</button>
           </div>
         </div>
+      </div>
+    )
+    if (inline) return editContent
+    return (
+      <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+        {editContent}
       </div>
     )
   }
 
   // Create view
   if (creating) {
-    return (
-      <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-        <div className="bg-s1 rounded-2xl border border-s4 w-full max-w-md max-h-[85vh] overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
-          <div className="flex items-center justify-between p-4 border-b border-s4">
-            <h2 className="text-lg font-bold text-t1">Add User</h2>
-            <button onClick={() => { setCreating(false); setError('') }} className="text-t3 hover:text-t1 text-xl">&times;</button>
-          </div>
-          <div className="p-4 space-y-4">
-            {userForm(false)}
-            <div className="flex gap-2">
-              <button onClick={handleCreate} disabled={!form.username || !form.password}
-                className="px-4 py-2 bg-t1 text-white rounded-lg text-sm font-medium hover:bg-t2 disabled:opacity-50">Create User</button>
-              <button onClick={() => { setCreating(false); setError('') }} className="px-4 py-2 bg-s4 text-t1 rounded-lg text-sm hover:bg-s5">Cancel</button>
-            </div>
+    const createContent = (
+      <div className={inline ? "h-full flex flex-col overflow-y-auto" : "bg-s1 rounded-2xl border border-s4 w-full max-w-md max-h-[85vh] overflow-y-auto shadow-2xl"} onClick={inline ? undefined : e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-s4">
+          <h2 className="text-lg font-bold text-t1">Add User</h2>
+          <button onClick={() => { setCreating(false); setError('') }} className="text-t3 hover:text-t1 text-xl">&times;</button>
+        </div>
+        <div className="p-4 space-y-4">
+          {userForm(false)}
+          <div className="flex gap-2">
+            <button onClick={handleCreate} disabled={!form.username || !form.password}
+              className="px-4 py-2 bg-t1 text-white rounded-lg text-sm font-medium hover:bg-t2 disabled:opacity-50">Create User</button>
+            <button onClick={() => { setCreating(false); setError('') }} className="px-4 py-2 bg-s4 text-t1 rounded-lg text-sm hover:bg-s5">Cancel</button>
           </div>
         </div>
+      </div>
+    )
+    if (inline) return createContent
+    return (
+      <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+        {createContent}
       </div>
     )
   }
 
   // List view
-  return (
-    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-s1 rounded-2xl border border-s4 w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+  const listContent = (
+    <div className={inline ? "h-full flex flex-col overflow-y-auto" : "bg-s1 rounded-2xl border border-s4 w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl"} onClick={inline ? undefined : e => e.stopPropagation()}>
         <div className="flex items-center justify-between p-4 border-b border-s4 shrink-0">
           <h2 className="text-lg font-bold text-t1">User Management</h2>
           <div className="flex items-center gap-2">
@@ -204,8 +211,6 @@ export default function UserManagement({ onClose }) {
             </div>
           </div>
         </div>
-      </div>
-
       <ConfirmDialog
         isOpen={!!confirmDelete}
         title="Delete User?"
@@ -213,6 +218,14 @@ export default function UserManagement({ onClose }) {
         onConfirm={() => { handleDelete(confirmDelete.id); setConfirmDelete(null) }}
         onCancel={() => setConfirmDelete(null)}
       />
+    </div>
+  )
+
+  if (inline) return listContent
+
+  return (
+    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      {listContent}
     </div>
   )
 }

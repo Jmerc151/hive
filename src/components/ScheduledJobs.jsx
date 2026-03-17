@@ -31,7 +31,7 @@ function timeAgo(dateStr) {
   return `${Math.floor(diff / 86400000)}d ago`
 }
 
-export default function ScheduledJobs({ agents = [], onClose }) {
+export default function ScheduledJobs({ agents = [], onClose, inline }) {
   const [jobs, setJobs] = useState([])
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
@@ -74,9 +74,8 @@ export default function ScheduledJobs({ agents = [], onClose }) {
   const agentMap = {}
   agents.forEach(a => { agentMap[a.id] = a })
 
-  return (
-    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-s1 border border-s4 rounded-xl w-full max-w-lg shadow-2xl max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+  const content = (
+    <div className={inline ? "h-full flex flex-col overflow-y-auto" : "bg-s1 border border-s4 rounded-xl w-full max-w-lg shadow-2xl max-h-[85vh] overflow-y-auto"} onClick={inline ? undefined : e => e.stopPropagation()}>
 
         <div className="p-5 border-b border-s4 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -169,7 +168,14 @@ export default function ScheduledJobs({ agents = [], onClose }) {
             </button>
           )}
         </div>
-      </div>
+    </div>
+  )
+
+  if (inline) return content
+
+  return (
+    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      {content}
     </div>
   )
 }

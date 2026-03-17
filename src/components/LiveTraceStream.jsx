@@ -102,7 +102,7 @@ function TraceEventRow({ event, isExpanded, onToggle }) {
   )
 }
 
-export default function LiveTraceStream({ onClose, embedded = false }) {
+export default function LiveTraceStream({ onClose, embedded = false, inline = false }) {
   const { events, connected, clear } = useTraceStream({ agentId: 'all' })
   const [activeTypes, setActiveTypes] = useState(new Set(ALL_TYPES))
   const [expandedId, setExpandedId] = useState(null)
@@ -135,7 +135,7 @@ export default function LiveTraceStream({ onClose, embedded = false }) {
     })
   }
 
-  const containerClass = embedded
+  const containerClass = (embedded || inline)
     ? 'flex flex-col h-full bg-s1'
     : 'fixed inset-0 z-50 bg-page flex flex-col'
 

@@ -1,5 +1,16 @@
 # Hive Changelog
 
+## 2026-03-16 — Dashboard UX Overhaul (Modal-to-Panel Refactor)
+
+- **Single activeView state** — replaced 25+ independent `show*` modal flags with one `activeView` string
+- **Panel-based layout** — sidebar nav now switches the main content area instead of stacking modal overlays
+- **Inline prop on 25 components** — all view components support both modal and inline rendering modes
+- **View switcher** — `renderActiveView()` replaces hardcoded DeliverablesFeed + modal render blocks
+- **True overlay modals** — CreateTask, TaskDetail, PromptReview, ABTest, Scorecard, Shortcuts stay as overlays
+- **Sidebar active state sync** — `activeView` prop drives highlighting, removed internal `activeNav` state
+- **Network graph nav** — added graph/Network item to Insights section in sidebar
+- **Simplified Escape handler** — closes overlay modals first, then falls back to deliverables view
+
 ## 2026-03-16 — TraceView Polish
 
 - **Event type filter chips** — filter by LLM, Tool, Consult, Decision, Error with count badges

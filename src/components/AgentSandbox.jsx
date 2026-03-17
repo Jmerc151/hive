@@ -4,7 +4,7 @@ import { api } from '../lib/api'
 const SCORE_COLOR = (n) => n >= 7 ? 'text-success' : n >= 4 ? 'text-yellow-400' : 'text-danger'
 const WINNER_BADGE = { current: 'bg-blue-900/30 text-blue-400', modified: 'bg-green-900/30 text-success', tie: 'bg-s4 text-t2' }
 
-export default function AgentSandbox({ agents, onClose }) {
+export default function AgentSandbox({ agents, onClose, inline }) {
   const [agentId, setAgentId] = useState(agents?.[0]?.id || 'scout')
   const [taskDesc, setTaskDesc] = useState('')
   const [modifiedPrompt, setModifiedPrompt] = useState('')
@@ -44,9 +44,8 @@ export default function AgentSandbox({ agents, onClose }) {
     }
   }
 
-  return (
-    <div className="fixed inset-0 bg-black/20 z-50 flex items-start justify-center pt-8 overflow-y-auto">
-      <div className="bg-s1 border border-s4 rounded-xl w-full max-w-6xl mx-4 mb-8">
+  const content = (
+    <div className={inline ? "h-full flex flex-col overflow-y-auto" : "bg-s1 border border-s4 rounded-xl w-full max-w-6xl mx-4 mb-8"} onClick={inline ? undefined : e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-s4">
           <div className="flex items-center gap-3">
@@ -242,7 +241,14 @@ export default function AgentSandbox({ agents, onClose }) {
             </div>
           </div>
         )}
-      </div>
+    </div>
+  )
+
+  if (inline) return content
+
+  return (
+    <div className="fixed inset-0 bg-black/20 z-50 flex items-start justify-center pt-8 overflow-y-auto" onClick={onClose}>
+      {content}
     </div>
   )
 }

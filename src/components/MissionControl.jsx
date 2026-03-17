@@ -34,7 +34,7 @@ function simplifyTitle(title) {
     .slice(0, 80)
 }
 
-export default function MissionControl({ agents, onClose, onSelectTask }) {
+export default function MissionControl({ agents, onClose, onSelectTask, inline }) {
   const [recentTasks, setRecentTasks] = useState([])
   const [activeTasks, setActiveTasks] = useState([])
   const [loading, setLoading] = useState(true)
@@ -74,12 +74,11 @@ export default function MissionControl({ agents, onClose, onSelectTask }) {
 
   const selectedAgentData = selectedAgent ? agentData.find(a => a.id === selectedAgent) : null
 
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-backdrop" />
-      <div className="relative h-full w-full max-w-lg mx-auto flex flex-col" onClick={e => e.stopPropagation()}>
+  const content = (
+    <div className={inline ? "h-full flex flex-col overflow-y-auto" : "relative h-full w-full max-w-lg mx-auto flex flex-col"}
+      onClick={inline ? undefined : e => e.stopPropagation()}>
 
-        {/* Header */}
+      {/* Header */}
         <div className="pt-12 pb-6 px-6 text-center shrink-0">
           <button onClick={onClose} className="absolute top-4 right-4 w-10 h-10 rounded-full bg-s4/80 flex items-center justify-center text-t3 hover:text-t1 hover:bg-s5 transition-all text-lg">
             &times;
@@ -199,7 +198,15 @@ export default function MissionControl({ agents, onClose, onSelectTask }) {
             </div>
           )}
         </div>
-      </div>
+    </div>
+  )
+
+  if (inline) return content
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-backdrop" />
+      {content}
     </div>
   )
 }
