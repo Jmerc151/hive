@@ -1,5 +1,21 @@
 # Hive Changelog
 
+## 2026-03-16 — Frontend Polish Pass
+
+### New Components
+- **MCP Servers panel** (`MCPServers.jsx`) — manage MCP server connections, add/test/delete servers, view discovered tools per server
+- **Guardrail Monitor panel** (`GuardrailMonitor.jsx`) — view blocked/warned guardrail events, filter by action type, summary stats (blocked/warned today, most-blocked tool)
+- **OTLP Export button** — added to TaskDetail footer, downloads trace JSON for completed tasks
+
+### Navigation Updates
+- Added MCP Servers (◆) to Developer nav group in Sidebar
+- Added Guardrails (▨) to Insights nav group in Sidebar
+- Wired both panels into App.jsx with state management and Escape key handling
+
+### CLAUDE.md Updates
+- Updated "What to Build Next" — all 10 industry-grade features marked complete
+- New focus areas: MCP integration testing, eval harness expansion, AgentForge MVP, Ember revenue
+
 ## 2026-03-16 — Master Plan: 3-Pillar Agent Refocus + Quality Sprint
 
 ### Agent System Prompt Overhaul (all 6 agents)

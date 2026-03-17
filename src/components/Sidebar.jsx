@@ -30,6 +30,7 @@ const NAV_GROUPS = [
       { key: 'revenue',   icon: '\u25AB', label: 'Revenue' },
       { key: 'trading',   icon: '\u25AA', label: 'Trading' },
       { key: 'intel',     icon: '\u25C9', label: 'Intel Feed' },
+      { key: 'guardrails', icon: '\u25A8', label: 'Guardrails' },
     ]
   },
   {
@@ -50,6 +51,7 @@ const NAV_GROUPS = [
       { key: 'trace',   icon: '\u25C8', label: 'Live Trace' },
       { key: 'sandbox', icon: '\u25A1', label: 'Sandbox' },
       { key: 'eval',    icon: '\u25A2', label: 'Eval Harness' },
+      { key: 'mcp',     icon: '\u25C6', label: 'MCP Servers' },
       { key: 'history', icon: '\u25B7', label: 'History' },
       { key: 'spend',   icon: '\u25B3', label: 'Spend Limits' },
       { key: 'chat',    icon: '\u25EF', label: 'Chat' },

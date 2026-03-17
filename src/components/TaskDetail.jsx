@@ -53,6 +53,7 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
   const [filesLoading, setFilesLoading] = useState(false)
   const [copied, setCopied] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(null)
+  const [exportingOtlp, setExportingOtlp] = useState(false)
   const logsEndRef = useRef(null)
 
   const fileCount = useMemo(() => countFiles(task?.output), [task?.output])
@@ -443,12 +444,41 @@ export default function TaskDetail({ task, agent, agents, onClose, onRun, onUpda
 
         {/* Footer Actions */}
         <div className="p-4 flex items-center justify-between" style={{ borderTop: '0.5px solid rgba(0,0,0,0.08)' }}>
-          <button
-            onClick={() => setConfirmDelete({ id: task.id, name: task.title })}
-            className="text-xs text-red-500 hover:text-red-400 transition-colors"
-          >
-            Delete Task
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setConfirmDelete({ id: task.id, name: task.title })}
+              className="text-xs text-red-500 hover:text-red-400 transition-colors"
+            >
+              Delete Task
+            </button>
+            {isComplete && (
+              <button
+                onClick={async () => {
+                  setExportingOtlp(true)
+                  try {
+                    const data = await api.getOTLPTrace(task.id)
+                    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+                    const url = URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = url
+                    a.download = `trace-${task.id}.json`
+                    document.body.appendChild(a)
+                    a.click()
+                    document.body.removeChild(a)
+                    URL.revokeObjectURL(url)
+                  } catch (e) {
+                    alert('Export failed: ' + e.message)
+                  } finally {
+                    setExportingOtlp(false)
+                  }
+                }}
+                disabled={exportingOtlp}
+                className="text-xs text-t4 hover:text-t2 transition-colors disabled:opacity-40"
+              >
+                {exportingOtlp ? 'Exporting...' : 'Export OTLP'}
+              </button>
+            )}
+          </div>
           <div className="flex gap-2">
             {task.status === 'awaiting_approval' && (
               <>

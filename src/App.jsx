@@ -40,6 +40,8 @@ import AgentSandbox from './components/AgentSandbox'
 import UserManagement from './components/UserManagement'
 import LoginScreen from './components/LoginScreen'
 import MissionControl from './components/MissionControl'
+import MCPServers from './components/MCPServers'
+import GuardrailMonitor from './components/GuardrailMonitor'
 import ErrorBoundary from './components/ErrorBoundary'
 
 export default function App() {
@@ -79,6 +81,8 @@ export default function App() {
   const [showUsers, setShowUsers] = useState(false)
   const [showMission, setShowMission] = useState(false)
   const [showRoadmap, setShowRoadmap] = useState(false)
+  const [showMCP, setShowMCP] = useState(false)
+  const [showGuardrails, setShowGuardrails] = useState(false)
   const [currentUser, setCurrentUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
 
@@ -217,6 +221,8 @@ export default function App() {
         setShowSandbox(false)
         setShowUsers(false)
         setShowRoadmap(false)
+        setShowMCP(false)
+        setShowGuardrails(false)
         return
       }
 
@@ -340,6 +346,8 @@ export default function App() {
               chat: () => setShowChat(true),
               users: () => setShowUsers(true),
               mission: () => setShowMission(true),
+              mcp: () => setShowMCP(true),
+              guardrails: () => setShowGuardrails(true),
             }
             navMap[key]?.()
           }}
@@ -645,6 +653,14 @@ export default function App() {
           onClose={() => setShowRoadmap(false)}
           onSelectTask={(id) => { setShowRoadmap(false); setSelectedTask(id) }}
         />
+      )}
+
+      {showMCP && (
+        <MCPServers onClose={() => setShowMCP(false)} />
+      )}
+
+      {showGuardrails && (
+        <GuardrailMonitor onClose={() => setShowGuardrails(false)} />
       )}
 
       {showMission && (
