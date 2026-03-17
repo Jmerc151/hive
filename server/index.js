@@ -140,9 +140,10 @@ try {
 const API_KEY = process.env.HIVE_API_KEY
 
 function authenticateRequest(req, res, next) {
-  // Skip webhook endpoints and login
+  // Skip webhook endpoints, login, and health check
   if (req.path.startsWith('/webhooks/') && req.method === 'POST') return next()
   if (req.path === '/auth/login' && req.method === 'POST') return next()
+  if (req.path === '/health' && req.method === 'GET') return next()
 
   const authHeader = req.headers.authorization
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : req.query.token
