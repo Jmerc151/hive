@@ -3525,6 +3525,41 @@ app.delete('/api/tasks/:id', requireRole('admin', 'operator'), (req, res) => {
   res.json({ ok: true })
 })
 
+// ── Reset budget-exhausted tasks ───────────────────
+app.post('/api/tasks/reset-budget-failures', requireRole('admin', 'operator'), (req, res) => {
+  try {
+    // Find tasks marked 'done' that have budget warning logs and short/empty output
+    const badTasks = db.prepare(`
+      SELECT DISTINCT t.id, t.title, t.agent_id, t.output, t.tokens_used, t.created_at
+      FROM tasks t
+      INNER JOIN task_logs tl ON tl.task_id = t.id
+      WHERE t.status = 'done'
+        AND tl.message LIKE '%Token budget reached%'
+        AND (t.output IS NULL OR LENGTH(TRIM(t.output)) < 200)
+    `).all()
+
+    // Also find tasks that failed due to spend limits
+    const limitTasks = db.prepare(`
+      SELECT DISTINCT t.id, t.title, t.agent_id, t.output, t.tokens_used, t.created_at
+      FROM tasks t
+      WHERE t.status = 'failed'
+        AND (t.error LIKE '%MONTHLY_LIMIT_REACHED%' OR t.error LIKE '%DAILY_LIMIT_REACHED%')
+    `).all()
+
+    const allBad = [...badTasks, ...limitTasks]
+    const resetIds = []
+    for (const t of allBad) {
+      db.prepare(`UPDATE tasks SET status = 'todo', error = '', output = '', retries = 0, tokens_used = 0, completed_at = NULL, started_at = NULL, updated_at = datetime('now') WHERE id = ?`).run(t.id)
+      db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)').run(t.id, t.agent_id, 'Reset: task was marked done/failed due to budget/limit exhaustion with no meaningful output', 'info')
+      resetIds.push({ id: t.id, title: t.title, agent: t.agent_id })
+    }
+
+    res.json({ ok: true, reset: resetIds.length, tasks: resetIds })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // ── Task Logs ──────────────────────────────────────
 app.get('/api/tasks/:id/logs', (req, res) => {
   const logs = db.prepare('SELECT * FROM task_logs WHERE task_id = ? ORDER BY created_at ASC').all(req.params.id)
@@ -3971,6 +4006,35 @@ START WITH TOOL CALLS NOW.`
 
     removeActiveRun(agent.id, task.id)
     traceBus.emit('agent:status', { agent_id: agent.id, status: 'idle' })
+
+    // Check if task hit budget limits without producing real output
+    const currentUsage = db.prepare('SELECT tokens_used FROM tasks WHERE id = ?').get(task.id)
+    const taskBudgetFinal = task.token_budget || parseInt(getSetting('per_task_token_budget') || '0')
+    const hitBudget = taskBudgetFinal > 0 && currentUsage && currentUsage.tokens_used >= taskBudgetFinal
+    const outputTooShort = fullOutput.trim().length < 200
+    if (hitBudget && outputTooShort) {
+      // Budget exhausted with no meaningful output — treat as failure, auto-retry
+      const retries = task.retries || 0
+      const errorMsg = `Budget exhausted (${currentUsage.tokens_used}/${taskBudgetFinal} tokens) with insufficient output — resetting to retry`
+      db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+        .run(task.id, agent.id, errorMsg, 'error')
+      if (retries < 2) {
+        db.prepare(`UPDATE tasks SET status = 'todo', retries = ?, error = ?, completed_at = NULL, started_at = NULL, tokens_used = 0, updated_at = datetime('now') WHERE id = ?`)
+          .run(retries + 1, errorMsg, task.id)
+        db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+          .run('system', '🔄 Auto-Retry', '🔄', '#f59e0b', `Resetting "${task.title}" — hit budget with no output (retry ${retries + 1}/2)`)
+        console.log(`🔄 ${agent.name}: task "${task.title}" hit budget with no output, resetting to todo (retry ${retries + 1})`)
+        setTimeout(() => processAgentQueue(agent.id), 10000)
+      } else {
+        db.prepare(`UPDATE tasks SET status = 'failed', error = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
+          .run(errorMsg, task.id)
+        db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+          .run('system', '❌ Budget Failure', '❌', '#ef4444', `"${task.title}" exhausted budget 3 times with no output — needs review`)
+      }
+      traceBus.emit('task:update', { id: task.id, status: retries < 2 ? 'todo' : 'failed', agent_id: agent.id })
+      return
+    }
+
     // Clean up checkpoints on successful completion
     db.prepare('DELETE FROM task_checkpoints WHERE task_id = ?').run(task.id)
 
@@ -4154,7 +4218,7 @@ START WITH TOOL CALLS NOW.`
     if (errorMsg !== 'Stopped by user') {
       const retries = task.retries || 0
       const MAX_AUTO_RETRIES = 3
-      const isTransient = /rate.?limit|timeout|ECONNRESET|ENOTFOUND|503|529|overloaded|credit balance/i.test(errorMsg)
+      const isTransient = /rate.?limit|timeout|ECONNRESET|ENOTFOUND|503|529|overloaded|credit balance|DAILY_LIMIT_REACHED|MONTHLY_LIMIT_REACHED|AGENT_LIMIT_REACHED/i.test(errorMsg)
       if (isTransient && retries < MAX_AUTO_RETRIES) {
         db.prepare(`UPDATE tasks SET status = 'todo', retries = ?, error = '', completed_at = NULL, started_at = NULL, updated_at = datetime('now') WHERE id = ?`)
           .run(retries + 1, task.id)
