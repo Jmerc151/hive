@@ -333,6 +333,14 @@ export const api = {
   // Guardrail Events
   getGuardrailEvents: (limit) => request(`/guardrails/events?limit=${limit || 50}`),
 
+  // Dead Letter Queue
+  getDeadLetters: () => request('/dead-letters'),
+  retryDeadLetter: (id) => request(`/dead-letters/${id}/retry`, { method: 'POST' }),
+  dismissDeadLetter: (id) => request(`/dead-letters/${id}`, { method: 'DELETE' }),
+
+  // Health
+  getHealth: () => request('/health'),
+
   // Skill Import/Export
   exportSkill: (slug) => `${BASE}/skills/${slug}/export?token=${getAuthToken()}`,
   importSkill: (content) => request('/skills/import', { method: 'POST', body: { content } }),

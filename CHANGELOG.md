@@ -1,5 +1,21 @@
 # Hive Changelog
 
+## 2026-03-16 — Reliability Hardening
+
+### Process Safety
+- **Graceful shutdown** (SIGTERM/SIGINT) — clears heartbeats, aborts active runs, resets tasks to todo, closes DB
+- **Process error handlers** — uncaughtException and unhandledRejection logged via structured logger
+- **Request timeout middleware** — 30s for normal requests, 5min for task execution/sandbox/backtest
+
+### Observability
+- **Enhanced `/api/health`** — DB status, circuit breakers, queue depth, stuck tasks, recent failures, spend, memory
+- **Startup self-test** — verifies DB, OpenRouter, agents, memory dir; emails alert on failure
+- **Standardized logging** — key paths converted to structured JSON (heartbeats, auto-unstick, retries)
+
+### Error Recovery
+- **Dead letter queue** — permanently failed tasks tracked in `dead_letters` table with email alerts
+- **Dead letter API** — `GET/POST/DELETE /api/dead-letters` for retry or dismiss
+
 ## 2026-03-16 — Frontend Polish Pass
 
 ### New Components

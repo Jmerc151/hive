@@ -548,6 +548,17 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id, sort_order);
 `)
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dead_letters (
+    id TEXT PRIMARY KEY,
+    task_id TEXT,
+    agent_id TEXT NOT NULL,
+    error TEXT NOT NULL,
+    retries INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`)
+
 // Migration: add project_id to tasks
 try { db.exec(`ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
 try { db.exec(`ALTER TABLE tasks ADD COLUMN milestone_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }

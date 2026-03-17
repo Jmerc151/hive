@@ -38,6 +38,14 @@ function log(level, message, meta = {}) {
   fn(JSON.stringify(entry))
 }
 
+// ── Process Error Handlers ────────────────────────
+process.on('uncaughtException', (err) => {
+  log('error', 'uncaught_exception', { error: err.message, stack: err.stack })
+})
+process.on('unhandledRejection', (reason) => {
+  log('error', 'unhandled_rejection', { error: reason?.message || String(reason), stack: reason?.stack })
+})
+
 // ── Circuit Breaker for External APIs ─────────────
 class CircuitBreaker {
   constructor(name, { threshold = 5, resetMs = 60000 } = {}) {
@@ -95,6 +103,14 @@ app.use(rateLimit({ windowMs: 60 * 1000, max: 100, standardHeaders: true, legacy
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3333,http://localhost:5173').split(',')
 app.use(cors({ origin: ALLOWED_ORIGINS }))
 app.use(express.json())
+
+// ── Request Timeout ─────────────────────────────────
+app.use((req, res, next) => {
+  const timeout = (req.path.includes('/run') || req.path.includes('/sandbox') || req.path.includes('/backtest')) ? 300000 : 30000
+  req.setTimeout(timeout)
+  res.setTimeout(timeout)
+  next()
+})
 
 // ── Password hashing ────────────────────────────────
 function hashPassword(password) {
@@ -416,7 +432,7 @@ if (orphaned.length) {
   for (const t of orphaned) {
     db.prepare("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ?").run(t.id)
   }
-  console.log(`[startup] Reset ${orphaned.length} orphaned in_progress tasks back to todo`)
+  log('info', 'orphaned_tasks_reset', { count: orphaned.length })
 }
 
 // ══════════════════════════════════════════════════════
@@ -2909,7 +2925,11 @@ async function troubleshootAndRetry(failedTask, agent, errorMsg) {
     if (retries >= MAX_RETRIES) {
       db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
         .run('system', '🔧 Troubleshooter', '🔧', '#ef4444', `⛔ "${failedTask.title}" failed ${MAX_RETRIES} times — giving up. Needs manual review.`)
-      console.log(`🔧 Max retries reached for "${failedTask.title}"`)
+      log('warn', 'max_retries_reached', { taskId: failedTask.id, agentId: agent.id, title: failedTask.title })
+      try {
+        db.prepare("INSERT OR IGNORE INTO dead_letters (id, task_id, agent_id, error, retries) VALUES (?, ?, ?, ?, ?)").run(uuid(), failedTask.id, agent.id, errorMsg.slice(0, 500), retries)
+        email.sendMail({ subject: `⛔ Hive Dead Letter: ${failedTask.title}`, html: `<p>Task "<b>${failedTask.title}</b>" (${agent.id}) failed ${MAX_RETRIES} times via troubleshooter.</p><p>Error: ${errorMsg.slice(0, 200)}</p>` }).catch(() => {})
+      } catch {}
       return
     }
 
@@ -3009,7 +3029,7 @@ function notifyHeartbeatError(name, error) {
 function registerHeartbeat(name, intervalMs, fn) {
   const id = setInterval(fn, intervalMs)
   heartbeatJobs.push({ name, id, intervalMs })
-  console.log(`💓 Heartbeat registered: ${name} (every ${Math.round(intervalMs / 60000)}min)`)
+  log('info', 'heartbeat_registered', { name, intervalMin: Math.round(intervalMs / 60000) })
 }
 
 // auto-standup removed — wasteful no-op
@@ -3032,7 +3052,7 @@ registerHeartbeat('auto-unstick', 10 * 60 * 1000, () => {
   for (const t of stuck) {
     if (!activeRuns.has(t.agent_id)) {
       db.prepare("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ?").run(t.id)
-      console.log(`[auto-unstick] Reset: ${t.agent_id} → "${t.title}"`)
+      log('info', 'task_unstuck', { agentId: t.agent_id, taskId: t.id, title: t.title })
     }
   }
 })
@@ -3905,6 +3925,12 @@ START WITH TOOL CALLS NOW.`
       } else {
         db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
           .run('system', '🔧 Troubleshooter', '🔧', '#ef4444', `"${task.title}" failed ${MAX_AUTO_RETRIES} times — needs manual review.`)
+        // Dead letter queue
+        try {
+          db.prepare("INSERT OR IGNORE INTO dead_letters (id, task_id, agent_id, error, retries) VALUES (?, ?, ?, ?, ?)").run(uuid(), task.id, agent.id, errorMsg.slice(0, 500), task.retries || 0)
+          log('warn', 'dead_letter_created', { taskId: task.id, agentId: agent.id, error: errorMsg.slice(0, 100) })
+          email.sendMail({ subject: `⛔ Hive Dead Letter: ${task.title}`, html: `<p>Task "<b>${task.title}</b>" (${agent.id}) failed ${MAX_AUTO_RETRIES} times.</p><p>Error: ${errorMsg.slice(0, 200)}</p>` }).catch(() => {})
+        } catch {}
       }
     }
   }
@@ -6786,16 +6812,95 @@ app.patch('/api/agents/:agentId/skills-v2/:skillSlug', (req, res) => {
 
 // ── Health check ──────────────────────────────────
 app.get('/api/health', (req, res) => {
+  const checks = {}
+
+  // DB check
+  try {
+    const row = db.prepare("SELECT COUNT(*) as count FROM tasks").get()
+    checks.database = { status: 'ok', tasks: row.count }
+  } catch (e) {
+    checks.database = { status: 'error', error: e.message }
+  }
+
+  // Circuit breakers
+  checks.circuits = {}
+  for (const [name, breaker] of Object.entries(breakers)) {
+    checks.circuits[name] = { state: breaker.state, failures: breaker.failures }
+  }
+
+  // Active runs
+  checks.activeRuns = {}
+  for (const [agentId, run] of activeRuns) {
+    checks.activeRuns[agentId] = run.taskId
+  }
+
+  // Queue depth per agent
+  checks.queues = {}
+  for (const agent of agents) {
+    const count = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status = 'todo'").get(agent.id)
+    checks.queues[agent.id] = count.c
+  }
+
+  // Recent failures
+  const recentFails = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'failed' AND updated_at > datetime('now', '-1 hour')").get()
+  checks.recentFailures = recentFails.c
+
+  // Stuck tasks
+  const stuck = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'in_progress' AND updated_at < datetime('now', '-15 minutes')").get()
+  checks.stuckTasks = stuck.c
+
+  // Spend today
+  const todaySpend = db.prepare("SELECT COALESCE(SUM(cost), 0) as total FROM spend_log WHERE date = date('now')").get()
+  checks.spendToday = parseFloat(todaySpend.total.toFixed(4))
+
+  // Dead letters
+  try {
+    const dlCount = db.prepare("SELECT COUNT(*) as c FROM dead_letters").get()
+    checks.deadLetters = dlCount.c
+  } catch { checks.deadLetters = 0 }
+
+  const overall = (checks.database.status === 'ok' && checks.stuckTasks === 0 && checks.recentFailures < 10) ? 'healthy' : 'degraded'
+
   res.json({
-    status: 'ok',
-    uptime: process.uptime(),
+    status: overall,
+    uptime: Math.floor(process.uptime()),
+    memory: {
+      rss: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      heap: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
+    },
     agents: agents.length,
-    activeRuns: activeRuns.size,
     heartbeats: heartbeatJobs.length,
-    circuits: Object.values(breakers).map(b => b.status),
-    memory: process.memoryUsage(),
-    dbSize: (() => { try { return statSync('hive.db').size } catch { return 0 } })()
+    dbSize: (() => { try { return statSync('hive.db').size } catch { return 0 } })(),
+    ...checks
   })
+})
+
+// ── Dead Letter Queue ────────────────────────────
+app.get('/api/dead-letters', (req, res) => {
+  try {
+    const items = db.prepare("SELECT dl.*, t.title, t.agent_id as task_agent FROM dead_letters dl LEFT JOIN tasks t ON dl.task_id = t.id ORDER BY dl.created_at DESC LIMIT 100").all()
+    res.json(items)
+  } catch { res.json([]) }
+})
+
+app.post('/api/dead-letters/:id/retry', (req, res) => {
+  try {
+    const dl = db.prepare("SELECT * FROM dead_letters WHERE id = ?").get(req.params.id)
+    if (!dl) return res.status(404).json({ error: 'Not found' })
+    // Reset task to todo
+    if (dl.task_id) {
+      db.prepare("UPDATE tasks SET status = 'todo', retries = 0, error = '', updated_at = datetime('now') WHERE id = ?").run(dl.task_id)
+    }
+    db.prepare("DELETE FROM dead_letters WHERE id = ?").run(req.params.id)
+    res.json({ ok: true })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.delete('/api/dead-letters/:id', (req, res) => {
+  try {
+    db.prepare("DELETE FROM dead_letters WHERE id = ?").run(req.params.id)
+    res.json({ ok: true })
+  } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
 // ── Serve landing page (no auth) ─────────────────
@@ -9456,9 +9561,64 @@ try {
 } catch (e) { console.error('Cleanup error:', e.message) }
 
 const PORT = process.env.API_PORT || process.env.PORT || 3002
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
+  log('info', 'server_started', { port: PORT, agents: agents.length, heartbeats: heartbeatJobs.length })
   console.log(`🐝 Hive server running on port ${PORT}`)
-  console.log(`🧠 Agent memory dir: ${MEMORY_DIR}`)
-  console.log(`📋 Task queues active for ${agents.length} agents`)
-  console.log(`💓 ${heartbeatJobs.length} heartbeat jobs registered`)
+  console.log(`📋 ${agents.length} agents | ${heartbeatJobs.length} heartbeats`)
+
+  // Startup self-test (3s delay to let everything stabilize)
+  setTimeout(async () => {
+    const issues = []
+    // 1. DB writable
+    try {
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('_selftest', datetime('now'))").run()
+      db.prepare("DELETE FROM settings WHERE key = '_selftest'").run()
+    } catch (e) { issues.push('DB not writable: ' + e.message) }
+    // 2. OpenRouter reachable
+    try {
+      await breakers.openrouter.call(() => openai.models.list())
+    } catch (e) { issues.push('OpenRouter: ' + e.message) }
+    // 3. Agents loaded
+    if (agents.length !== 6) issues.push(`Expected 6 agents, got ${agents.length}`)
+    // 4. Memory dir
+    if (!existsSync(MEMORY_DIR)) issues.push('Memory directory missing')
+
+    if (issues.length > 0) {
+      log('error', 'startup_selftest_failed', { issues })
+      try { await email.sendNotificationEmail('⚠️ Hive Startup Issues', `<ul>${issues.map(i => `<li>${i}</li>`).join('')}</ul>`) } catch {}
+    } else {
+      log('info', 'startup_selftest_passed')
+    }
+  }, 3000)
 })
+
+// ── Graceful Shutdown ────────────────────────────────
+function gracefulShutdown(signal) {
+  log('warn', 'shutdown_initiated', { signal, activeRuns: activeRuns.size })
+
+  // 1. Stop accepting connections
+  server.close(() => log('info', 'http_server_closed'))
+
+  // 2. Clear heartbeats
+  for (const job of heartbeatJobs) clearInterval(job.id)
+  log('info', 'heartbeats_cleared', { count: heartbeatJobs.length })
+
+  // 3. Abort active runs, reset tasks to todo
+  for (const [agentId, run] of activeRuns) {
+    try { run.abort?.abort() } catch {}
+    try {
+      db.prepare("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ?").run(run.taskId)
+      log('info', 'task_interrupted', { agentId, taskId: run.taskId })
+    } catch {}
+  }
+  activeRuns.clear()
+
+  // 4. Close DB
+  try { db.close() } catch {}
+  log('info', 'shutdown_complete')
+
+  setTimeout(() => process.exit(0), 500)
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.on('SIGINT', () => gracefulShutdown('SIGINT'))
