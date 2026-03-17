@@ -635,7 +635,7 @@ try {
 const defaults = {
   daily_limit_usd: '5.00',
   monthly_limit_usd: '75.00',
-  per_task_token_budget: '16384',
+  per_task_token_budget: '65536',
   max_concurrent_tasks: '4',
   pause_all_agents: 'false',
   qa_reviews_enabled: 'true',
@@ -700,5 +700,21 @@ try {
     db.prepare("UPDATE tasks SET status = 'todo', requires_approval = 0, updated_at = datetime('now') WHERE status = 'awaiting_approval'").run()
   }
 } catch (e) { /* migration already applied */ }
+
+// Migration: bump token budget from 16384 to 65536 — research tasks were hitting budget before producing output
+try {
+  const currentBudget = db.prepare("SELECT value FROM settings WHERE key = 'per_task_token_budget'").get()?.value
+  if (currentBudget === '16384') {
+    db.prepare("UPDATE settings SET value = '65536', updated_at = datetime('now') WHERE key = 'per_task_token_budget'").run()
+  }
+} catch (e) { /* already migrated */ }
+
+// Migration: bump monthly limit — internal tracker over-counts vs OpenRouter actual spend
+try {
+  const currentMonthly = db.prepare("SELECT value FROM settings WHERE key = 'monthly_limit_usd'").get()?.value
+  if (parseFloat(currentMonthly) <= 100) {
+    db.prepare("UPDATE settings SET value = '200.00', updated_at = datetime('now') WHERE key = 'monthly_limit_usd'").run()
+  }
+} catch (e) { /* already migrated */ }
 
 export default db

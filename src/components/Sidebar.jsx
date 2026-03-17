@@ -108,7 +108,7 @@ export default function Sidebar({ agents, filterAgent, onFilterAgent, onStopAgen
   }
 
   return (
-    <aside className="w-[216px] bg-s1 flex flex-col overflow-hidden" style={{ borderRight: '0.5px solid rgba(0,0,0,0.07)' }}>
+    <aside className="w-[216px] h-screen bg-s1 flex flex-col overflow-hidden sticky top-0" style={{ borderRight: '0.5px solid rgba(0,0,0,0.07)' }}>
       {/* Logo area */}
       <div className="px-4 py-5 flex items-center gap-3" style={{ borderBottom: '0.5px solid rgba(0,0,0,0.08)' }}>
         <div className="w-8 h-8 rounded-[9px] bg-t1 flex items-center justify-center flex-shrink-0">
