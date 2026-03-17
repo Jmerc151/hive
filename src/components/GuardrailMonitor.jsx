@@ -7,7 +7,8 @@ const AGENT_TILES = {
   quill:  { letter: 'Q', class: 'tile-quill' },
   dealer: { letter: 'D', class: 'tile-dealer' },
   oracle: { letter: 'O', class: 'tile-oracle' },
-  nexus:  { letter: 'N', class: 'tile-nexus' },
+  nexus:    { letter: 'N', class: 'tile-nexus' },
+  sentinel: { letter: 'X', class: 'tile-sentinel' },
 }
 
 const thinBorder = { border: '0.5px solid rgba(0,0,0,0.08)' }

@@ -338,6 +338,12 @@ export const api = {
   retryDeadLetter: (id) => request(`/dead-letters/${id}/retry`, { method: 'POST' }),
   dismissDeadLetter: (id) => request(`/dead-letters/${id}`, { method: 'DELETE' }),
 
+  // Smoke Tests
+  getSmokeTestRuns: (limit = 50) => request(`/smoke-tests/runs?limit=${limit}`),
+  getSmokeTestRun: (runId) => request(`/smoke-tests/runs/${runId}`),
+  runSmokeTest: () => request('/smoke-tests/run', { method: 'POST' }),
+  getSmokeTestStatus: () => request('/smoke-tests/status'),
+
   // Health
   getHealth: () => request('/health'),
 

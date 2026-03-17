@@ -41,6 +41,7 @@ import LoginScreen from './components/LoginScreen'
 import MissionControl from './components/MissionControl'
 import MCPServers from './components/MCPServers'
 import GuardrailMonitor from './components/GuardrailMonitor'
+import SmokeTestPanel from './components/SmokeTestPanel'
 import ErrorBoundary from './components/ErrorBoundary'
 
 export default function App() {
@@ -292,6 +293,8 @@ export default function App() {
         return <MCPServers inline onClose={goBack} />
       case 'guardrails':
         return <GuardrailMonitor inline onClose={goBack} />
+      case 'smokeTests':
+        return <SmokeTestPanel inline onClose={goBack} />
       case 'deliverablesFull':
         return <DeliverablesPanel inline agents={agents} onClose={goBack} />
       default:

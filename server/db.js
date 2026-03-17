@@ -548,6 +548,39 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id, sort_order);
 `)
 
+// Smoke test monitoring
+db.exec(`
+  CREATE TABLE IF NOT EXISTS smoke_test_runs (
+    id TEXT PRIMARY KEY,
+    suite_name TEXT NOT NULL,
+    total INTEGER DEFAULT 0,
+    passed INTEGER DEFAULT 0,
+    failed INTEGER DEFAULT 0,
+    duration_ms INTEGER DEFAULT 0,
+    trigger TEXT DEFAULT 'heartbeat' CHECK(trigger IN ('heartbeat','manual','deploy')),
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_smoke_runs_time ON smoke_test_runs(created_at);
+
+  CREATE TABLE IF NOT EXISTS smoke_tests (
+    id TEXT PRIMARY KEY,
+    suite_name TEXT NOT NULL,
+    test_name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    method TEXT DEFAULT 'GET',
+    expected_status INTEGER DEFAULT 200,
+    actual_status INTEGER,
+    response_time_ms INTEGER DEFAULT 0,
+    passed INTEGER DEFAULT 0,
+    error TEXT DEFAULT '',
+    response_snippet TEXT DEFAULT '',
+    run_id TEXT NOT NULL REFERENCES smoke_test_runs(id) ON DELETE CASCADE,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_smoke_run ON smoke_tests(run_id);
+  CREATE INDEX IF NOT EXISTS idx_smoke_suite ON smoke_tests(suite_name, created_at);
+`)
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS dead_letters (
     id TEXT PRIMARY KEY,
@@ -636,6 +669,7 @@ const defaults = {
   dealer_daily_usd: '0.50',
   oracle_daily_usd: '0.50',
   nexus_daily_usd: '0.75',
+  sentinel_daily_usd: '0.25',
   // AI services activation
   ai_services_activated: 'false',
   agentforge_phase: '1',

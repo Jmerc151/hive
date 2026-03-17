@@ -24,6 +24,7 @@
   --color-dealer: #c0292a;
   --color-oracle: #8040b8;
   --color-nexus: #8e8e93;
+  --color-sentinel: #ef4444;
 
   /* ── Semantic ── */
   --color-success: #28a745;
@@ -129,7 +130,8 @@ button { -webkit-tap-highlight-color: transparent; }
 .tile-quill  { background: rgba(40, 167, 69, 0.09); color: var(--color-quill); }
 .tile-dealer { background: rgba(192, 41, 42, 0.09); color: var(--color-dealer); }
 .tile-oracle { background: rgba(128, 64, 184, 0.09); color: var(--color-oracle); }
-.tile-nexus  { background: rgba(142, 142, 147, 0.08); color: var(--color-nexus); }
+.tile-nexus    { background: rgba(142, 142, 147, 0.08); color: var(--color-nexus); }
+.tile-sentinel { background: rgba(239, 68, 68, 0.09); color: var(--color-sentinel); }
 
 /* ══════════════════════════════
    TYPE BADGES

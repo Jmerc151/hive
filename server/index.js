@@ -201,12 +201,13 @@ const openai = new OpenAI({
 
 // ── Agent Model Assignment ──────────────────────────
 const AGENT_MODELS = {
-  scout:  'anthropic/claude-haiku-4-5',
-  forge:  'anthropic/claude-haiku-4-5',
-  quill:  'anthropic/claude-haiku-4-5',
-  dealer: 'anthropic/claude-haiku-4-5',
-  oracle: 'anthropic/claude-sonnet-4-5',
-  nexus:  'anthropic/claude-sonnet-4-5',
+  scout:    'anthropic/claude-haiku-4-5',
+  forge:    'anthropic/claude-haiku-4-5',
+  quill:    'anthropic/claude-haiku-4-5',
+  dealer:   'anthropic/claude-haiku-4-5',
+  oracle:   'anthropic/claude-sonnet-4-5',
+  nexus:    'anthropic/claude-sonnet-4-5',
+  sentinel: 'anthropic/claude-haiku-4-5',
 }
 function getAgentModel(agentId) {
   return AGENT_MODELS[agentId] || 'anthropic/claude-sonnet-4-5'
@@ -672,7 +673,7 @@ const TOOL_REGISTRY = [
       description: { type: 'string', required: true, description: 'Task details' },
       priority: { type: 'string', required: false, description: 'low, medium, high, critical (default: medium)' }
     },
-    agents: ['nexus', 'scout', 'forge', 'quill', 'dealer', 'oracle'],
+    agents: ['nexus', 'scout', 'forge', 'quill', 'dealer', 'oracle', 'sentinel'],
     execute: async (args, ctx) => {
       // ANTI-SPIRAL: block off-topic tasks
       const titleLower = (args.title + ' ' + (args.description || '')).toLowerCase()
@@ -754,7 +755,7 @@ const TOOL_REGISTRY = [
       subject: { type: 'string', required: true, description: 'Email subject line' },
       body: { type: 'string', required: true, description: 'Email body (HTML or plain text)' }
     },
-    agents: ['dealer', 'quill'],
+    agents: ['dealer', 'quill', 'sentinel'],
     execute: async (args) => {
       const sanitize = (str) => String(str || '').replace(/[\r\n]/g, ' ').trim()
       const to = sanitize(args.to)
@@ -841,7 +842,7 @@ const TOOL_REGISTRY = [
       content: { type: 'string', required: true, description: 'The learning/insight to remember (be specific and concise)' },
       tags: { type: 'string', required: false, description: 'Comma-separated tags for categorization' }
     },
-    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus'],
+    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus', 'sentinel'],
     execute: async (args, ctx) => {
       const tags = (args.tags || '').split(',').map(t => t.trim()).filter(Boolean)
       const stored = await storeMemoryEmbedding(ctx?.agentId || '', args.content, ctx?.taskId || '', tags)
@@ -854,7 +855,7 @@ const TOOL_REGISTRY = [
     params: {
       query: { type: 'string', required: true, description: 'What to search for in memory' }
     },
-    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus'],
+    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus', 'sentinel'],
     execute: async (args, ctx) => {
       const results = await searchMemoryEmbeddings(ctx?.agentId || '', args.query, 5)
       if (results.length === 0) return { results: [], message: 'No relevant memories found' }
@@ -883,7 +884,7 @@ const TOOL_REGISTRY = [
       headers: { type: 'object', description: 'Request headers as JSON object', required: false },
       body: { type: 'object', description: 'Request body as JSON object', required: false }
     },
-    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus'],
+    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus', 'sentinel'],
     execute: async (args) => {
       const url = args.url
       if (!url) return { error: 'url is required' }
@@ -2240,7 +2241,7 @@ const TOOL_REGISTRY = [
       question: { type: 'string', required: true, description: 'Question to ask (max 500 chars)' },
       context: { type: 'string', required: false, description: 'What you are working on' }
     },
-    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus'],
+    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus', 'sentinel'],
     execute: async (args, { agentId, taskId }) => {
       try {
         const targetAgent = agents.find(a => a.id === args.agent_id)
@@ -7153,6 +7154,42 @@ app.get('/landing', (req, res) => {
   res.sendFile(join(__dirname, '..', 'public', 'landing.html'))
 })
 
+// ── Smoke Test API endpoints ──────────────────────
+app.get('/api/smoke-tests/runs', (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const runs = db.prepare("SELECT * FROM smoke_test_runs ORDER BY created_at DESC LIMIT ?").all(limit)
+    res.json(runs)
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.get('/api/smoke-tests/runs/:runId', (req, res) => {
+  try {
+    const run = db.prepare("SELECT * FROM smoke_test_runs WHERE id = ?").get(req.params.runId)
+    if (!run) return res.status(404).json({ error: 'Run not found' })
+    const tests = db.prepare("SELECT * FROM smoke_tests WHERE run_id = ? ORDER BY created_at").all(req.params.runId)
+    res.json({ ...run, tests })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/smoke-tests/run', async (req, res) => {
+  try {
+    const result = await runSmokeTests(EMBER_SMOKE_SUITE, 'manual')
+    log('info', 'smoke_test_manual', { passed: result.passed, failed: result.failed })
+    res.json(result)
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.get('/api/smoke-tests/status', (req, res) => {
+  try {
+    const latest = db.prepare("SELECT * FROM smoke_test_runs ORDER BY created_at DESC LIMIT 1").get()
+    const last24h = db.prepare("SELECT COUNT(*) as total, SUM(CASE WHEN failed = 0 THEN 1 ELSE 0 END) as clean_runs FROM smoke_test_runs WHERE created_at > datetime('now', '-1 day')").get()
+    const uptimePercent = last24h.total > 0 ? Math.round((last24h.clean_runs / last24h.total) * 100) : 100
+    const avgResponseTime = db.prepare("SELECT AVG(response_time_ms) as avg_ms FROM smoke_tests WHERE created_at > datetime('now', '-1 day')").get()?.avg_ms || 0
+    res.json({ latest, uptimePercent, runsLast24h: last24h.total, avgResponseTime: Math.round(avgResponseTime) })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
 // ── Serve static frontend ─────────────────────────
 const distPath = join(__dirname, '..', 'dist')
 if (existsSync(distPath)) {
@@ -9805,6 +9842,121 @@ registerHeartbeat('ai-services-check', 24 * 60 * 60 * 1000, () => {
 // for Forge after scoring > 7, it also stores in proposals via the existing
 // proposal creation flow in the heartbeat output parser.
 
+// ── Smoke Test Runner (Sentinel QA) ─────────────────
+const EMBER_SMOKE_SUITE = {
+  name: 'ember-production',
+  baseUrl: 'https://sous-backend-production.up.railway.app',
+  frontendUrl: 'https://sous-frontend.vercel.app',
+  tests: [
+    { name: 'backend-health', method: 'GET', path: '/api/health', expectedStatus: [200], bodyContains: null },
+    { name: 'frontend-loads', method: 'GET', useFrontend: true, path: '/', expectedStatus: [200], bodyContains: 'html' },
+    { name: 'staff-join-page', method: 'GET', useFrontend: true, path: '/join/HONEYBELLY', expectedStatus: [200], bodyContains: 'html' },
+    { name: 'staff-access-api', method: 'POST', path: '/api/auth/staff-access/HONEYBELLY', body: { name: 'SmokeTest' }, expectedStatus: [200, 404], bodyContains: null },
+    { name: 'login-rejects-bad-creds', method: 'POST', path: '/api/auth/login', body: { email: 'smoke@test.invalid', password: 'wrong' }, expectedStatus: [400, 401, 404], bodyContains: null },
+    { name: 'onboarding-chat-start', method: 'POST', path: '/api/onboarding-chat/start', body: { restaurant_name: 'SmokeTest' }, expectedStatus: [200, 400, 401, 404], bodyContains: null },
+  ]
+}
+
+async function runSmokeTests(suite, trigger = 'heartbeat') {
+  const runId = uuid()
+  const startTime = Date.now()
+  const results = []
+
+  // Insert run row first so FK on smoke_tests.run_id is satisfied
+  try {
+    db.prepare("INSERT INTO smoke_test_runs (id, suite_name, total, passed, failed, duration_ms, trigger) VALUES (?, ?, 0, 0, 0, 0, ?)")
+      .run(runId, suite.name, trigger)
+  } catch (e) { log('error', 'smoke_run_insert_failed', { error: e.message }) }
+
+  for (const test of suite.tests) {
+    const url = test.useFrontend
+      ? `${suite.frontendUrl}${test.path}`
+      : `${suite.baseUrl}${test.path}`
+    const testStart = Date.now()
+    let actualStatus = 0, passed = false, error = '', snippet = ''
+
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 10000)
+      const opts = { method: test.method || 'GET', signal: controller.signal, headers: {} }
+      if (test.body) {
+        opts.headers['Content-Type'] = 'application/json'
+        opts.body = JSON.stringify(test.body)
+      }
+      const res = await fetch(url, opts)
+      clearTimeout(timeout)
+      actualStatus = res.status
+      const body = await res.text().catch(() => '')
+      snippet = body.slice(0, 500)
+      const expected = Array.isArray(test.expectedStatus) ? test.expectedStatus : [test.expectedStatus || 200]
+      const statusOk = expected.includes(actualStatus)
+      const bodyOk = !test.bodyContains || body.toLowerCase().includes(test.bodyContains.toLowerCase())
+      passed = statusOk && bodyOk
+      if (!statusOk) error = `Expected status ${expected.join('|')}, got ${actualStatus}`
+      else if (!bodyOk) error = `Response missing "${test.bodyContains}"`
+    } catch (e) {
+      error = e.name === 'AbortError' ? 'Timeout (10s)' : e.message
+    }
+
+    const responseTime = Date.now() - testStart
+    const testId = uuid()
+    results.push({ id: testId, name: test.name, url, method: test.method || 'GET', expectedStatus: test.expectedStatus, actualStatus, responseTime, passed, error, snippet })
+
+    try {
+      db.prepare("INSERT INTO smoke_tests (id, suite_name, test_name, url, method, expected_status, actual_status, response_time_ms, passed, error, response_snippet, run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(testId, suite.name, test.name, url, test.method || 'GET', Array.isArray(test.expectedStatus) ? test.expectedStatus[0] : (test.expectedStatus || 200), actualStatus, responseTime, passed ? 1 : 0, error, snippet, runId)
+    } catch (e) { log('error', 'smoke_test_insert_failed', { error: e.message }) }
+  }
+
+  const duration = Date.now() - startTime
+  const passedCount = results.filter(r => r.passed).length
+  const failedCount = results.length - passedCount
+
+  try {
+    db.prepare("UPDATE smoke_test_runs SET total = ?, passed = ?, failed = ?, duration_ms = ? WHERE id = ?")
+      .run(results.length, passedCount, failedCount, duration, runId)
+  } catch (e) { log('error', 'smoke_run_update_failed', { error: e.message }) }
+
+  return { runId, suiteName: suite.name, total: results.length, passed: passedCount, failed: failedCount, duration, results }
+}
+
+registerHeartbeat('ember-smoke-test', 30 * 60 * 1000, async () => {
+  try {
+    const result = await runSmokeTests(EMBER_SMOKE_SUITE)
+    log('info', 'smoke_test_complete', { suite: result.suiteName, passed: result.passed, failed: result.failed })
+
+    if (result.failed > 0) {
+      const failedTests = result.results.filter(r => !r.passed)
+      const body = failedTests.map(t => `FAIL: ${t.name} — ${t.url} → ${t.actualStatus} (expected ${JSON.stringify(t.expectedStatus)}) ${t.error}`).join('\n')
+
+      // Email alert immediately
+      const notifEmail = getSetting('notification_email')
+      if (notifEmail && getSetting('email_enabled') === 'true') {
+        try {
+          await email.sendNotificationEmail(`🛡️ ${result.failed} Ember smoke test(s) failed`, `<pre>${body}</pre>`)
+        } catch (e) { log('error', 'smoke_email_failed', { error: e.message }) }
+      }
+
+      // After 2+ consecutive failures, create investigation task for Sentinel
+      const recentRuns = db.prepare("SELECT failed FROM smoke_test_runs WHERE suite_name = ? ORDER BY created_at DESC LIMIT 3").all('ember-production')
+      const consecutiveFailures = recentRuns.filter(r => r.failed > 0).length
+      if (consecutiveFailures >= 2) {
+        const existingSentinelTask = db.prepare("SELECT id FROM tasks WHERE agent_id = 'sentinel' AND status IN ('todo','in_progress') AND created_at > datetime('now', '-1 hour')").get()
+        if (!existingSentinelTask) {
+          const taskId = uuid()
+          db.prepare("INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, 'critical', 'sentinel', 'todo')")
+            .run(taskId, `Investigate ${result.failed} failed Ember smoke test(s)`, `The following Ember production tests failed (${consecutiveFailures} consecutive runs):\n\n${body}\n\nUse http_request to verify each failing endpoint. Determine if this is a transient issue or a real bug. If real, create_task for Forge with reproduction steps.`)
+          log('info', 'sentinel_task_created', { taskId, consecutiveFailures })
+        }
+      }
+    }
+  } catch (e) {
+    notifyHeartbeatError('ember-smoke-test', e)
+  }
+})
+
+// (Smoke Test API endpoints moved above static file serving)
+
 // ── Database Cleanup (Task 11) ──────────────────────
 try {
   const cleanBuild = db.prepare("DELETE FROM tasks WHERE status = 'backlog' AND title LIKE 'Build tool based on:%'").run()
@@ -9832,7 +9984,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
       await breakers.openrouter.call(() => openai.models.list())
     } catch (e) { issues.push('OpenRouter: ' + e.message) }
     // 3. Agents loaded
-    if (agents.length !== 6) issues.push(`Expected 6 agents, got ${agents.length}`)
+    if (agents.length !== 7) issues.push(`Expected 7 agents, got ${agents.length}`)
     // 4. Memory dir
     if (!existsSync(MEMORY_DIR)) issues.push('Memory directory missing')
 

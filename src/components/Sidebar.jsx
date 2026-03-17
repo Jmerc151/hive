@@ -6,7 +6,8 @@ const AGENT_TILES = {
   quill:  { letter: 'Q', class: 'tile-quill' },
   dealer: { letter: 'D', class: 'tile-dealer' },
   oracle: { letter: 'O', class: 'tile-oracle' },
-  nexus:  { letter: 'N', class: 'tile-nexus' },
+  nexus:    { letter: 'N', class: 'tile-nexus' },
+  sentinel: { letter: 'X', class: 'tile-sentinel' },
 }
 
 const NAV_GROUPS = [
@@ -49,6 +50,7 @@ const NAV_GROUPS = [
     label: 'Developer',
     collapsed: true,
     items: [
+      { key: 'smokeTests', icon: '\u2694', label: 'Smoke Tests' },
       { key: 'trace',   icon: '\u25C8', label: 'Live Trace' },
       { key: 'sandbox', icon: '\u25A1', label: 'Sandbox' },
       { key: 'eval',    icon: '\u25A2', label: 'Eval Harness' },
