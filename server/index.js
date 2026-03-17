@@ -9691,10 +9691,10 @@ for (const p of masterPipelines) {
   }
 }
 
-// Force-set per-agent spend limits (INSERT OR REPLACE so they always apply)
-const spendOverrides = {
+// Set per-agent spend limits (only if not already set — don't overwrite user changes)
+const spendDefaults = {
   daily_limit_usd: '8.00',
-  monthly_limit_usd: '100.00',
+  monthly_limit_usd: '200.00',
   scout_daily_usd: '1.50',
   forge_daily_usd: '2.00',
   quill_daily_usd: '1.00',
@@ -9706,8 +9706,8 @@ const spendOverrides = {
   digest_last_sent: '',
   ai_services_activated: 'false'
 }
-for (const [key, value] of Object.entries(spendOverrides)) {
-  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value)
+for (const [key, value] of Object.entries(spendDefaults)) {
+  db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)").run(key, value)
 }
 console.log('💰 Spend limits updated: $8/day global, per-agent caps set')
 
