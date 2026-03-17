@@ -705,7 +705,7 @@ try {
 try {
   const currentBudget = db.prepare("SELECT value FROM settings WHERE key = 'per_task_token_budget'").get()?.value
   if (currentBudget === '16384') {
-    db.prepare("UPDATE settings SET value = '65536', updated_at = datetime('now') WHERE key = 'per_task_token_budget'").run()
+    db.prepare("UPDATE settings SET value = '65536' WHERE key = 'per_task_token_budget'").run()
   }
 } catch (e) { /* already migrated */ }
 
@@ -713,8 +713,9 @@ try {
 try {
   const currentMonthly = db.prepare("SELECT value FROM settings WHERE key = 'monthly_limit_usd'").get()?.value
   if (parseFloat(currentMonthly) <= 100) {
-    db.prepare("UPDATE settings SET value = '200.00', updated_at = datetime('now') WHERE key = 'monthly_limit_usd'").run()
+    db.prepare("UPDATE settings SET value = '200.00' WHERE key = 'monthly_limit_usd'").run()
+    console.log('[migration] Bumped monthly_limit_usd from', currentMonthly, 'to 200.00')
   }
-} catch (e) { /* already migrated */ }
+} catch (e) { console.error('[migration] monthly limit bump failed:', e.message) }
 
 export default db
