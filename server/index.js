@@ -424,8 +424,34 @@ function sendPushToAll(payload) {
 const agentsPath = join(__dirname, '..', 'agents', 'agents.json')
 const agents = JSON.parse(readFileSync(agentsPath, 'utf8'))
 
-// Active agent runs (in-memory tracking)
+// Active agent runs (in-memory tracking) — supports parallel execution per agent
+// Map<agentId, Map<taskId, { abort: AbortController }>>
 const activeRuns = new Map()
+
+function addActiveRun(agentId, taskId, abort) {
+  if (!activeRuns.has(agentId)) activeRuns.set(agentId, new Map())
+  activeRuns.get(agentId).set(taskId, { abort })
+}
+
+function removeActiveRun(agentId, taskId) {
+  const runs = activeRuns.get(agentId)
+  if (runs) { runs.delete(taskId); if (runs.size === 0) activeRuns.delete(agentId) }
+}
+
+function isAgentRunning(agentId) {
+  return activeRuns.has(agentId) && activeRuns.get(agentId).size > 0
+}
+
+function isAgentBusy(agentId) {
+  const maxConcurrent = parseInt(getSetting('max_concurrent_per_agent') || '2')
+  return (activeRuns.get(agentId)?.size || 0) >= maxConcurrent
+}
+
+function getActiveRunAbort(agentId) {
+  const runs = activeRuns.get(agentId)
+  if (!runs || runs.size === 0) return null
+  return runs.values().next().value?.abort || null
+}
 
 // Startup cleanup: reset orphaned in_progress tasks (from crashes/restarts)
 const orphaned = db.prepare("SELECT id, agent_id, title FROM tasks WHERE status = 'in_progress'").all()
@@ -1628,7 +1654,7 @@ const TOOL_REGISTRY = [
   // ═══════════════════════════════════════════
   {
     name: 'scrape_page',
-    description: 'Extract text content and links from any web page. Use for research, competitive analysis, finding contacts.',
+    description: 'Extract text content and links from any web page. Returns clean text, title, links, and emails found.',
     params: {
       url: { type: 'string', required: true, description: 'URL to scrape' },
       selector: { type: 'string', required: false, description: 'CSS selector to extract specific content (default: body)' }
@@ -1638,33 +1664,59 @@ const TOOL_REGISTRY = [
       const blocked = /^https?:\/\/(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/i
       if (blocked.test(args.url)) return { error: 'Internal URLs are blocked' }
       try {
-        const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), 15000)
-        const res = await fetch(args.url, { signal: controller.signal, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Hive/1.0)' } })
-        clearTimeout(timeout)
-        const html = await res.text()
-        // Simple HTML to text extraction
-        const text = html
-          .replace(/<script[\s\S]*?<\/script>/gi, '')
-          .replace(/<style[\s\S]*?<\/style>/gi, '')
-          .replace(/<[^>]+>/g, ' ')
-          .replace(/&nbsp;/g, ' ')
-          .replace(/&amp;/g, '&')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/\s+/g, ' ')
-          .trim()
-          .slice(0, 8000)
-        // Extract links
+        const response = await fetch(args.url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+          },
+          signal: AbortSignal.timeout(15000)
+        })
+        if (!response.ok) {
+          return { error: `HTTP ${response.status}`, url: args.url, suggestion: 'try web_search instead' }
+        }
+        const html = await response.text()
+        let content = ''
+        let title = ''
+        try {
+          const { load } = await import('cheerio').catch(() => ({ load: null }))
+          if (load) {
+            const $ = load(html)
+            $('nav, footer, header, aside, script, style, iframe, .cookie-banner, .ad, .advertisement, [aria-hidden="true"]').remove()
+            title = $('title').text().trim() || $('h1').first().text().trim()
+            content = $('main, article, .content, .post, body').first().text()
+              .replace(/\s+/g, ' ').trim().slice(0, 5000)
+          }
+        } catch {
+          // Fallback: strip HTML tags
+          title = html.match(/<title>(.*?)<\/title>/i)?.[1] || ''
+          content = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 5000)
+        }
+        if (!content) {
+          title = html.match(/<title>(.*?)<\/title>/i)?.[1] || ''
+          content = html.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '')
+            .replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+            .replace(/\s+/g, ' ').trim().slice(0, 5000)
+        }
+        // Extract links and emails
         const linkRegex = /href="(https?:\/\/[^"]+)"/g
         const links = []
         let match
         while ((match = linkRegex.exec(html)) && links.length < 20) links.push(match[1])
-        // Extract emails from page
         const emailRegex = /[\w.+-]+@[\w-]+\.[\w.]+/g
         const emails = [...new Set(html.match(emailRegex) || [])].slice(0, 10)
-        return { text: text.slice(0, 5000), links, emails, url: args.url }
-      } catch (e) { return { error: e.message } }
+        return {
+          url: args.url, title, content,
+          word_count: content.split(' ').length,
+          scrape_quality: content.length > 500 ? 'good' : 'partial',
+          links, emails
+        }
+      } catch (err) {
+        if (err.name === 'TimeoutError') {
+          return { error: 'Page load timeout', url: args.url, suggestion: 'try web_search instead' }
+        }
+        return { error: err.message, url: args.url }
+      }
     }
   },
   // ═══════════════════════════════════════════
@@ -2094,6 +2146,185 @@ const TOOL_REGISTRY = [
         }
       } catch (e) { return { error: e.message } }
     }
+  },
+  // ═══════════════════════════════════════════
+  // ██ DEEP RESEARCH — Multi-source synthesis ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'deep_research',
+    description: 'Multi-source deep research on any topic. Searches web from multiple angles, synthesizes into structured report.',
+    params: {
+      topic: { type: 'string', required: true, description: 'What to research' },
+      depth: { type: 'string', required: false, description: 'quick or thorough (default: quick)' },
+      focus: { type: 'string', required: false, description: 'Optional focus e.g. pricing, features, reviews' }
+    },
+    agents: ['scout', 'forge', 'nexus'],
+    execute: async (args, { agentId, taskId }) => {
+      try {
+        const queries = [
+          args.topic,
+          `${args.topic} ${args.focus || 'analysis'}`,
+          `${args.topic} alternatives comparison`
+        ]
+        const searchResults = []
+        const webSearch = TOOL_REGISTRY.find(t => t.name === 'web_search')
+        if (!webSearch) return { error: 'web_search tool not found' }
+        for (const q of queries) {
+          try {
+            const r = await webSearch.execute({ query: q }, { agentId, taskId })
+            if (r && !r.error) searchResults.push(r)
+          } catch {}
+        }
+        const synthesis = await callClaude({
+          model: 'anthropic/claude-haiku-4-5',
+          max_tokens: 2048,
+          system: 'You are a research synthesizer. Produce structured JSON reports.',
+          messages: [{ role: 'user', content: `Research topic: ${args.topic}\nFocus: ${args.focus || 'general'}\nSearch results: ${JSON.stringify(searchResults).slice(0, 8000)}\n\nProduce a structured research report as JSON:\n{"summary":"3-sentence executive summary","key_findings":["specific fact with source"],"sources":["url1"],"confidence":"high|medium|low","gaps":["what we still don't know"]}` }]
+        }, agentId, taskId)
+        const text = synthesis.content?.map(b => b.text || '').join('') || ''
+        try {
+          return JSON.parse(text.replace(/```json|```/g, '').trim())
+        } catch {
+          return { summary: text.slice(0, 1000), key_findings: [], sources: [], confidence: 'medium', gaps: [] }
+        }
+      } catch (err) {
+        return { error: err.message }
+      }
+    }
+  },
+  // ═══════════════════════════════════════════
+  // ██ SCORE CODEBASE — GitHub repo operability ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'score_codebase',
+    description: 'Score a GitHub repo for agent operability — how well can an AI agent work in this codebase?',
+    params: {
+      repo: { type: 'string', required: true, description: 'GitHub repo e.g. Jmerc151/sous-frontend' }
+    },
+    agents: ['forge', 'nexus'],
+    execute: async (args, { agentId, taskId }) => {
+      try {
+        const ghList = TOOL_REGISTRY.find(t => t.name === 'github_list_files')
+        if (!ghList) return { error: 'github_list_files tool not found' }
+        const files = await ghList.execute({ repo: args.repo, path: '' }, { agentId, taskId })
+        if (files.error) return files
+        const fileNames = typeof files === 'string' ? files : JSON.stringify(files)
+        let score = 0
+        const strengths = []
+        const weaknesses = []
+        if (fileNames.includes('CLAUDE.md')) { score += 20; strengths.push('Has CLAUDE.md') }
+        if (fileNames.includes('README.md')) { score += 10; strengths.push('Has README.md') }
+        if (fileNames.includes('AGENTS.md')) { score += 10; strengths.push('Has AGENTS.md') }
+        if (fileNames.includes('.env.example')) { score += 10; strengths.push('Has .env.example') }
+        if (fileNames.includes('package.json')) { score += 5; strengths.push('Has package.json') }
+        if (fileNames.includes('migrations') || fileNames.includes('schema')) { score += 10; strengths.push('Has DB schema') }
+        if (fileNames.includes('test') || fileNames.includes('spec') || fileNames.includes('.test.')) { score += 15; strengths.push('Has tests') }
+        if (!fileNames.includes('CLAUDE.md')) { weaknesses.push('Missing CLAUDE.md — agents lack codebase context') }
+        if (!fileNames.includes('.env.example')) { weaknesses.push('Missing .env.example — hard to set up') }
+        if (!fileNames.includes('test')) { weaknesses.push('No tests found — risky for agent changes') }
+        const grade = score >= 80 ? 'A' : score >= 60 ? 'B' : score >= 40 ? 'C' : score >= 20 ? 'D' : 'F'
+        return { repo: args.repo, score, grade, strengths, weaknesses, top_3_improvements: weaknesses.slice(0, 3) }
+      } catch (err) {
+        return { error: err.message }
+      }
+    }
+  },
+  // ═══════════════════════════════════════════
+  // ██ CONSULT AGENT — Quick inter-agent Q&A  ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'consult_agent',
+    description: 'Get a quick answer from another agent without creating a full task. Use for fast questions, not complex work.',
+    params: {
+      agent_id: { type: 'string', required: true, description: 'Agent to consult: scout|forge|quill|dealer|oracle|nexus' },
+      question: { type: 'string', required: true, description: 'Question to ask (max 500 chars)' },
+      context: { type: 'string', required: false, description: 'What you are working on' }
+    },
+    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus'],
+    execute: async (args, { agentId, taskId }) => {
+      try {
+        const targetAgent = agents.find(a => a.id === args.agent_id)
+        if (!targetAgent) return { error: `Agent ${args.agent_id} not found` }
+        const response = await callClaude({
+          model: getSmartModel(args.agent_id),
+          max_tokens: 512,
+          system: targetAgent.systemPrompt,
+          messages: [{ role: 'user', content: `Context: ${args.context || 'General question'}\n\nQuestion: ${args.question}\n\nProvide a brief, direct answer (2-3 sentences max).` }]
+        }, agentId, taskId)
+        const answer = response.content?.map(b => b.text || '').join('') || ''
+        try {
+          db.prepare('INSERT INTO agent_interactions (source_agent_id, target_agent_id, interaction_type, task_id, payload) VALUES (?, ?, ?, ?, ?)')
+            .run(agentId, args.agent_id, 'consult', taskId, JSON.stringify({ question: args.question, context: args.context }))
+        } catch {}
+        return { agent: args.agent_id, answer }
+      } catch (err) {
+        return { error: err.message }
+      }
+    }
+  },
+  // ═══════════════════════════════════════════
+  // ██ POLYMARKET — Prediction market data    ██
+  // ═══════════════════════════════════════════
+  {
+    name: 'polymarket_get_markets',
+    description: 'Get current prediction markets on Polymarket — AI, tech, crypto topics. Use for paper trading research.',
+    params: {
+      category: { type: 'string', required: false, description: 'Filter: ai, crypto, tech, politics (default: all)' }
+    },
+    agents: ['oracle'],
+    execute: async (args) => {
+      try {
+        const res = await fetch('https://gamma-api.polymarket.com/markets?limit=20&active=true', {
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+          signal: AbortSignal.timeout(10000)
+        })
+        if (!res.ok) return { error: `Polymarket API returned ${res.status}` }
+        const data = await res.json()
+        return data.slice(0, 10).map(m => ({
+          id: m.id,
+          question: m.question,
+          yes_price: m.outcomePrices?.[0],
+          no_price: m.outcomePrices?.[1],
+          volume: m.volume,
+          end_date: m.endDate
+        }))
+      } catch (err) {
+        return { error: err.message }
+      }
+    }
+  },
+  {
+    name: 'polymarket_paper_trade',
+    description: 'Paper trade a Polymarket prediction — log the decision without spending real money.',
+    params: {
+      market_question: { type: 'string', required: true, description: 'The market question' },
+      position: { type: 'string', required: true, description: 'yes or no' },
+      amount_usd: { type: 'number', required: true, description: 'Virtual amount to trade' },
+      price: { type: 'number', required: true, description: 'Current price (0-1)' },
+      reasoning: { type: 'string', required: true, description: 'Why you are making this trade' }
+    },
+    agents: ['oracle'],
+    execute: async (args) => {
+      try {
+        const tradeId = crypto.randomUUID()
+        db.prepare("INSERT INTO trades (id, symbol, side, qty, price, order_type, status, created_at) VALUES (?, ?, ?, ?, ?, 'polymarket_paper', 'filled', datetime('now'))")
+          .run(tradeId, args.market_question.slice(0, 100), args.position, args.amount_usd, args.price)
+        const implied_prob = args.position === 'yes' ? args.price : 1 - args.price
+        return {
+          paper_trade_id: tradeId,
+          market: args.market_question,
+          position: args.position,
+          amount: args.amount_usd,
+          price: args.price,
+          implied_probability: `${(implied_prob * 100).toFixed(1)}%`,
+          potential_return: `$${(args.amount_usd / args.price - args.amount_usd).toFixed(2)}`,
+          reasoning: args.reasoning,
+          status: 'paper trade logged'
+        }
+      } catch (err) {
+        return { error: err.message }
+      }
+    }
   }
 ]
 
@@ -2410,7 +2641,7 @@ async function processAgentQueue(agentId) {
       return
     }
 
-    if (activeRuns.has(agentId)) {
+    if (isAgentBusy(agentId)) {
       agentQueues.set(agentId, { processing: false })
       return
     }
@@ -2440,7 +2671,7 @@ async function processAgentQueue(agentId) {
 // Check all agent queues periodically
 setInterval(() => {
   for (const agent of agents) {
-    if (!activeRuns.has(agent.id)) {
+    if (!isAgentRunning(agent.id)) {
       processAgentQueue(agent.id)
     }
   }
@@ -3038,7 +3269,7 @@ function registerHeartbeat(name, intervalMs, fn) {
 // Queue monitor — every 5 minutes
 registerHeartbeat('queue-monitor', 5 * 60 * 1000, () => {
   for (const agent of agents) {
-    if (!activeRuns.has(agent.id)) {
+    if (!isAgentRunning(agent.id)) {
       const pendingCount = db.prepare("SELECT COUNT(*) as count FROM tasks WHERE agent_id = ? AND status = 'todo'").get(agent.id)?.count || 0
       if (pendingCount > 0) {
         processAgentQueue(agent.id)
@@ -3051,7 +3282,7 @@ registerHeartbeat('queue-monitor', 5 * 60 * 1000, () => {
 registerHeartbeat('auto-unstick', 10 * 60 * 1000, () => {
   const stuck = db.prepare("SELECT id, agent_id, title FROM tasks WHERE status = 'in_progress' AND updated_at < datetime('now', '-15 minutes')").all()
   for (const t of stuck) {
-    if (!activeRuns.has(t.agent_id)) {
+    if (!isAgentRunning(t.agent_id)) {
       db.prepare("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ?").run(t.id)
       log('info', 'task_unstuck', { agentId: t.agent_id, taskId: t.id, title: t.title })
     }
@@ -3170,7 +3401,7 @@ app.get('/api/agents', (req, res) => {
         completed: counts.filter(c => c.status === 'done').reduce((s, c) => s + c.count, 0),
         total: counts.reduce((s, c) => s + c.count, 0)
       },
-      isRunning: activeRuns.has(agent.id),
+      isRunning: isAgentRunning(agent.id),
       hasMemory: readAgentMemory(agent.id).length > 0,
       model: getSmartModel(agent.id),
       todaySpend: getTodaySpend(agent.id),
@@ -3331,7 +3562,7 @@ app.post('/api/tasks/:id/reject-continue', async (req, res) => {
   db.prepare('DELETE FROM task_checkpoints WHERE task_id = ?').run(task.id)
   db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
     .run(task.id, task.agent_id, 'Rejected — task cancelled', 'error')
-  activeRuns.delete(task.agent_id)
+  removeActiveRun(task.agent_id, task.id)
   traceBus.emit('task:update', { id: task.id, status: 'failed', agent_id: task.agent_id })
   traceBus.emit('agent:status', { agent_id: task.agent_id, status: 'idle' })
   res.json({ ok: true })
@@ -3392,8 +3623,8 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
   const agent = agents.find(a => a.id === task.agent_id)
   if (!agent) return res.status(400).json({ error: 'Agent not found' })
 
-  if (activeRuns.has(agent.id)) {
-    return res.status(409).json({ error: `${agent.name} is already running a task` })
+  if (isAgentBusy(agent.id)) {
+    return res.status(409).json({ error: `${agent.name} is at max concurrent tasks` })
   }
 
   // Check spend limits before starting
@@ -3430,7 +3661,7 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
   db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)').run(task.id, agent.id, `Agent ${agent.name} started working...`, 'info')
 
   const abortController = new AbortController()
-  activeRuns.set(agent.id, { taskId: task.id, abort: abortController })
+  addActiveRun(agent.id, task.id, abortController)
 
   traceBus.emit('task:update', { id: task.id, status: 'in_progress', agent_id: agent.id })
   traceBus.emit('agent:status', { agent_id: agent.id, status: 'active', task_id: task.id })
@@ -3538,6 +3769,16 @@ START WITH TOOL CALLS NOW.`
         ? '\n\n## Skills\n' + skillsV2.map(s => s.skill_md).join('\n\n---\n\n')
         : ''
 
+      // Inject goal ancestry if task has it
+      let goalContext = ''
+      if (task.goal || task.parent_goal || task.company_mission) {
+        goalContext = '\n\n## Why This Task Matters\n'
+        if (task.goal) goalContext += `Immediate goal: ${task.goal}\n`
+        if (task.parent_goal) goalContext += `This serves: ${task.parent_goal}\n`
+        if (task.company_mission) goalContext += `Company mission: ${task.company_mission}\n`
+        goalContext += 'Always keep this context in mind — your work is not isolated.'
+      }
+
       // RAG: inject relevant knowledge base context on step 0
       let knowledgeContext = ''
       if (step === startStep) {
@@ -3559,7 +3800,7 @@ START WITH TOOL CALLS NOW.`
         callClaude({
           model: agentModel,
           max_tokens: 4096,
-          system: `## BUSINESS FOCUS — 3 PILLARS ONLY\nAll work must relate to: (1) Ember — restaurant kitchen management SaaS, (2) Hive — this AI agent platform, (3) Trading — Alpaca paper trading strategies.\nDo NOT work on healthcare, enterprise outreach, credential validation, or anything outside these 3 pillars.\n\n` + agent.systemPrompt + toolsPrompt + skillsContext + knowledgeContext,
+          system: `## BUSINESS FOCUS — 3 PILLARS ONLY\nAll work must relate to: (1) Ember — restaurant kitchen management SaaS, (2) Hive — this AI agent platform, (3) Trading — Alpaca paper trading strategies.\nDo NOT work on healthcare, enterprise outreach, credential validation, or anything outside these 3 pillars.\n\n` + agent.systemPrompt + toolsPrompt + skillsContext + goalContext + knowledgeContext,
           messages,
           tools: toolsSchema || undefined,
         }, agent.id, task.id, abortController.signal),
@@ -3647,7 +3888,7 @@ START WITH TOOL CALLS NOW.`
           db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
             .run(task.id, agent.id, `Task paused: ${consecutiveFailures} consecutive tool failures`, 'error')
           try { email.sendNotificationEmail('Task Paused — Tool Failures', `Task "${task.title}" (${agent.name}) paused after ${consecutiveFailures} consecutive tool failures.`).catch(() => {}) } catch {}
-          activeRuns.delete(agent.id)
+          removeActiveRun(agent.id, task.id)
           traceBus.emit('task:update', { id: task.id, status: 'paused', agent_id: agent.id })
           return
         }
@@ -3665,7 +3906,7 @@ START WITH TOOL CALLS NOW.`
         const taskStatus = db.prepare('SELECT status FROM tasks WHERE id = ?').get(task.id)
         if (taskStatus?.status === 'paused') {
           console.log(`⏸️ ${agent.name}: task paused by request_approval — stopping execution`)
-          activeRuns.delete(agent.id)
+          removeActiveRun(agent.id, task.id)
           traceBus.emit('task:update', { id: task.id, status: 'paused', agent_id: agent.id })
           traceBus.emit('agent:status', { agent_id: agent.id, status: 'idle' })
           return
@@ -3727,7 +3968,7 @@ START WITH TOOL CALLS NOW.`
       }
     }
 
-    activeRuns.delete(agent.id)
+    removeActiveRun(agent.id, task.id)
     traceBus.emit('agent:status', { agent_id: agent.id, status: 'idle' })
     // Clean up checkpoints on successful completion
     db.prepare('DELETE FROM task_checkpoints WHERE task_id = ?').run(task.id)
@@ -3885,7 +4126,7 @@ START WITH TOOL CALLS NOW.`
       .catch(() => {})
 
   } catch (err) {
-    activeRuns.delete(agent.id)
+    removeActiveRun(agent.id, task.id)
     traceBus.emit('agent:status', { agent_id: agent.id, status: 'idle' })
     const errorMsg = err.name === 'AbortError' || err.message === 'AbortError' ? 'Stopped by user' : err.message
     db.prepare(`UPDATE tasks SET status = 'failed', error = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
@@ -3939,17 +4180,20 @@ START WITH TOOL CALLS NOW.`
 
 // ── Stop Agent ─────────────────────────────────────
 app.post('/api/agents/:id/stop', (req, res) => {
-  const entry = activeRuns.get(req.params.id)
-  if (!entry) return res.status(404).json({ error: 'Agent not running' })
+  const agentId = req.params.id
+  const runs = activeRuns.get(agentId)
+  if (!runs || runs.size === 0) return res.status(404).json({ error: 'Agent not running' })
 
-  entry.abort.abort()
-  activeRuns.delete(req.params.id)
-
-  db.prepare("UPDATE tasks SET status = 'failed', error = 'Stopped by user', completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
-    .run(entry.taskId)
-
-  traceBus.emit('task:update', { id: entry.taskId, status: 'failed', agent_id: req.params.id })
-  traceBus.emit('agent:status', { agent_id: req.params.id, status: 'idle' })
+  const stoppedTasks = []
+  for (const [taskId, entry] of runs) {
+    try { entry.abort.abort() } catch {}
+    db.prepare("UPDATE tasks SET status = 'failed', error = 'Stopped by user', completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
+      .run(taskId)
+    traceBus.emit('task:update', { id: taskId, status: 'failed', agent_id: agentId })
+    stoppedTasks.push(taskId)
+  }
+  activeRuns.delete(agentId)
+  traceBus.emit('agent:status', { agent_id: agentId, status: 'idle' })
 
   res.json({ ok: true })
 })
@@ -5483,7 +5727,7 @@ app.get('/api/heartbeat', (req, res) => {
     queueStatus: agents.map(a => ({
       agentId: a.id,
       name: a.name,
-      isRunning: activeRuns.has(a.id),
+      isRunning: isAgentRunning(a.id),
       pendingTasks: db.prepare("SELECT COUNT(*) as count FROM tasks WHERE agent_id = ? AND status = 'todo'").get(a.id)?.count || 0
     }))
   })
@@ -5608,11 +5852,11 @@ function buildChatSnapshot() {
   const sections = []
 
   const agentStatuses = agents.map(a => {
-    const run = activeRuns.get(a.id)
+    const runs = activeRuns.get(a.id)
     const spend = getTodaySpend(a.id)
     const done = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status = 'done'").get(a.id).c
-    const taskTitle = run ? db.prepare('SELECT title FROM tasks WHERE id = ?').get(run.taskId)?.title : null
-    return `- ${a.name}: ${run ? `RUNNING "${taskTitle}"` : 'idle'} | $${spend.toFixed(4)} today | ${done} done`
+    const runningTasks = runs ? [...runs.keys()].map(tid => db.prepare('SELECT title FROM tasks WHERE id = ?').get(tid)?.title).filter(Boolean) : []
+    return `- ${a.name}: ${runningTasks.length > 0 ? `RUNNING ${runningTasks.length} task(s): "${runningTasks[0]}"${runningTasks.length > 1 ? ` +${runningTasks.length - 1}` : ''}` : 'idle'} | $${spend.toFixed(4)} today | ${done} done`
   })
   sections.push('## Agents\n' + agentStatuses.join('\n'))
 
@@ -5905,7 +6149,7 @@ Find 3-5 strategies with specific, testable rules.`, 'high', 'scout', 'todo')
       const stuck = db.prepare("SELECT id, agent_id, title FROM tasks WHERE status = 'in_progress' AND updated_at < datetime('now', '-30 minutes')").all()
       for (const t of stuck) {
         db.prepare("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ?").run(t.id)
-        activeRuns.delete(t.agent_id)
+        removeActiveRun(t.agent_id, t.id)
       }
       return { ok: true, message: `Reset ${stuck.length} stuck tasks back to queue: ${stuck.map(t => `${t.agent_id}:"${t.title}"`).join(', ') || 'none stuck'}` }
     }
@@ -6564,7 +6808,7 @@ app.get('/api/pipelines/:id/status', (req, res) => {
 app.get('/api/graph/nodes', (req, res) => {
   const nodes = agents.map(a => ({
     id: a.id, name: a.name, avatar: a.avatar, color: a.color, role: a.role,
-    isRunning: activeRuns.has(a.id)
+    isRunning: isAgentRunning(a.id)
   }))
   res.json(nodes)
 })
@@ -9261,6 +9505,14 @@ const masterSkills = [
     skill_md: `# AI Services — Selling AI Solutions to Small Businesses\n## The Model\nFind small businesses with manual/repetitive processes.\nBuild custom AI solution using AgentForge as backend.\nCharge: $1,500-5,000 setup + $200-500/mo maintenance.\n## Best Target Industries\n1. Law firms — document review, contract summaries\n2. Real estate — lead follow-up, listing descriptions\n3. Marketing agencies — content production, reporting\n4. Accounting firms — data entry, reconciliation\n5. E-commerce — product descriptions, customer service\n6. Restaurants (natural Ember fit)\n## How to Find Clients\nSearch: "[industry] + [city] + still using [manual process]"\nLook for: job postings for "data entry", "virtual assistant"\nLinkedIn: operations managers at 10-50 person companies\n## Outreach Angle\n"I noticed [specific thing]. I built an AI system that automates [specific process]. Takes 2 weeks. Most clients save 10+ hours/week. 20-minute demo?"\n## Activation Criteria\nOnly when: Ember has 3+ paying restaurants AND AgentForge Phase 2 complete`,
     tags: ['ai-services', 'sales', 'consulting'],
     agents: [] // Assigned dynamically when activated
+  },
+  {
+    slug: 'upwork-freelancer',
+    name: 'Upwork Freelance Automation',
+    description: 'Find and bid on Upwork AI jobs — Scout finds, Dealer proposes',
+    skill_md: `# Upwork Freelance Automation\n## Target Jobs (high value, fast to deliver)\n- "Set up AI chatbot for customer service" → $500-2000\n- "Build automated email sequences with AI" → $300-1000\n- "Create AI content generation workflow" → $500-1500\n- "Automate data entry/processing with AI" → $300-800\n- "Set up AI agent for [specific task]" → $500-2000\n## Scout's Job Finding Mission\nSearch for Upwork jobs:\nweb_search: "upwork AI automation workflow agent 2026"\nweb_search: "upwork site:upwork.com AI agent budget hourly"\nFilter for: budget > $300, posted recently, clear requirements.\nReturn: [{title, budget, requirements, url}]\n## Dealer's Proposal Mission\nFor each qualified job from Scout:\n1. Read job description carefully\n2. Write personalized proposal:\n   - Specific understanding of their problem\n   - How you solve it with AI agents\n   - Timeline: most deliverable in 1-3 days\n   - Price: middle of their budget range\n3. Save proposal to workspace/upwork-proposals.md\n4. Track in memory: {job_title, budget, proposal_date, outcome}\n## Revenue Tracking\nlog_revenue after each completed job.\nTarget: 2 jobs/week at average $500 = $1000/mo.`,
+    tags: ['upwork', 'freelance', 'sales'],
+    agents: ['dealer', 'scout']
   }
 ]
 
@@ -9605,12 +9857,14 @@ function gracefulShutdown(signal) {
   log('info', 'heartbeats_cleared', { count: heartbeatJobs.length })
 
   // 3. Abort active runs, reset tasks to todo
-  for (const [agentId, run] of activeRuns) {
-    try { run.abort?.abort() } catch {}
-    try {
-      db.prepare("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ?").run(run.taskId)
-      log('info', 'task_interrupted', { agentId, taskId: run.taskId })
-    } catch {}
+  for (const [agentId, runs] of activeRuns) {
+    for (const [taskId, entry] of runs) {
+      try { entry.abort?.abort() } catch {}
+      try {
+        db.prepare("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ?").run(taskId)
+        log('info', 'task_interrupted', { agentId, taskId })
+      } catch {}
+    }
   }
   activeRuns.clear()
 

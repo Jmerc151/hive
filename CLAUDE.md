@@ -138,293 +138,67 @@ tasks, task_logs, messages, settings, spend_log, bot_suggestions, task_traces, r
 
 ## Current Focus (March 2026)
 
-### 3 Business Pillars (ONLY these — everything else is off-topic)
-1. **Ember** — Restaurant kitchen management SaaS. Get to $147 MRR (3 paying restaurants).
-2. **AgentForge** — AI agent platform (Hive as a product). Build MVP, get 5 beta users.
-3. **Trading** — Alpaca paper trading. 60-day paper phase, then request approval for live.
+### The 4 Pillars
+1. Ember — make perfect, add billing, get paying restaurants
+2. AgentForge — build Phase 1-5, launch template marketplace
+3. Trading — Oracle paper trades → proven strategy → live
+4. AI Services — activates automatically at $147 MRR milestone
 
-### Agent Missions
-- **Scout:** 4 missions — Ember intelligence (weekly), AgentForge market research (weekly), AI business opportunities (weekly), trading strategy research (bi-weekly)
-- **Forge:** 2 missions — Ember development (70%, GitHub PRs), AgentForge building (30%, Mon/Wed/Fri)
-- **Quill:** 2 missions — Ember content (60%, Dev.to + Twitter), AgentForge content (40%, Dev.to + Beehiiv)
-- **Dealer:** 2 missions — AgentForge beta customers (primary, max 5 emails/day), content promotion (secondary)
-- **Oracle:** Paper trading RSI Mean Reversion on SPY/QQQ/AAPL/NVDA/MSFT/TSLA/AMZN. Max $1000/position, max 3 trades/day.
-- **Nexus:** Quality review (score 1-10), opportunity evaluation, weekly sprint planning (Sundays)
+### Priority 1: Ember Quality Sprint
+Goal: Perfect product before selling to new restaurants.
+Live at: sous-frontend.vercel.app
+Repos: Jmerc151/sous-frontend, Jmerc151/sous-backend
+Customers: Honey Belly Korean BBQ, Shawnees
 
-### Active Pipelines (automated via heartbeats)
-- **Ember Dev Daily** — 9am weekdays: Scout research → Forge build → Nexus QA
-- **Trading Session** — 9:31am weekdays: Oracle analyzes → places trades
-- **AgentForge Build** — 10am Mon/Wed/Fri: Scout research → Forge build → Quill document
-- **Opportunity Scan** — Sundays: Scout finds opportunities → Nexus evaluates → Forge builds MVPs
-- **Weekly Sprint** — Sundays: Nexus reviews week → creates next week's tasks
+Quality bar: New restaurant signs up, gets set up, shares with
+staff, staff using Kitchen Bible — all in 10 minutes, no help needed.
 
-### Skills Installed (11)
-Ember: design-system, mobile-first, onboarding-flow, performance, marketing-site, qa-checklist, frontend-patterns, backend-patterns, github-dev-workflow
-Platform: agentforge-context, ai-services-playbook
+P0: Stripe billing (restaurants can pay)
+P1: Sample data on signup (Kitchen Bible not empty)
+P2: Loading skeletons everywhere
+P3: Mobile touch targets 44px minimum
+P4: Onboarding polish
 
-### Spend Limits
-- Global: $8/day, $100/month
-- Per-agent: scout=$1.50, forge=$2.00, quill=$1.00, dealer=$0.75, oracle=$0.75, nexus=$1.00
-- Smart model routing: auto-downgrade to Haiku at 80% budget
+Skills: ember-design-system, ember-mobile-first, ember-onboarding-flow,
+ember-performance, ember-marketing-site, ember-qa-checklist
 
-### Auto-Chain Rules
-- Terminal agents (oracle, dealer, nexus) never auto-chain
-- Max 1 level deep, max 5 auto-tasks/day
-- Allowed chains: scout→quill, scout→forge, scout→dealer, quill→dealer, forge→quill, forge→nexus
-- Dedup: won't create task if similar one exists in last 24h
+### Priority 2: AgentForge Build
+Sellable multi-tenant AI agent platform.
+Repo: Jmerc151/agentforge
+Positioning: "AI companies that actually do things"
+Current phase: Phase 1 — PostgreSQL schema
+Build order: Schema → API → React UI → Stripe → ReAct loop
+Ship template marketplace before Paperclip ClipMart launches.
 
-### Guardrails
-- 3-pillar enforcement in every agent prompt
-- Blocked topics: healthcare, hipaa, hospital, ciso, credential validation, infrastructure blocker
-- 5 auto-tasks/day, 3-deep chain limit, 10 tasks/agent/day
-- Tool failure injection: agents get explicit "TOOL FAILED" feedback, pause on 3+ consecutive failures
-- Guardrails middleware: PII detection, trade safety, path traversal, queue overflow
+### Priority 3: Trading
+Oracle paper trading RSI mean reversion on 7 symbols.
+Running daily 9:31am via pipeline.
+Polymarket paper trading: weekly scan, $100 virtual.
+Graduation to live: 60+ days paper + request_approval.
 
-### What to Build Next
-All 6 build queue features are implemented:
-1. ~~SSE Live Trace Stream~~ — DONE (TraceView with SSE, filter chips, color-coding, fullscreen)
-2. ~~Agent Network Graph~~ — DONE (react-force-graph-2d, live edge pulses)
-3. ~~Stacked Cost Timeline~~ — DONE (Recharts area chart, per-task drill-down)
-4. ~~Scout Intelligence Feed~~ — DONE (actionable cards, send-to-forge)
-5. ~~Natural Language Command Bar~~ — DONE (Cmd+K, autocomplete, history)
-6. ~~Skill Registry V2~~ — DONE (SKILL.md packages, agent assignment, priority)
+### Priority 4: AI Services (auto-activates)
+Activates when: Ember $147+ MRR AND AgentForge Phase 2 done.
+Nexus checks this every Sunday. Fires automatically.
 
-Focus areas now:
-- AgentForge MVP (standalone product in Jmerc151/agentforge repo)
-- Ember revenue: Stripe billing, landing page, onboarding polish
-- Trading optimization: strategy refinement, 60-day paper validation
+### Pipelines Running
+- Ember Dev Daily: 9am weekdays
+- AgentForge Build: 10am Mon/Wed/Fri
+- Trading Session: 9:31am weekdays
+- Opportunity Scan: 9am Mondays
+- Weekly Sprint: 6pm Sundays
+- Daily Digest Email: 7am daily
 
----
+### New Tools Added
+- deep_research: multi-source research synthesis
+- score_codebase: GitHub repo operability scoring
+- consult_agent: quick inter-agent questions
+- polymarket_get_markets: prediction market data
+- polymarket_paper_trade: virtual prediction trading
 
-## BUILD QUEUE — What to Build Next
-
-Build these features IN ORDER. Each builds on the previous. After completing each feature, update CHANGELOG.md and test.
-
----
-
-### BUILD 1: Live SSE Trace Stream (upgrade existing TraceView)
-
-**Why:** Currently TraceView polls every 3s. SSE streaming lets you watch agents think in real time.
-
-**Backend changes (server/index.js):**
-
-1. Add an EventEmitter-based trace bus at the top of server:
-```js
-import { EventEmitter } from 'events'
-const traceBus = new EventEmitter()
-traceBus.setMaxListeners(100)
-```
-
-2. Add SSE endpoint:
-```
-GET /api/agents/:agentId/trace/stream — SSE connection for a specific agent
-GET /api/trace/stream — SSE connection for ALL agents
-```
-
-SSE setup pattern:
-```js
-res.writeHead(200, {
-  'Content-Type': 'text/event-stream',
-  'Cache-Control': 'no-cache',
-  'Connection': 'keep-alive',
-  'X-Accel-Buffering': 'no'
-})
-```
-
-Track connections in a `Map<agentId, Set<Response>>`. Heartbeat ping every 15s. Clean up on `req.on('close')`.
-
-3. In the existing `callClaude()` function and ReAct loop, after each trace is written to `task_traces`, also emit:
-```js
-traceBus.emit(`trace:${agentId}`, traceEvent)
-traceBus.emit('trace:*', traceEvent)
-```
-
-4. In the existing `agentConsult()` function, emit a trace event with type `consult`.
-
-**Frontend changes:**
-
-1. Update `src/components/TraceView.jsx`:
-   - Add an `useEffect` that opens an `EventSource` connection to `/api/agents/${agentId}/trace/stream` when the task is `in_progress`
-   - Fall back to the existing polling for completed tasks (historical view)
-   - Add event type filter chips (horizontally scrollable)
-   - Color-code events: green=llm_call, blue=consult, orange=tool, red=error
-   - Add "pin to latest" auto-scroll with a "Jump to latest" button when user scrolls up
-   - Add fullscreen toggle button
-
-**Mobile:** Event rows should be single-line with expandable detail on tap. Filter chips horizontally scrollable. Fullscreen should work on mobile viewports.
-
-**Test:** Create a task and run it. The trace should stream in real time. After completion, historical view should still work.
-
----
-
-### BUILD 2: Agent Network Graph
-
-**Why:** Visualizes how agents collaborate. When Scout consults Oracle, you see it as a live edge pulse between nodes.
-
-**Backend changes (server/db.js):**
-```sql
-CREATE TABLE IF NOT EXISTS agent_interactions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  source_agent_id TEXT NOT NULL,
-  target_agent_id TEXT NOT NULL,
-  interaction_type TEXT NOT NULL CHECK(interaction_type IN ('consult','delegate','tool_call')),
-  task_id TEXT,
-  payload TEXT DEFAULT '{}',
-  created_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_interactions_time ON agent_interactions(created_at);
-```
-
-**Backend changes (server/index.js):**
-1. In `agentConsult()`, after the consultation completes, INSERT into `agent_interactions`.
-2. Add endpoints:
-   - `GET /api/graph/nodes` — returns all agents with current status (active if in activeRuns, idle otherwise)
-   - `GET /api/graph/edges?range=24h` — returns interaction counts grouped by source→target pair
-3. Emit interaction events on the SSE trace bus so the graph animates live.
-
-**Frontend:**
-1. `npm install react-force-graph-2d` — add to package.json
-2. Create `src/components/AgentGraph.jsx`:
-   - Fetch nodes from `/api/graph/nodes`, edges from `/api/graph/edges`
-   - Agents = rounded rectangle nodes (color from agent config), tools = smaller ellipse nodes
-   - Solid arrows for consult/delegate, dotted for tool_call
-   - Edge thickness scales with frequency
-   - Subscribe to SSE trace stream — pulse edges green on new interactions
-   - Time range filter: 1h, 24h, 7d
-   - Mobile: pinch-to-zoom + touch-drag. Below 400px, fall back to a simple list view.
-3. Add to Sidebar.jsx as a new nav item.
-4. Add `api.js` methods: `getGraphNodes()`, `getGraphEdges(range)`
-
----
-
-### BUILD 3: Stacked Cost Timeline (upgrade existing SpendDashboard)
-
-**Why:** Upgrade SpendDashboard to a persistent panel with Recharts stacked area chart showing cost by agent over time + cost-per-task drill-down.
-
-**Backend changes (server/index.js):**
-Add new endpoints (keep existing `/api/spend` for backwards compat):
-- `GET /api/analytics/spend?range=7d&agent=scout` — time-series spend grouped by agent + time bucket
-- `GET /api/analytics/spend/by-task?limit=50` — per-task cost rollup
-- `GET /api/analytics/agents/summary?range=30d` — aggregate stats per agent
-
-**Frontend:**
-1. `npm install recharts` — add to package.json
-2. Create `src/components/CostTimeline.jsx`:
-   - Recharts StackedAreaChart with each agent as a colored layer
-   - Date range selector: 24h, 7d, 30d
-   - Summary cards row: per-agent totals. Horizontally scrollable on mobile.
-   - Cost-per-task table below chart.
-3. Add to Sidebar.jsx as nav item.
-4. Keep SpendDashboard.jsx as the quick-access modal (for limit controls).
-5. Add `api.js` methods: `getAnalyticsSpend(range, agent)`, `getSpendByTask(limit)`, `getAgentsSummary(range)`
-
----
-
-### BUILD 4: Scout Intelligence Feed
-
-**Why:** Scout finds opportunities but they're buried in task output text. Surface them as scannable cards you can act on.
-
-**Backend changes (server/db.js):**
-```sql
-CREATE TABLE IF NOT EXISTS intel_items (
-  id TEXT PRIMARY KEY,
-  task_id TEXT REFERENCES tasks(id),
-  title TEXT NOT NULL,
-  summary TEXT NOT NULL,
-  source_url TEXT DEFAULT '',
-  confidence REAL DEFAULT 0.5,
-  tags TEXT DEFAULT '[]',
-  status TEXT DEFAULT 'new' CHECK(status IN ('new','bookmarked','sent_to_forge','dismissed')),
-  created_at TEXT DEFAULT (datetime('now'))
-);
-```
-
-**Backend changes (server/index.js):**
-1. In the post-completion hook for Scout tasks, add `extractIntelItems()`:
-   - Call Claude to extract structured opportunities as JSON array
-   - INSERT each into `intel_items` table
-2. Endpoints:
-   - `GET /api/intel?status=new&tag=affiliate&limit=50`
-   - `PATCH /api/intel/:id/status` — when set to `sent_to_forge`, auto-create a Forge task
-
-**Frontend:**
-1. Create `src/components/IntelFeed.jsx`:
-   - Scrollable card list, newest first
-   - Each card: title, summary, tags as chips, confidence badge
-   - Tap to expand: full summary, source link, action buttons (Send to Forge, Bookmark, Dismiss)
-   - Filter bar: status tabs, tag filter chips
-2. Add to Sidebar.jsx as nav item.
-3. Add `api.js` methods: `getIntel(filters)`, `updateIntelStatus(id, status)`
-
----
-
-### BUILD 5: Natural Language Command Bar
-
-**Why:** Type "scout research telegram bot monetization" and it creates the task without opening CreateTaskModal.
-
-**Backend changes (server/index.js):**
-1. `POST /api/commands/parse` — calls Claude (haiku) to extract: agent_id, task_type, title, description, priority, is_query
-2. For queries: return inline answer from existing endpoints.
-3. For tasks: create via existing task creation logic.
-
-**Frontend:**
-1. Create `src/components/CommandBar.jsx`:
-   - Text input with Cmd+K / Ctrl+K focus
-   - On submit: call parse, create task, show confirmation toast with 5s undo
-   - Up-arrow recalls last 20 commands (React state only)
-   - Autocomplete dropdown showing agent names
-   - Desktop: fixed at top of App.jsx
-   - Mobile: floating button that expands to bottom input bar
-2. Add to `App.jsx` at the top of the layout.
-3. Add `api.js` method: `parseCommand(text)`
-
----
-
-### BUILD 6: Hive Skill Registry V2 (ClawHub-style upgrade)
-
-**Why:** Current SkillRegistry is basic CRUD. Upgrade to SKILL.md-based instruction packages that inject into agent prompts at runtime.
-
-**Backend changes (server/db.js) — replace agent_skills table:**
-```sql
-CREATE TABLE IF NOT EXISTS skills (
-  id TEXT PRIMARY KEY,
-  slug TEXT NOT NULL UNIQUE,
-  name TEXT NOT NULL,
-  description TEXT DEFAULT '',
-  version TEXT DEFAULT '1.0.0',
-  author TEXT DEFAULT 'john',
-  skill_md TEXT NOT NULL,
-  tags TEXT DEFAULT '[]',
-  source TEXT DEFAULT 'custom' CHECK(source IN ('custom','clawhub','marketplace')),
-  clawhub_ref TEXT,
-  requires_env TEXT DEFAULT '[]',
-  requires_tools TEXT DEFAULT '[]',
-  downloads INTEGER DEFAULT 0,
-  is_published INTEGER DEFAULT 0,
-  sha256 TEXT DEFAULT '',
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS agent_skills_v2 (
-  agent_id TEXT NOT NULL,
-  skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
-  enabled INTEGER DEFAULT 1,
-  priority INTEGER DEFAULT 0,
-  installed_at TEXT DEFAULT (datetime('now')),
-  PRIMARY KEY (agent_id, skill_id)
-);
-```
-
-**Backend changes (server/index.js):**
-1. Skill loading in `callClaude()`: append enabled skills' `skill_md` to system prompt.
-2. CRUD endpoints for skills.
-3. Agent assignment endpoints.
-
-**Frontend:**
-1. Replace `SkillRegistry.jsx` with full skill store: search, tag filters, card grid.
-2. Skill editor with SKILL.md textarea + live preview.
-3. Agent skill manager with drag-to-reorder priority.
+### Competitive Context
+Main competitors: Paperclip, CrewAI, Sim, n8n, AutoGPT
+Our edge: real integrations + vertical templates + trading + Ember proof
+Watch: Paperclip ClipMart launch — ship our template marketplace first
 
 ---
 

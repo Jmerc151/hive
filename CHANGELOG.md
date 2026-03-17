@@ -1,5 +1,22 @@
 # Hive Changelog
 
+## 2026-03-16 — Master Plan: 4-Pillar Agent Refocus + Platform Upgrades
+
+- **4-pillar agent system** — all 6 agents refocused on Ember, AgentForge, Trading, AI Services
+- **12 skills seeded** — 6 Ember quality skills, agentforge-context, ai-services-playbook, upwork-freelancer, 3 dev workflow skills
+- **5 new tools** — deep_research (multi-source synthesis), score_codebase (GitHub repo grading), consult_agent (inter-agent Q&A), polymarket_get_markets, polymarket_paper_trade
+- **5 pipelines** — Ember Dev Daily, AgentForge Build, Trading Session, Opportunity Scan, Weekly Sprint
+- **Parallel execution** — activeRuns upgraded from single-task to multi-task per agent (Map<agentId, Map<taskId, {abort}>>)
+- **Goal ancestry** — tasks carry goal/parent_goal/company_mission, injected into agent system prompts
+- **Daily digest email** — 7am heartbeat summarizes yesterday's completions, spend, trading, agent stats
+- **scrape_page upgrade** — cheerio-based parsing, content quality scoring, proper error handling with suggestions
+- **Auto-chain fixes** — 5/day cap, 3-deep chain limit, topic blocklist, pillar enforcement
+- **Silent tool failure fix** — consecutive failure counter, auto-pause after 3 failures with email notification
+- **Per-agent spend limits** — scout/forge/quill/dealer/oracle/nexus each have daily USD caps
+- **DB cleanup** — garbage task deletion, memory_relationships table, agent_proposals_votes table
+- **CLAUDE.md rewrite** — replaced BUILD QUEUE with Current Focus (4 pillars, pipelines, competitive context)
+- **agents.json tool lists updated** — all 6 agents now list their new tools
+
 ## 2026-03-16 — Dashboard UX Overhaul (Modal-to-Panel Refactor)
 
 - **Single activeView state** — replaced 25+ independent `show*` modal flags with one `activeView` string

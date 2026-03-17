@@ -563,12 +563,47 @@ db.exec(`
 try { db.exec(`ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
 try { db.exec(`ALTER TABLE tasks ADD COLUMN milestone_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
 
+// Migration: goal ancestry on tasks
+try { db.exec(`ALTER TABLE tasks ADD COLUMN goal TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
+try { db.exec(`ALTER TABLE tasks ADD COLUMN parent_goal TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
+try { db.exec(`ALTER TABLE tasks ADD COLUMN company_mission TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
+
+// Knowledge graph relationships
+db.exec(`
+  CREATE TABLE IF NOT EXISTS memory_relationships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_memory_id INTEGER REFERENCES memory_embeddings(id),
+    to_memory_id INTEGER REFERENCES memory_embeddings(id),
+    relationship TEXT NOT NULL,
+    strength REAL DEFAULT 1.0,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`)
+
+// Agent governance voting
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agent_proposals_votes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id TEXT REFERENCES proposals(id),
+    agent_id TEXT NOT NULL,
+    vote TEXT CHECK(vote IN ('approve','reject','abstain')),
+    reasoning TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`)
+
+// Cleanup: delete garbage auto-generated tasks
+try {
+  db.exec(`DELETE FROM tasks WHERE status = 'backlog' AND title LIKE 'Build tool based on:%'`)
+  db.exec(`DELETE FROM tasks WHERE status IN ('backlog', 'todo') AND created_at < datetime('now', '-7 days') AND spawned_by IS NOT NULL AND spawned_by != ''`)
+} catch (e) { /* cleanup already ran */ }
+
 // Default settings
 const defaults = {
-  daily_limit_usd: '8.00',
-  monthly_limit_usd: '100.00',
+  daily_limit_usd: '5.00',
+  monthly_limit_usd: '75.00',
   per_task_token_budget: '16384',
-  max_concurrent_tasks: '2',
+  max_concurrent_tasks: '4',
   pause_all_agents: 'false',
   qa_reviews_enabled: 'true',
   auto_tasks_enabled: 'true',
@@ -591,18 +626,20 @@ const defaults = {
   email_weekly_summary: 'true',
   self_improvement_enabled: 'true',
   self_improvement_budget_percent: '20',
-  max_react_steps: '8',
+  max_react_steps: '6',
   step_timeout_ms: '300000',
   auto_chain_enabled: 'true',
   // Per-agent daily spend limits
   scout_daily_usd: '1.50',
-  forge_daily_usd: '2.00',
-  quill_daily_usd: '1.00',
-  dealer_daily_usd: '0.75',
-  oracle_daily_usd: '0.75',
-  nexus_daily_usd: '1.00',
+  forge_daily_usd: '1.50',
+  quill_daily_usd: '0.75',
+  dealer_daily_usd: '0.50',
+  oracle_daily_usd: '0.50',
+  nexus_daily_usd: '0.75',
   // AI services activation
   ai_services_activated: 'false',
+  agentforge_phase: '1',
+  max_concurrent_per_agent: '2',
   // Digest tracking
   digest_last_sent: ''
 }
