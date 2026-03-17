@@ -1,5 +1,13 @@
 # Hive Changelog
 
+## 2026-03-16 — TraceView Polish
+
+- **Event type filter chips** — filter by LLM, Tool, Consult, Decision, Error with count badges
+- **Color-coded timeline** — green=LLM, blue=consult, orange=tool, red=error, purple=decision
+- **Fullscreen toggle** — expand trace view to full viewport
+- **Jump to latest** — auto-pin to bottom during live stream, floating button when scrolled up
+- **Scroll detection** — unpins auto-scroll when user scrolls up to inspect earlier steps
+
 ## 2026-03-16 — Reliability Hardening
 
 ### Process Safety
