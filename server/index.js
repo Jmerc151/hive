@@ -2535,6 +2535,20 @@ async function executeTool(toolCall, agentId, taskId) {
   if (!tool.agents.includes(agentId)) return { name: toolCall.name, error: `Agent ${agentId} is not authorized to use ${toolCall.name}` }
   if (toolCall.parseError) return { name: toolCall.name, error: `Invalid JSON args: ${toolCall.parseError}` }
 
+  // Harness-layer tool allowlist check
+  const agentConfig = agents.find(a => a.id === agentId)
+  if (agentConfig?.allowed_tools?.length > 0 && !agentConfig.allowed_tools.includes(toolCall.name)) {
+    const blockMsg = `[BLOCKED by harness: '${toolCall.name}' is not permitted for ${agentConfig.name}. Use only your allowed tools.]`
+    db.prepare('INSERT INTO task_traces (task_id, agent_id, step, type, input_summary, output_summary, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(taskId, agentId, 0, 'tool_blocked', toolCall.name, `Blocked by allowlist for ${agentId}`, 0)
+    traceBus.emitTrace({
+      agent_id: agentId, task_id: taskId, event_type: 'TOOL_BLOCKED',
+      payload: { tool: toolCall.name, agent: agentId, reason: 'allowlist' }
+    })
+    log('warn', `Tool blocked by allowlist`, { tool: toolCall.name, agent: agentId, task: taskId })
+    return { name: toolCall.name, error: blockMsg }
+  }
+
   // Guardrails check
   const guard = validateToolCall(toolCall, agentId, taskId)
   if (!guard.allowed) return { name: toolCall.name, error: `Guardrail: ${guard.reason}` }
@@ -4406,6 +4420,24 @@ app.delete('/api/bot-suggestions/:id', (req, res) => {
 app.get('/api/scorecards', (req, res) => {
   const scorecards = buildAllScorecards()
   res.json(scorecards)
+})
+
+// Blocked tool stats — last 7 days
+app.get('/api/agents/:id/blocked-tools', (req, res) => {
+  const agent = agents.find(a => a.id === req.params.id)
+  if (!agent) return res.status(404).json({ error: 'Agent not found' })
+  try {
+    const rows = db.prepare(`
+      SELECT input_summary as tool, COUNT(*) as count
+      FROM task_traces
+      WHERE agent_id = ? AND type = 'tool_blocked'
+        AND created_at >= datetime('now', '-7 days')
+      GROUP BY input_summary ORDER BY count DESC
+    `).all(req.params.id)
+    res.json({ agent_id: req.params.id, blocked: rows })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
 })
 
 app.get('/api/agents/:id/scorecard', (req, res) => {
