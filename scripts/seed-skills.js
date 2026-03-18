@@ -67,12 +67,65 @@ function findSkillFiles(dir) {
   return skills
 }
 
-function seedSkills(force = false) {
+/**
+ * Exported for server/index.js — takes an existing db instance,
+ * seeds if skills table is empty, returns count of skills seeded.
+ */
+export function seedSkills(db) {
+  const count = db.prepare('SELECT COUNT(*) as n FROM skills').get().n
+  if (count > 0) return 0
+
+  const skillFiles = findSkillFiles(SKILLS_DIR)
+  if (skillFiles.length === 0) return 0
+
+  const insertSkill = db.prepare(`
+    INSERT OR REPLACE INTO skills (id, slug, name, description, version, author, skill_md, tags, source, requires_tools)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+
+  const insertAgentSkill = db.prepare(`
+    INSERT OR REPLACE INTO agent_skills_v2 (agent_id, skill_id, enabled, priority)
+    VALUES (?, ?, 1, ?)
+  `)
+
+  let seeded = 0
+  const tx = db.transaction(() => {
+    let priority = 0
+    for (const filePath of skillFiles) {
+      const content = readFileSync(filePath, 'utf-8')
+      const meta = parseYAMLFrontmatter(content)
+      if (!meta || !meta.slug) continue
+
+      const id = `skill_${meta.slug}`
+      const tags = Array.isArray(meta.tags) ? JSON.stringify(meta.tags) : '[]'
+      const requiresTools = Array.isArray(meta.requires_tools) ? JSON.stringify(meta.requires_tools) : '[]'
+      let source = meta.source || 'custom'
+      if (!['custom', 'clawhub', 'marketplace'].includes(source)) {
+        source = source.includes('clawhub') ? 'clawhub' : 'custom'
+      }
+
+      insertSkill.run(id, meta.slug, meta.name || meta.slug, meta.description || '', meta.version || '1.0.0', meta.author || 'hive', content, tags, source, requiresTools)
+
+      const agents = Array.isArray(meta.agents) ? meta.agents : []
+      for (const agentId of agents) {
+        insertAgentSkill.run(agentId, id, priority)
+      }
+      seeded++
+      priority++
+    }
+  })
+  tx()
+  return seeded
+}
+
+/**
+ * CLI mode — run directly with: node scripts/seed-skills.js [--force]
+ */
+function seedCLI(force = false) {
   const db = new Database(DB_PATH)
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
 
-  // Check if already seeded
   const count = db.prepare('SELECT COUNT(*) as n FROM skills').get().n
   if (count > 0 && !force) {
     console.log(`Skills table already has ${count} entries. Use --force to re-seed.`)
@@ -86,17 +139,14 @@ function seedSkills(force = false) {
     console.log('Cleared existing skills and agent assignments.')
   }
 
-  // Find all SKILL.md files
   const skillFiles = findSkillFiles(SKILLS_DIR)
   console.log(`Found ${skillFiles.length} SKILL.md files.`)
 
-  // Matches actual DB schema: skills table
   const insertSkill = db.prepare(`
     INSERT OR REPLACE INTO skills (id, slug, name, description, version, author, skill_md, tags, source, requires_tools)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
-  // Assign skills to agents via agent_skills_v2
   const insertAgentSkill = db.prepare(`
     INSERT OR REPLACE INTO agent_skills_v2 (agent_id, skill_id, enabled, priority)
     VALUES (?, ?, 1, ?)
@@ -104,11 +154,9 @@ function seedSkills(force = false) {
 
   const tx = db.transaction(() => {
     let priority = 0
-
     for (const filePath of skillFiles) {
       const content = readFileSync(filePath, 'utf-8')
       const meta = parseYAMLFrontmatter(content)
-
       if (!meta || !meta.slug) {
         console.warn(`Skipping ${filePath} — no valid frontmatter or slug.`)
         continue
@@ -117,37 +165,21 @@ function seedSkills(force = false) {
       const id = `skill_${meta.slug}`
       const tags = Array.isArray(meta.tags) ? JSON.stringify(meta.tags) : '[]'
       const requiresTools = Array.isArray(meta.requires_tools) ? JSON.stringify(meta.requires_tools) : '[]'
-
-      // Normalize source to match CHECK constraint
       let source = meta.source || 'custom'
       if (!['custom', 'clawhub', 'marketplace'].includes(source)) {
         source = source.includes('clawhub') ? 'clawhub' : 'custom'
       }
 
-      insertSkill.run(
-        id,
-        meta.slug,
-        meta.name || meta.slug,
-        meta.description || '',
-        meta.version || '1.0.0',
-        meta.author || 'hive',
-        content,
-        tags,
-        source,
-        requiresTools
-      )
+      insertSkill.run(id, meta.slug, meta.name || meta.slug, meta.description || '', meta.version || '1.0.0', meta.author || 'hive', content, tags, source, requiresTools)
 
-      // Assign to agents
       const agents = Array.isArray(meta.agents) ? meta.agents : []
       for (const agentId of agents) {
         insertAgentSkill.run(agentId, id, priority)
       }
-
       console.log(`  ✓ ${meta.slug} → [${agents.join(', ')}]`)
       priority++
     }
   })
-
   tx()
 
   const finalSkills = db.prepare('SELECT COUNT(*) as n FROM skills').get().n
@@ -156,6 +188,9 @@ function seedSkills(force = false) {
   db.close()
 }
 
-// Run
-const force = process.argv.includes('--force')
-seedSkills(force)
+// Only run CLI mode when executed directly (not imported)
+const isMain = process.argv[1]?.endsWith('seed-skills.js')
+if (isMain) {
+  const force = process.argv.includes('--force')
+  seedCLI(force)
+}
