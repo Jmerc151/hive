@@ -3,7 +3,7 @@
  *
  * Reads all SKILL.md files from the skills/ directory tree,
  * parses YAML frontmatter, and inserts each into the SQLite
- * skills table. Run on server startup if skills table is empty.
+ * skills table + agent_skills_v2 for agent assignments.
  *
  * Usage:
  *   node scripts/seed-skills.js           # seed if empty
@@ -72,27 +72,6 @@ function seedSkills(force = false) {
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
 
-  // Create skills table if it doesn't exist
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS skills (
-      id TEXT PRIMARY KEY,
-      slug TEXT NOT NULL UNIQUE,
-      name TEXT NOT NULL,
-      description TEXT DEFAULT '',
-      version TEXT DEFAULT '1.0.0',
-      author TEXT DEFAULT 'hive',
-      skill_md TEXT NOT NULL,
-      agents TEXT DEFAULT '[]',
-      tags TEXT DEFAULT '[]',
-      source TEXT DEFAULT 'custom',
-      requires_env TEXT DEFAULT '[]',
-      requires_tools TEXT DEFAULT '[]',
-      file_path TEXT DEFAULT '',
-      installed_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
-    )
-  `)
-
   // Check if already seeded
   const count = db.prepare('SELECT COUNT(*) as n FROM skills').get().n
   if (count > 0 && !force) {
@@ -102,20 +81,30 @@ function seedSkills(force = false) {
   }
 
   if (force) {
+    db.prepare('DELETE FROM agent_skills_v2').run()
     db.prepare('DELETE FROM skills').run()
-    console.log('Cleared existing skills.')
+    console.log('Cleared existing skills and agent assignments.')
   }
 
   // Find all SKILL.md files
   const skillFiles = findSkillFiles(SKILLS_DIR)
   console.log(`Found ${skillFiles.length} SKILL.md files.`)
 
-  const insert = db.prepare(`
-    INSERT OR REPLACE INTO skills (id, slug, name, description, version, author, skill_md, agents, tags, source, requires_env, requires_tools, file_path)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  // Matches actual DB schema: skills table
+  const insertSkill = db.prepare(`
+    INSERT OR REPLACE INTO skills (id, slug, name, description, version, author, skill_md, tags, source, requires_tools)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+
+  // Assign skills to agents via agent_skills_v2
+  const insertAgentSkill = db.prepare(`
+    INSERT OR REPLACE INTO agent_skills_v2 (agent_id, skill_id, enabled, priority)
+    VALUES (?, ?, 1, ?)
   `)
 
   const tx = db.transaction(() => {
+    let priority = 0
+
     for (const filePath of skillFiles) {
       const content = readFileSync(filePath, 'utf-8')
       const meta = parseYAMLFrontmatter(content)
@@ -125,14 +114,17 @@ function seedSkills(force = false) {
         continue
       }
 
-      const relPath = relative(join(import.meta.dirname, '..'), filePath)
       const id = `skill_${meta.slug}`
-      const agents = Array.isArray(meta.agents) ? JSON.stringify(meta.agents) : '[]'
       const tags = Array.isArray(meta.tags) ? JSON.stringify(meta.tags) : '[]'
-      const requiresEnv = Array.isArray(meta.requires_env) ? JSON.stringify(meta.requires_env) : '[]'
       const requiresTools = Array.isArray(meta.requires_tools) ? JSON.stringify(meta.requires_tools) : '[]'
 
-      insert.run(
+      // Normalize source to match CHECK constraint
+      let source = meta.source || 'custom'
+      if (!['custom', 'clawhub', 'marketplace'].includes(source)) {
+        source = source.includes('clawhub') ? 'clawhub' : 'custom'
+      }
+
+      insertSkill.run(
         id,
         meta.slug,
         meta.name || meta.slug,
@@ -140,22 +132,27 @@ function seedSkills(force = false) {
         meta.version || '1.0.0',
         meta.author || 'hive',
         content,
-        agents,
         tags,
-        meta.source || 'custom',
-        requiresEnv,
-        requiresTools,
-        relPath
+        source,
+        requiresTools
       )
 
-      console.log(`  ✓ ${meta.slug} (${agents})`)
+      // Assign to agents
+      const agents = Array.isArray(meta.agents) ? meta.agents : []
+      for (const agentId of agents) {
+        insertAgentSkill.run(agentId, id, priority)
+      }
+
+      console.log(`  ✓ ${meta.slug} → [${agents.join(', ')}]`)
+      priority++
     }
   })
 
   tx()
 
-  const final = db.prepare('SELECT COUNT(*) as n FROM skills').get().n
-  console.log(`\nSeeded ${final} skills into hive.db.`)
+  const finalSkills = db.prepare('SELECT COUNT(*) as n FROM skills').get().n
+  const finalAssignments = db.prepare('SELECT COUNT(*) as n FROM agent_skills_v2').get().n
+  console.log(`\nSeeded ${finalSkills} skills with ${finalAssignments} agent assignments into hive.db.`)
   db.close()
 }
 
