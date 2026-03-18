@@ -3836,7 +3836,7 @@ START WITH TOOL CALLS NOW.`
         callClaude({
           model: agentModel,
           max_tokens: 4096,
-          system: `## BUSINESS FOCUS — 3 PILLARS ONLY\nAll work must relate to: (1) Ember — restaurant kitchen management SaaS, (2) Hive — this AI agent platform, (3) Trading — Alpaca paper trading strategies.\nDo NOT work on healthcare, enterprise outreach, credential validation, or anything outside these 3 pillars.\n\n` + agent.systemPrompt + toolsPrompt + skillsContext + goalContext + knowledgeContext,
+          system: `## BUSINESS FOCUS — 3 PILLARS ONLY\nAll work must relate to: (1) Ember — restaurant kitchen management SaaS, (2) Hive — this AI agent platform, (3) Trading — Alpaca paper trading strategies.\nDo NOT work on healthcare, enterprise outreach, credential validation, or anything outside these 3 pillars.\n\n` + agent.systemPrompt + toolsPrompt + skillsContext + goalContext + knowledgeContext + `\n\n## DELIVERABLE REQUIREMENT\nYour FINAL step must contain a clear, structured deliverable — the actual result of your work. Not a plan. Not a summary of what you did. The ACTUAL output:\n- Research tasks: Include the data/findings in your response (lists, tables, JSON)\n- Build tasks: Confirm what was built with file paths and key code snippets\n- Content tasks: Include the full written content in your response\n- Trading tasks: Include the analysis table and trade decisions\n- Outreach tasks: Include the contact list with names and details\nIf your task was to "find 50 restaurants" your output must CONTAIN those 50 restaurants. If it was to "write landing page copy" your output must CONTAIN that copy. Never end with "I'll do this next" — deliver it NOW.`,
           messages,
           tools: toolsSchema || undefined,
         }, agent.id, task.id, abortController.signal),
@@ -3918,6 +3918,14 @@ START WITH TOOL CALLS NOW.`
           })
         }
 
+        // Append tool results summary to fullOutput so users can see what tools returned
+        const toolResultsSummary = results.map(r => {
+          if (r.error) return `❌ ${r.name}: ${r.error.slice(0, 200)}`
+          const preview = (r.resultStr || '').slice(0, 1000)
+          return `✅ ${r.name}: ${preview}`
+        }).join('\n')
+        fullOutput += `\n--- Tools (Step ${step + 1}) ---\n${toolResultsSummary}\n`
+
         // If 3+ consecutive tool failures, pause task and notify
         if (consecutiveFailures >= 3) {
           db.prepare("UPDATE tasks SET status = 'paused', updated_at = datetime('now') WHERE id = ?").run(task.id)
@@ -3974,6 +3982,18 @@ START WITH TOOL CALLS NOW.`
             content: `Response from ${targetAgentId}:\n${consultResponse}\n\nNow continue with your task, incorporating this input.`
           })
           continue
+        }
+      }
+
+      // On second-to-last step, nudge agent to produce final deliverable
+      if (step === MAX_STEPS - 2 && totalToolCalls > 0) {
+        const lastOutput = stepOutput.toLowerCase()
+        const hasDeliverable = lastOutput.includes('|') || lastOutput.includes('```') || lastOutput.includes('{') || lastOutput.length > 500
+        if (!hasDeliverable) {
+          messages.push({
+            role: 'user',
+            content: `You have ONE step remaining. You've gathered data with your tools — now PRODUCE THE DELIVERABLE. Write out the actual result: the list, the content, the analysis, the code. Do not summarize what you did. Output the actual work product NOW.`
+          })
         }
       }
 
