@@ -18,6 +18,7 @@ import * as analysis from './services/analysis.js'
 import * as email from './services/email.js'
 import { traceBus } from './traceBus.js'
 import sseRoutes from './routes/sse.js'
+import { seedSkills } from '../scripts/seed-skills.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -10077,6 +10078,14 @@ const server = app.listen(PORT, '0.0.0.0', () => {
       try { await email.sendNotificationEmail('⚠️ Hive Startup Issues', `<ul>${issues.map(i => `<li>${i}</li>`).join('')}</ul>`) } catch {}
     } else {
       log('info', 'startup_selftest_passed')
+    }
+
+    // Seed pre-built skills from /skills directory if table is empty
+    try {
+      const seeded = seedSkills(db)
+      if (seeded > 0) log('info', 'skills_seeded', { count: seeded })
+    } catch (e) {
+      log('error', 'skill_seed_failed', { error: e.message })
     }
   }, 3000)
 })
