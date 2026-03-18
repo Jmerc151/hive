@@ -330,3 +330,187 @@ Hive has learned some hard lessons. These guardrails are already active:
 8. **Approve proposals carefully.** Agents propose ideas in the Proposals panel. Read them. Reject the bad ones.
 9. **Memory is persistent.** Agents store learnings in `memory/*.md` files. Check these to see what they've learned.
 10. **Pipelines are powerful.** A daily pipeline of Scout → Forge → Nexus can ship features while you sleep.
+
+---
+
+## Brainstorming Income Ideas (Do This On Day 1)
+
+This is the most important section. Before you touch code or configure agents, you need to figure out WHAT to build. Here's exactly how:
+
+### The Brainstorm Session
+
+Create these tasks in this order. Wait for each to finish before the next:
+
+**Task 1 — Scout: Personal Inventory**
+```
+Title: "Brainstorm business opportunities based on my background"
+Agent: Scout
+Description: "Search for profitable SaaS, digital product, and service business ideas in these areas: [LIST YOUR SKILLS, INTERESTS, INDUSTRY EXPERIENCE]. For each idea, find: market size, existing competitors, what they charge, gaps in their product, and effort to build an MVP. Output as a ranked table with revenue potential."
+```
+
+**Task 2 — Nexus: Evaluate Top Ideas**
+```
+Title: "Evaluate the top 5 business ideas from Scout's research"
+Agent: Nexus
+Description: "Review Scout's recent research output. Score each idea on: (1) Revenue potential, (2) Time to first dollar, (3) Technical complexity, (4) Competition level, (5) Your ability to differentiate. Recommend the top 2-3 as business pillars with reasoning."
+```
+
+**Task 3 — Scout: Deep Dive on Winners**
+```
+Title: "Deep research on [WINNING IDEA]: competitors, pricing, target customers"
+Agent: Scout
+Description: "Do a comprehensive competitive analysis of [WINNING IDEA]. Find: every competitor and what they charge, their weakest reviews on G2/Capterra/Reddit, features users are begging for, who the ideal customer is (job title, company size, pain points), and what a realistic MVP would look like."
+```
+
+### What Makes a Good Business Pillar
+
+From our experience, the best Hive projects have:
+- **Narrow focus** — "Kitchen management for restaurants" beats "Business management software"
+- **Clear buyer** — You can describe the exact person who pays. "Restaurant owners with 20-50 staff" not "anyone who runs a business"
+- **$50-200/mo price point** — High enough to be real revenue, low enough that SMBs can afford it
+- **Content moat** — Quill can write content that drives organic traffic
+- **Automatable outreach** — Dealer can find and email real prospects
+- **Buildable by Forge** — The agents can actually build it via GitHub PRs
+
+### Red Flags (Avoid These)
+- "AI for enterprise" — Too broad, sales cycle too long
+- Anything requiring massive upfront capital
+- Hardware/physical products — Agents can't ship boxes
+- Ideas that need heavy regulation compliance (healthcare, finance, etc.)
+- Marketplaces — Two-sided markets are brutal to bootstrap
+
+---
+
+## Building Your Roadmap (After Brainstorming)
+
+Once you've picked your 2-3 pillars, use Nexus to build a real execution plan:
+
+### Create the Master Roadmap
+
+```
+Title: "Create 90-day execution roadmap for [YOUR PROJECT]"
+Agent: Nexus
+Description: "Build a detailed 90-day roadmap broken into 3 phases:
+
+PHASE 1 (Days 1-30): Foundation
+- What needs to be built for a working MVP?
+- What research needs to happen first?
+- What content should we start publishing?
+
+PHASE 2 (Days 31-60): Launch
+- How do we get our first 5 users?
+- What's the outreach strategy?
+- What features are must-have vs nice-to-have?
+
+PHASE 3 (Days 61-90): Revenue
+- How do we convert free users to paid?
+- What's the pricing strategy?
+- What should we double down on vs cut?
+
+For EACH week, list specific tasks with the agent responsible (Scout, Forge, Quill, Dealer). Output as a structured weekly breakdown I can turn into pipeline tasks."
+```
+
+### Turn Roadmap Into Pipelines
+
+After Nexus produces the roadmap:
+
+1. **Create weekly tasks** from the roadmap milestones
+2. **Set up pipelines** for recurring work:
+   - "Daily Dev Sprint" — Scout research → Forge build → Nexus QA (weekday mornings)
+   - "Content Pipeline" — Scout topic research → Quill writes → Dealer promotes (3x/week)
+   - "Outreach Pipeline" — Scout find leads → Dealer email (daily, max 5 emails/day)
+   - "Weekly Review" — Nexus reviews everything → plans next week (Sundays)
+3. **Set up heartbeats** for automated recurring tasks in the Schedule panel
+
+### Updating Agent Missions
+
+Once you have your pillars, edit `agents/agents.json` to give each agent clear missions tied to YOUR business:
+
+```json
+{
+  "id": "scout",
+  "systemPrompt": "You are Scout. You have 3 missions:\n\nMISSION 1 — [YOUR PRODUCT] INTELLIGENCE (weekly):\nResearch [your target market]. Find pain points, competitors, pricing...\n\nMISSION 2 — [YOUR SECOND PILLAR] (weekly):\n...\n\nMISSION 3 — OPPORTUNITY SCANNING (weekly):\nFind new business opportunities related to [your skills/interests]..."
+}
+```
+
+The key is being SPECIFIC. Don't say "research business opportunities." Say "Search Reddit r/[your_niche] for complaints about [competitor]. Find threads with 50+ upvotes about missing features."
+
+---
+
+## Day-by-Day Getting Started Guide
+
+### Day 1: Setup + Brainstorm
+- [ ] Clone repo, install, create `.env`, start Hive
+- [ ] Run your first Scout task (simple research to test it works)
+- [ ] Watch the Trace View to understand how agents think
+- [ ] Run the brainstorm tasks above to find your business pillars
+- [ ] Set spend limits low ($3/day, $30/month)
+
+### Day 2: Deep Research
+- [ ] Have Scout deep-dive your top 2-3 ideas
+- [ ] Have Nexus evaluate and rank them
+- [ ] Pick your 2-3 pillars
+- [ ] Start customizing agent prompts in `agents/agents.json`
+
+### Day 3: Roadmap + Pipelines
+- [ ] Have Nexus create your 90-day roadmap
+- [ ] Create your first pipeline (Scout → Forge → Nexus)
+- [ ] Set up a daily heartbeat for your primary pillar
+- [ ] Start monitoring the dashboard regularly
+
+### Day 4: Content + Outreach
+- [ ] Have Quill write your first blog post (publish to Dev.to if relevant)
+- [ ] Have Scout find 10 target customers with contact info
+- [ ] Set up Gmail app password for email notifications
+- [ ] Start reviewing Proposals panel daily
+
+### Day 5+: Iterate
+- [ ] Review agent outputs daily — reject bad ideas, approve good ones
+- [ ] Check spend dashboard — adjust limits as needed
+- [ ] Refine agent prompts based on output quality
+- [ ] Add more API keys as needed (Stripe, Hunter.io, Alpaca)
+- [ ] Create new pipelines for workflows that should be automated
+
+---
+
+## Trading Setup (Optional)
+
+If one of your pillars involves stock trading:
+
+1. Sign up at https://alpaca.markets (free paper trading account)
+2. Get your API keys from the dashboard
+3. Add to `.env`: `ALPACA_API_KEY`, `ALPACA_API_SECRET`, `ALPACA_BASE_URL=https://paper-api.alpaca.markets`
+4. Oracle will scan SPY, QQQ, AAPL, NVDA, MSFT, TSLA, AMZN for RSI signals
+5. **ALWAYS start with paper trading.** Prove the strategy works over 60+ days before considering real money.
+6. Oracle follows RSI Mean Reversion: buys when RSI < 32 (oversold), sells when RSI > 72 (overbought)
+7. Guardrails: max $1000/position, max 3 trades/day
+
+---
+
+## What Claude Code Can Help You With
+
+Ask your Claude Code to:
+- "Help me brainstorm business ideas using Hive" → It'll guide you through the process above
+- "Customize my agent prompts for [your business]" → It'll edit `agents/agents.json`
+- "Create a pipeline for [daily research / content / outreach]" → It'll set it up via the API
+- "Build a new feature for the dashboard" → It'll write React components + Express endpoints
+- "Debug why [agent] is producing bad output" → It'll check traces, prompts, and tool configs
+- "Deploy Hive to a cloud server" → It'll help with AWS/Lightsail/Railway setup
+- "Create a roadmap for [project]" → It'll create the right Nexus tasks
+- "Add a new tool for agents" → It'll add it to server/index.js
+- "Check what agents did today" → It'll query the API and summarize
+
+---
+
+## Key Lessons (Learned the Hard Way)
+
+1. **Agents spiral without guardrails.** They'll invent fake businesses and burn money. Keep topic blocklists and spend limits tight.
+2. **Agents log fake revenue.** Revenue validation requires real transaction IDs. Don't trust revenue numbers without proof.
+3. **Agents send fake emails.** Fake domains (example.com, test.com) are blocked in the send_email tool.
+4. **Check OpenRouter dashboard for real spend.** Internal tracker over-counts by 10-30%.
+5. **Monthly spend limit is the real blocker.** If you hit it, ALL tasks fail with 429. Check this first when debugging.
+6. **Start with 2-3 pillars, not 10.** Focus beats breadth. Agents will try to expand — block it.
+7. **Customize prompts early.** The default prompts are for someone else's business. Make them yours.
+8. **Research before building.** Every good product starts with Scout finding a real problem.
+9. **Review proposals carefully.** Agents propose ideas daily. Most are noise. Approve only the best.
+10. **Pipelines > manual tasks.** The real power is automated workflows that run while you sleep.
