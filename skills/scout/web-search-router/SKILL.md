@@ -1,43 +1,113 @@
 ---
 name: Web Search Router
-description: Multi-strategy web search that routes queries to the optimal search approach based on intent (news, technical, local, product).
-version: "1.0.0"
+slug: web-search-router
+description: Intelligent search routing that synthesizes AI-powered search results with source citations. Routes queries to optimal search backends.
+version: 1.0.0
+author: hive
 agents: ["scout"]
-tags: ["search", "research", "intelligence"]
-requires_env: []
+tags: ["search", "research", "routing", "intelligence"]
+source: clawhub-adapted
+requires_env: ["OPENROUTER_API_KEY"]
 requires_tools: ["web_search"]
 ---
 
 # Web Search Router
 
-Route search queries to the best search strategy based on detected intent.
+Routes Scout's research queries to the optimal search backend and synthesizes results with proper source citations.
 
-## Query Classification
+## Search Strategy Matrix
 
-Classify each query into one of these intents before searching:
+| Query Type | Backend | Why |
+|-----------|---------|-----|
+| Current events, news | `web_search` (Perplexity Sonar) | Real-time index, citation-rich |
+| Technical docs, APIs | `web_search` → follow links with `http_request` | Need full page content |
+| Competitor analysis | `web_search` + `http_request` on results | Need deep page extraction |
+| Academic/research | `web_search` with scholar-style queries | Structured abstracts |
+| Price/product data | `http_request` to known APIs first | Structured data preferred |
 
-| Intent | Strategy | Example |
-|--------|----------|---------|
-| **news** | Search with date filters, prefer recent results | "latest AI agent frameworks 2026" |
-| **technical** | Search GitHub, Stack Overflow, docs sites | "express 5 middleware patterns" |
-| **local** | Include city/region qualifiers | "Portland restaurants using kitchen management software" |
-| **product** | Search G2, ProductHunt, landing pages | "restaurant SaaS competitors pricing" |
-| **academic** | Search arxiv, papers, research blogs | "multi-agent coordination research" |
+## Query Optimization
 
-## Process
+### Before Searching
 
-1. **Parse the query** — extract key entities, intent, and time relevance.
-2. **Select strategy** from the table above.
-3. **Execute 2-3 targeted searches** with strategy-specific query reformulations.
-4. **Synthesize results** — deduplicate, rank by relevance, extract key facts.
-5. **Deliver structured output:**
-   - Top 5 findings as bullet points with source URLs
-   - Confidence score (0-1) for each finding
-   - Suggested follow-up queries if results are thin
+1. **Define what you need** — Write the specific question, not a vague topic
+2. **Choose time scope** — Add "2026" or "last 30 days" for recency
+3. **Pick the format** — Do you need facts, comparisons, trends, or contacts?
 
-## Quality Rules
+### Query Templates
 
-- Never report a single search result as definitive — cross-reference across sources.
-- If results are sparse (< 3 quality hits), note low confidence and suggest alternative queries.
-- Always include publication/update dates when available.
-- Prefer primary sources over aggregator summaries.
+**Market Research:**
+```
+"{product category} market size revenue 2026 {geographic region}"
+"{competitor name} pricing plans features 2026"
+"restaurant management software alternatives to {product} reviews"
+```
+
+**Technical Research:**
+```
+"{technology} best practices production deployment 2026"
+"{API name} documentation endpoints authentication"
+"{framework} vs {framework} performance benchmarks"
+```
+
+**Opportunity Research:**
+```
+"{niche} SaaS products revenue ARR bootstrapped"
+"AI agent platforms marketplace 2026 comparison"
+"{industry} pain points automation opportunities"
+```
+
+## Result Synthesis Protocol
+
+After getting raw search results, synthesize into actionable intelligence:
+
+### Structure
+
+```markdown
+## Research: {Topic}
+
+### Key Findings
+1. {Most important finding with source}
+2. {Second finding with source}
+3. {Third finding with source}
+
+### Data Points
+| Metric | Value | Source |
+|--------|-------|--------|
+| Market size | $X.XB | {url} |
+| Growth rate | XX% | {url} |
+| Key players | A, B, C | {url} |
+
+### Actionable Insights
+- **For Ember:** {specific recommendation}
+- **For AgentForge:** {specific recommendation}
+- **For Trading:** {specific recommendation}
+
+### Sources
+1. [{Title}]({url}) — {one-line summary}
+2. [{Title}]({url}) — {one-line summary}
+```
+
+## Multi-Query Research
+
+For deep research missions, chain multiple searches:
+
+1. **Broad sweep** — Get the landscape (3-5 queries)
+2. **Deep dive** — Follow promising leads with targeted queries
+3. **Validation** — Cross-reference key claims across sources
+4. **Synthesis** — Combine into a single deliverable
+
+Max 10 search calls per research mission to control spend.
+
+## Citation Rules
+
+- Every factual claim needs a source URL
+- Never fabricate URLs — only cite pages you actually visited
+- If a source is behind a paywall, note it: `(paywalled)`
+- Prefer primary sources over aggregator summaries
+
+## Guardrails
+
+- **3-pillar filter**: Discard results not relevant to Ember, AgentForge, or Trading
+- **Recency bias**: Prefer 2025-2026 sources unless historical context needed
+- **Cost control**: Max 10 web_search calls per task. Reuse cached results when possible.
+- **No hallucinated sources**: If you can't find data, say so. Don't invent citations.

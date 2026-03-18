@@ -1,149 +1,164 @@
 /**
- * Seed skills from /skills directory tree into the SQLite skills table.
- * Reads all SKILL.md files, parses YAML frontmatter, and inserts into DB.
+ * seed-skills.js
  *
- * Usage: node scripts/seed-skills.js
- * Also callable as a function from server startup.
+ * Reads all SKILL.md files from the skills/ directory tree,
+ * parses YAML frontmatter, and inserts each into the SQLite
+ * skills table. Run on server startup if skills table is empty.
+ *
+ * Usage:
+ *   node scripts/seed-skills.js           # seed if empty
+ *   node scripts/seed-skills.js --force   # re-seed (clear + insert)
  */
 
 import { readFileSync, readdirSync, statSync } from 'fs'
 import { join, relative } from 'path'
-import { v4 as uuid } from 'uuid'
 import Database from 'better-sqlite3'
-import { fileURLToPath } from 'url'
-import { dirname } from 'path'
 
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
-const ROOT = join(__dirname, '..')
+const DB_PATH = join(import.meta.dirname, '..', 'hive.db')
+const SKILLS_DIR = join(import.meta.dirname, '..', 'skills')
 
-function findSkillFiles(dir) {
-  const results = []
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry)
-    if (statSync(full).isDirectory()) {
-      results.push(...findSkillFiles(full))
-    } else if (entry === 'SKILL.md') {
-      results.push(full)
-    }
-  }
-  return results
-}
-
-function parseFrontmatter(content) {
-  const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
+function parseYAMLFrontmatter(content) {
+  const match = content.match(/^---\n([\s\S]*?)\n---/)
   if (!match) return null
 
   const yaml = match[1]
-  const body = match[2].trim()
   const meta = {}
 
   for (const line of yaml.split('\n')) {
     const colonIdx = line.indexOf(':')
     if (colonIdx === -1) continue
+
     const key = line.slice(0, colonIdx).trim()
     let value = line.slice(colonIdx + 1).trim()
 
-    // Parse arrays like ["scout", "forge"]
-    if (value.startsWith('[')) {
-      try { value = JSON.parse(value) } catch { value = [] }
+    // Parse arrays: ["a", "b"] or [a, b]
+    if (value.startsWith('[') && value.endsWith(']')) {
+      value = value
+        .slice(1, -1)
+        .split(',')
+        .map(s => s.trim().replace(/^["']|["']$/g, ''))
+        .filter(Boolean)
     }
-    // Strip quotes
-    if (typeof value === 'string' && value.startsWith('"') && value.endsWith('"')) {
+    // Parse quoted strings
+    else if (value.startsWith('"') && value.endsWith('"')) {
       value = value.slice(1, -1)
     }
 
     meta[key] = value
   }
 
-  return { ...meta, body }
+  return meta
 }
 
-export function seedSkills(db) {
-  const skillsDir = join(ROOT, 'skills')
-  let files
-  try {
-    files = findSkillFiles(skillsDir)
-  } catch {
-    console.log('[seed-skills] No skills/ directory found, skipping.')
-    return 0
+function findSkillFiles(dir) {
+  const skills = []
+
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry)
+    const stat = statSync(full)
+
+    if (stat.isDirectory()) {
+      skills.push(...findSkillFiles(full))
+    } else if (entry === 'SKILL.md') {
+      skills.push(full)
+    }
   }
 
-  if (files.length === 0) {
-    console.log('[seed-skills] No SKILL.md files found.')
-    return 0
+  return skills
+}
+
+function seedSkills(force = false) {
+  const db = new Database(DB_PATH)
+  db.pragma('journal_mode = WAL')
+  db.pragma('foreign_keys = ON')
+
+  // Create skills table if it doesn't exist
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS skills (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      version TEXT DEFAULT '1.0.0',
+      author TEXT DEFAULT 'hive',
+      skill_md TEXT NOT NULL,
+      agents TEXT DEFAULT '[]',
+      tags TEXT DEFAULT '[]',
+      source TEXT DEFAULT 'custom',
+      requires_env TEXT DEFAULT '[]',
+      requires_tools TEXT DEFAULT '[]',
+      file_path TEXT DEFAULT '',
+      installed_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )
+  `)
+
+  // Check if already seeded
+  const count = db.prepare('SELECT COUNT(*) as n FROM skills').get().n
+  if (count > 0 && !force) {
+    console.log(`Skills table already has ${count} entries. Use --force to re-seed.`)
+    db.close()
+    return
   }
 
-  // We'll skip individual skills that already exist by slug (checked inside the loop)
+  if (force) {
+    db.prepare('DELETE FROM skills').run()
+    console.log('Cleared existing skills.')
+  }
+
+  // Find all SKILL.md files
+  const skillFiles = findSkillFiles(SKILLS_DIR)
+  console.log(`Found ${skillFiles.length} SKILL.md files.`)
 
   const insert = db.prepare(`
-    INSERT OR IGNORE INTO skills (id, slug, name, description, version, skill_md, tags, requires_tools, source, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'custom', datetime('now'), datetime('now'))
+    INSERT OR REPLACE INTO skills (id, slug, name, description, version, author, skill_md, agents, tags, source, requires_env, requires_tools, file_path)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
-  const assignAgent = db.prepare(`
-    INSERT OR IGNORE INTO agent_skills_v2 (agent_id, skill_id, enabled, priority)
-    VALUES (?, ?, 1, ?)
-  `)
+  const tx = db.transaction(() => {
+    for (const filePath of skillFiles) {
+      const content = readFileSync(filePath, 'utf-8')
+      const meta = parseYAMLFrontmatter(content)
 
-  let seeded = 0
-  const insertMany = db.transaction(() => {
-    for (const file of files) {
-      const content = readFileSync(file, 'utf-8')
-      const parsed = parseFrontmatter(content)
-      if (!parsed || !parsed.name) {
-        console.log(`[seed-skills] Skipping ${file} — invalid frontmatter`)
+      if (!meta || !meta.slug) {
+        console.warn(`Skipping ${filePath} — no valid frontmatter or slug.`)
         continue
       }
 
-      const filePath = relative(ROOT, file)
-      const slug = filePath
-        .replace(/\/SKILL\.md$/, '')
-        .replace(/^skills\//, '')
-        .replace(/\//g, '-')
-
-      // Check if this slug already exists
-      const existingSkill = db.prepare('SELECT id FROM skills WHERE slug = ?').get(slug)
-      if (existingSkill) continue
-
-      const id = uuid()
-      const agents = Array.isArray(parsed.agents) ? parsed.agents : []
-      const tags = Array.isArray(parsed.tags) ? parsed.tags : []
-      const requiresTools = Array.isArray(parsed.requires_tools) ? parsed.requires_tools : []
+      const relPath = relative(join(import.meta.dirname, '..'), filePath)
+      const id = `skill_${meta.slug}`
+      const agents = Array.isArray(meta.agents) ? JSON.stringify(meta.agents) : '[]'
+      const tags = Array.isArray(meta.tags) ? JSON.stringify(meta.tags) : '[]'
+      const requiresEnv = Array.isArray(meta.requires_env) ? JSON.stringify(meta.requires_env) : '[]'
+      const requiresTools = Array.isArray(meta.requires_tools) ? JSON.stringify(meta.requires_tools) : '[]'
 
       insert.run(
         id,
-        slug,
-        parsed.name,
-        parsed.description || '',
-        parsed.version || '1.0.0',
+        meta.slug,
+        meta.name || meta.slug,
+        meta.description || '',
+        meta.version || '1.0.0',
+        meta.author || 'hive',
         content,
-        JSON.stringify(tags),
-        JSON.stringify(requiresTools)
+        agents,
+        tags,
+        meta.source || 'custom',
+        requiresEnv,
+        requiresTools,
+        relPath
       )
 
-      // Auto-assign to specified agents
-      agents.forEach((agentId, idx) => {
-        assignAgent.run(agentId, id, idx)
-      })
-
-      seeded++
-      console.log(`[seed-skills] Seeded: ${parsed.name} → ${agents.join(', ')} (${slug})`)
+      console.log(`  ✓ ${meta.slug} (${agents})`)
     }
   })
 
-  insertMany()
-  console.log(`[seed-skills] Done. Seeded ${seeded} new skills.`)
-  return seeded
+  tx()
+
+  const final = db.prepare('SELECT COUNT(*) as n FROM skills').get().n
+  console.log(`\nSeeded ${final} skills into hive.db.`)
+  db.close()
 }
 
-// CLI mode: run directly with `node scripts/seed-skills.js`
-if (process.argv[1] && process.argv[1].endsWith('seed-skills.js')) {
-  const dbPath = join(ROOT, 'hive.db')
-  const db = new Database(dbPath)
-  db.pragma('journal_mode = WAL')
-  db.pragma('foreign_keys = ON')
-  const count = seedSkills(db)
-  db.close()
-  process.exit(count >= 0 ? 0 : 1)
-}
+// Run
+const force = process.argv.includes('--force')
+seedSkills(force)

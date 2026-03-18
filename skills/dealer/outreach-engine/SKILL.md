@@ -1,76 +1,144 @@
 ---
 name: Outreach Engine
-description: Structured cold outreach workflow for AgentForge beta users with email finding, personalization, and follow-up sequences.
-version: "1.0.0"
+slug: outreach-engine
+description: Multi-channel outreach automation for AgentForge beta customers and Ember restaurant leads. Email sequences, follow-ups, and lead tracking.
+version: 1.0.0
+author: hive
 agents: ["dealer"]
-tags: ["outreach", "sales", "email", "growth"]
-requires_env: ["HUNTER_API_KEY"]
-requires_tools: ["web_search", "http_request", "send_email"]
+tags: ["outreach", "email", "sales", "leads", "abm"]
+source: clawhub-adapted
+requires_env: ["HUNTER_API_KEY", "GMAIL_USER", "GMAIL_APP_PASSWORD"]
+requires_tools: ["send_email", "http_request", "web_search", "store_memory"]
 ---
 
 # Outreach Engine
 
-Find and engage potential AgentForge beta users through structured outreach.
+Dealer's playbook for finding and contacting real prospects for AgentForge and Ember. Every email must be personalized, relevant, and to a verified address.
 
-## Daily Limits (HARD CAPS)
+## Campaign Targets
 
-- Maximum 5 emails per day (across all outreach)
-- Maximum 3 new prospects researched per day
-- Never email the same person twice within 7 days
-- Never use fake sender names or misleading subject lines
+### AgentForge Beta (Primary)
+- **Goal**: 5 beta users
+- **ICP**: AI developers, indie hackers, small agency founders
+- **Channels**: Email, Dev.to comments, product hunt
+- **Max**: 5 emails/day
 
-## Prospect Qualification
+### Ember Restaurants (Secondary)
+- **Goal**: 3 paying restaurants at $49/mo
+- **ICP**: Independent restaurant owners/managers in Portland
+- **Channels**: Email only (requires approval keyword gate)
+- **Max**: 3 emails/day
 
-Before any outreach, verify the prospect matches:
+## Lead Research Protocol
 
-| Criteria | Required | Ideal |
-|----------|----------|-------|
-| Builds with AI/LLMs | Yes | — |
-| Active on GitHub/Twitter | Yes | 100+ followers |
-| Indie hacker or small team | Yes | 1-5 people |
-| Has shipped a product | Preferred | Recently launched |
-| Located in US/EU | Preferred | — |
+Before any outreach:
 
-## Outreach Sequence
+1. **Find the person** — Use `web_search` to find real decision-makers
+2. **Verify the email** — Use Hunter.io API to validate:
+   ```
+   GET https://api.hunter.io/v2/email-verifier?email={email}&api_key={HUNTER_API_KEY}
+   ```
+   Only proceed if `result` is `deliverable` or `risky` (never `undeliverable`)
+3. **Research their context** — Find something specific about their work to personalize
+4. **Log the lead** — Store in memory with status tracking
 
-### Step 1: Find (via Hunter.io)
+## Email Templates
+
+### AgentForge Beta Invite
+
 ```
-GET https://api.hunter.io/v2/email-finder?domain={domain}&first_name={first}&last_name={last}&api_key={key}
-```
-Only use verified emails (confidence > 80%).
+Subject: {Name}, building AI agents? Try our platform free
 
-### Step 2: Personalize
-Research the prospect (GitHub repos, recent tweets, blog posts). Reference something specific in the email. Generic templates get ignored.
+Hi {Name},
 
-### Step 3: Email Template
-```
-Subject: [Something specific about their work] + AI agents
+I saw your {specific thing — blog post, GitHub repo, tweet}.
+Looks like you're already building with AI agents.
 
-Hi {first_name},
+We're launching AgentForge — a platform where autonomous agents
+research, build, and sell for you. Currently in closed beta with
+{X} users.
 
-[1 sentence referencing their specific work — a repo, blog post, or product]
+Would you want early access? It's free during beta.
 
-I'm building AgentForge — [1 sentence pitch]. We're looking for 5 beta users who build with AI.
-
-Would you be open to a 15-min call this week?
-
-Best,
-John
+— John
 ```
 
-### Step 4: Track
-Store outreach in memory: prospect name, email, date sent, response status.
+### Ember Restaurant Outreach
 
-## Blocked Domains
+```
+Subject: Kitchen management for {Restaurant Name}
 
-NEVER send to these domains:
-- example.com, test.com, fake.com, mailinator.com
-- Any domain that doesn't resolve
-- Personal email domains (gmail, yahoo, hotmail) unless prospect is a solo founder
+Hi {Name},
 
-## Anti-Spam Rules
+I noticed {specific observation about their restaurant — menu,
+reviews, online presence}.
 
-- Emails must have a clear unsubscribe option
-- No deceptive subject lines
-- No bulk sending — every email must be individually personalized
-- Stop immediately if someone asks to be removed
+We built Ember to help independent restaurants like yours manage
+kitchen operations — recipes, prep lists, staff training — all
+in one place. Your kitchen staff can access everything from their
+phone via a simple share link.
+
+Would a quick demo be useful? Free for 30 days.
+
+— John
+```
+
+## Outreach Rules
+
+### DO
+- Personalize every email with something specific about the recipient
+- Verify email addresses before sending
+- Wait 3+ days between emails to the same person
+- Track opens/responses in memory
+- A/B test subject lines across batches
+
+### DON'T
+- Send to @example.com, @test.com, or any fake domain
+- Send more than 5 emails total per day
+- Send follow-ups if they asked to stop
+- Use aggressive sales language ("limited time", "act now")
+- CC or BCC multiple recipients
+- Send identical emails to multiple people
+
+## Lead Tracking
+
+Store lead status in memory:
+
+```json
+{
+  "leads": [
+    {
+      "name": "Jane Smith",
+      "email": "jane@company.com",
+      "company": "TechCorp",
+      "campaign": "agentforge-beta",
+      "status": "emailed",
+      "emails_sent": 1,
+      "last_contact": "2026-03-18",
+      "response": null
+    }
+  ]
+}
+```
+
+Status values: `researched` → `verified` → `emailed` → `responded` → `converted` | `declined` | `no_response`
+
+## Follow-Up Cadence
+
+| Day | Action |
+|-----|--------|
+| 0 | Initial outreach email |
+| 4 | Follow-up if no response (different angle) |
+| 10 | Final follow-up (softer ask) |
+| — | Move to `no_response`, don't contact again |
+
+Max 3 emails per lead. Ever.
+
+## Guardrails
+
+- **5 emails/day hard cap** — enforced in send_email tool
+- **Email domain blocklist**: example.com, test.com, fake.com, mailinator.com
+- **Approval keyword gate**: "cold email", "contact restaurant", "email outreach" require approval
+- **Real people only**: Every recipient must be a real, verified person
+- **No spam**: Personalized, relevant, opt-out respected
+- **Hunter.io budget**: 25 free verifications/month — use wisely

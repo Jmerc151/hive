@@ -1,77 +1,136 @@
 ---
 name: Agent Team Orchestration
-description: Coordinate multi-agent workflows, manage inter-agent consultations, resolve conflicts, and optimize team performance.
-version: "1.0.0"
+slug: agent-team-orchestration
+description: "Adapted from ClawHub's agent-team-orchestration skill. Multi-agent coordination with defined roles, task lifecycles, handoff protocols, and review workflows."
+version: 1.0.0
+author: hive
 agents: ["nexus"]
-tags: ["orchestration", "multi-agent", "coordination", "team-management"]
+tags: ["orchestration", "multi-agent", "coordination", "handoffs", "review"]
+source: clawhub-adapted
 requires_env: []
-requires_tools: ["create_task", "recall_memory", "store_memory"]
+requires_tools: ["create_task", "store_memory", "recall_memory"]
 ---
 
 # Agent Team Orchestration
 
-Coordinate the 6-agent Hive team for maximum output with minimal spend.
+Production playbook for running Hive's 7-agent team. Adapted from ClawHub's agent-team-orchestration skill by @arminnaimi.
 
-## Pipeline Patterns
+## Hive Team Roles
 
-### Sequential Pipeline
-Scout → Forge → Quill → Dealer
+| Agent | Role | Model | Purpose |
+|-------|------|-------|---------|
+| **Scout** | Researcher | claude-haiku-4-5 | Find information, analyze markets, monitor competitors |
+| **Forge** | Builder | claude-haiku-4-5 | Write code, build features, deploy |
+| **Quill** | Writer | claude-haiku-4-5 | Create content, blog posts, documentation |
+| **Dealer** | Seller | claude-haiku-4-5 | Outreach, sales, lead generation |
+| **Oracle** | Trader | claude-sonnet-4-5 | Analyze signals, execute paper trades |
+| **Nexus** | Orchestrator | claude-sonnet-4-5 | Route tasks, review quality, plan sprints |
+| **Sentinel** | Monitor | claude-haiku-4-5 | QA, production monitoring, failure investigation |
 
-Use when: Building a new feature end-to-end.
-- Scout researches the opportunity
-- Forge builds the MVP
-- Quill writes marketing content
-- Dealer does outreach
+### Role Boundaries
 
-### Parallel Fan-Out
-Scout (research A) + Scout (research B) → Nexus (synthesize)
+Every agent has ONE primary role. Overlap causes confusion:
 
-Use when: Multiple independent research tasks that need synthesis.
+- Scout NEVER writes final content (that's Quill)
+- Forge NEVER does outreach (that's Dealer)
+- Oracle NEVER researches non-trading topics (that's Scout)
+- Nexus NEVER executes — only routes and reviews
 
-### Review Loop
-Any Agent → Nexus (QA) → Agent (fix) → Nexus (verify)
+## Task Lifecycle
 
-Use when: Quality matters more than speed (customer-facing work).
+```
+CREATED → ASSIGNED → IN_PROGRESS → REVIEW → DONE | FAILED
+```
 
-## Consultation Protocol
+### State Transition Rules
 
-When agents need input from other agents:
+| Transition | Who Triggers | Requirements |
+|-----------|-------------|-------------|
+| Created → Assigned | Nexus | Agent available, under daily limit |
+| Assigned → In Progress | Agent | Agent picks up task |
+| In Progress → Review | Agent | Deliverable produced |
+| Review → Done | Nexus | Quality score >= 5/10 |
+| Review → In Progress | Nexus | Quality score < 5, rework needed |
+| Any → Failed | System/Nexus | 3 retries exhausted, permanent failure |
 
-1. **Use [CONSULT:agent_id] pattern** in task output.
-2. Consultation is synchronous — the requesting agent waits for a response.
-3. Keep consultations focused — ask one specific question, not open-ended.
-4. Maximum 2 consultations per task execution to control costs.
+## Handoff Protocol
+
+When work passes between agents (via consultation or chained tasks):
+
+### Required Handoff Fields
+
+1. **What was done** — Summary of completed work
+2. **Artifacts** — Exact file paths, URLs, or data produced
+3. **How to verify** — Test commands or acceptance criteria
+4. **Known issues** — Anything incomplete or risky
+5. **Next action** — Clear instruction for receiving agent
+
+### Consultation Pattern (via [CONSULT:agent_id])
+
+```
+[CONSULT:scout] I need current pricing data for Toast, Square for Restaurants,
+and MarketMan. Return a comparison table with: product name, starter plan price,
+key features, and last verified date.
+```
+
+Good consultations are:
+- Specific about what data/artifact is needed
+- Clear about the output format expected
+- Bounded in scope (not "tell me everything about X")
+
+Bad consultations:
+- "What do you think about this?" (too vague)
+- "Research everything about restaurants" (too broad)
+- Consulting terminal agents (oracle, dealer) for non-specialty tasks
+
+## Pipeline Coordination
+
+For multi-step pipelines (e.g., Ember Dev Daily):
+
+```
+Scout Research → Forge Build → Nexus QA
+```
+
+### Pipeline Rules
+
+1. Each step must complete before the next starts
+2. If any step fails, the pipeline halts (no skip-ahead)
+3. Each step's output becomes the next step's input context
+4. Nexus monitors pipeline progress and intervenes on stalls
+5. Max pipeline duration: 2 hours
+
+## Cross-Agent Reviews
+
+Prevent quality drift with cross-role reviews:
+
+| Reviewer | Reviews | Focus |
+|----------|---------|-------|
+| Nexus | All completed tasks | Quality score, 3-pillar alignment |
+| Sentinel | Failed tasks | Root cause, bug vs config vs transient |
+| Scout | Forge's market assumptions | Are the market claims accurate? |
+| Forge | Quill's technical content | Are code examples correct? |
 
 ## Conflict Resolution
 
-When agents produce contradictory outputs:
+When agents disagree or produce conflicting outputs:
 
-1. **Identify the conflict** — which specific claims or decisions disagree?
-2. **Check evidence** — which agent has stronger supporting data?
-3. **Apply pillar priority** — Ember revenue > AgentForge growth > Trading experimentation.
-4. **Make a decision** — document the reasoning in memory.
-5. **Notify affected agents** — create follow-up tasks with the resolution.
+1. **Nexus decides** — as orchestrator, Nexus has final say on priorities
+2. **Data wins** — if there's conflicting information, the one with citations wins
+3. **Escalate to human** — if the conflict affects strategy or spend, flag for John
 
-## Performance Optimization
+## Common Pitfalls
 
-### Spend Efficiency
-- Track cost-per-useful-output for each agent.
-- Agents averaging > $0.50 per task with scores < 5/10 need prompt tuning.
-- Prefer Haiku for routine tasks, reserve Sonnet for complex reasoning.
+- Spawning tasks without clear deliverable requirements
+- No review step → quality drift within 3-5 tasks
+- Agents doing work outside their role
+- Not commenting on task progress (silent execution)
+- Nexus doing execution work instead of orchestrating
+- Circular consultations (A consults B consults A)
 
-### Throughput
-- Aim for 15-25 completed tasks per day across all agents.
-- If backlog grows > 20 tasks, prioritize ruthlessly — close low-priority items.
-- Pipeline tasks should complete within 1 hour end-to-end.
+## Guardrails
 
-### Quality Trends
-- Track weekly average scores per agent.
-- Declining trend (3 weeks) = prompt needs revision or skill needs update.
-- Improving trend = working — document what changed in memory.
-
-## Emergency Protocols
-
-- **Spend spike** (> 2x daily average): Pause all non-critical tasks, investigate.
-- **Agent loop** (same task failing 3+ times): Kill task, move to dead letter queue, alert.
-- **Service outage** (health check fails): Create Sentinel investigation task.
-- **Off-topic drift** (agent creating non-pillar tasks): Block immediately, review guardrails.
+- **3-pillar enforcement** in every task assignment
+- **10 tasks/agent/day** hard cap
+- **5 auto-tasks/day** generation limit
+- **3-deep chain limit** on follow-up tasks
+- **No self-assignment** except for Nexus (QA) and Sentinel (monitoring)

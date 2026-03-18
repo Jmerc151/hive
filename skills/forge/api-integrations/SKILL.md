@@ -1,58 +1,113 @@
 ---
 name: API Integrations
-description: Build and maintain integrations with third-party APIs (Stripe, Hunter.io, Gumroad, Dev.to, Alpaca) following Hive's patterns.
-version: "1.0.0"
+slug: api-integrations
+description: Patterns for integrating external APIs and services. Covers auth, error handling, rate limits, and retry logic for all connected platforms.
+version: 1.0.0
+author: hive
 agents: ["forge"]
-tags: ["api", "integrations", "development"]
+tags: ["api", "integrations", "services", "http"]
+source: clawhub-adapted
 requires_env: []
-requires_tools: ["write_file", "http_request"]
+requires_tools: ["write_file", "execute_command", "http_request"]
 ---
 
 # API Integrations
 
-Build reliable API integrations following Hive's established patterns.
+Standard patterns for connecting Hive to external services. Every integration follows the same error handling, retry, and caching protocol.
 
-## Connected APIs
+## Connected Services
 
-| Service | Env Var | Purpose | Rate Limit |
-|---------|---------|---------|------------|
-| Stripe | STRIPE_SECRET_KEY | Payment links, revenue tracking | 100 req/s |
-| Hunter.io | HUNTER_API_KEY | Email finder for outreach | 25/month (free) |
-| Gumroad | GUMROAD_ACCESS_TOKEN | Digital product sales | 120 req/min |
-| Dev.to | DEVTO_API_KEY | Blog publishing | 30 req/30s |
-| Netlify | NETLIFY_ACCESS_TOKEN | Deploy static sites | 500 req/min |
-| Alpaca | ALPACA_API_KEY + SECRET | Paper trading | 200 req/min |
-| OpenRouter | OPENROUTER_API_KEY | LLM calls | Per-plan limits |
+| Service | Env Variable | Purpose | Rate Limit |
+|---------|-------------|---------|------------|
+| OpenRouter | `OPENROUTER_API_KEY` | LLM inference | Per-model varies |
+| Stripe | `STRIPE_SECRET_KEY` | Payment links, revenue | 100 req/sec |
+| Hunter.io | `HUNTER_API_KEY` | Email finder | 25 free/month |
+| Gumroad | `GUMROAD_ACCESS_TOKEN` | Digital product sales | 30 req/min |
+| Dev.to | `DEVTO_API_KEY` | Blog publishing | 30 req/30sec |
+| Netlify | `NETLIFY_ACCESS_TOKEN` | Deploy trigger | 500 req/min |
+| Alpaca | `ALPACA_API_KEY` + `ALPACA_API_SECRET` | Paper trading | 200 req/min |
+| Gmail | `GMAIL_USER` + `GMAIL_APP_PASSWORD` | Email notifications | 500/day |
 
 ## Integration Pattern
 
-When building a new API integration:
+Every API integration follows this structure:
 
-1. **Add to server/services/** as a standalone module (ES module, `import`/`export`).
-2. **Wrap all calls** in try/catch with structured error logging:
-   ```js
-   try {
-     const res = await fetch(url, { headers: { 'Authorization': `Bearer ${process.env.KEY}` } })
-     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`)
-     return await res.json()
-   } catch (err) {
-     log('error', `service_name failed`, { error: err.message })
-     throw err
-   }
-   ```
-3. **Add rate limiting** — track calls per minute, back off on 429s.
-4. **Register as an agent tool** in server/index.js tool definitions.
-5. **Add env var** to the VM's .env file (document in deployment notes).
+```javascript
+async function callExternalAPI(endpoint, options = {}) {
+  const { method = 'GET', body, headers = {}, retries = 2, timeout = 10000 } = options
 
-## Security Rules
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(endpoint, {
+        method,
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(timeout)
+      })
 
-- Never log API keys or secrets.
-- Never expose keys in API responses or task output.
-- Use environment variables only — no hardcoded keys.
-- Validate all external API response shapes before processing.
+      if (response.status === 429) {
+        // Rate limited — back off exponentially
+        const wait = Math.pow(2, attempt) * 1000
+        await new Promise(r => setTimeout(r, wait))
+        continue
+      }
 
-## Testing
+      if (!response.ok) {
+        throw new Error(`${response.status}: ${await response.text()}`)
+      }
 
-- Test with real API in development (no mocking).
-- Verify error handling by testing with invalid keys.
-- Check rate limit behavior with rapid sequential calls.
+      return await response.json()
+    } catch (err) {
+      if (attempt === retries) throw err
+      await new Promise(r => setTimeout(r, 1000 * (attempt + 1)))
+    }
+  }
+}
+```
+
+## Auth Patterns
+
+| Auth Type | Header Format | Services |
+|-----------|--------------|----------|
+| Bearer token | `Authorization: Bearer {token}` | OpenRouter, Netlify, Gumroad |
+| API key header | `X-Api-Key: {key}` | Hunter.io |
+| API key + secret | Custom per service | Alpaca |
+| Basic auth | `Authorization: Basic {base64}` | Gmail SMTP |
+
+## Error Handling Rules
+
+1. **Never expose API keys in logs** — redact before logging
+2. **Always check response status** before parsing body
+3. **Retry on 429 and 5xx** — max 3 attempts with exponential backoff
+4. **Timeout after 10s** for most calls, 30s for LLM inference
+5. **Log failures** with endpoint (no auth), status code, and error message
+6. **Circuit breaker** — after 5 consecutive failures to same service, pause for 5 minutes
+
+## Caching Strategy
+
+| Data Type | Cache Duration | Storage |
+|-----------|---------------|---------|
+| Search results | 24 hours | `market_data_cache` table |
+| Stock quotes | 1 minute | In-memory |
+| Email verification | 7 days | `market_data_cache` table |
+| Blog post status | 1 hour | In-memory |
+
+## Adding a New Integration
+
+When Forge builds a new API integration:
+
+1. Add env variable to `.env` on VM (via SSH)
+2. Add to `ALLOWED_ORIGINS` if needed
+3. Create the integration function following the pattern above
+4. Add rate limit tracking
+5. Add to the health endpoint check
+6. Document in SYSTEM.md
+7. Test with a real API call before deploying
+
+## Guardrails
+
+- **Never hardcode secrets** — always use environment variables
+- **Respect rate limits** — track and throttle automatically
+- **Validate responses** — don't trust external API data blindly
+- **Log all external calls** — for debugging and spend tracking
+- **Fail gracefully** — return sensible defaults when services are down
