@@ -3719,6 +3719,97 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
 
   res.json({ ok: true, message: `Agent ${agent.name} is working on it` })
 
+  // ── Preflight: cheap validation before burning tokens ─────────────
+  try {
+    const titleLower = (task.title || '').toLowerCase()
+    const descLower = (task.description || '').toLowerCase()
+    const taskText = titleLower + ' ' + descLower
+
+    // Trading tasks: check if market is open before spending 300K tokens
+    if (agent.id === 'oracle' && (taskText.includes('trad') || taskText.includes('signal') || taskText.includes('position') || taskText.includes('rsi'))) {
+      try {
+        const marketStatus = await broker.isMarketOpen()
+        if (marketStatus && !marketStatus.isOpen) {
+          const nextOpen = marketStatus.next_open ? ` Next open: ${marketStatus.next_open}` : ''
+          const skipMsg = `Preflight skip: Market is closed.${nextOpen} No point running trading task.`
+          db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+            .run(task.id, agent.id, skipMsg, 'warning')
+          db.prepare(`UPDATE tasks SET status = 'todo', error = ?, updated_at = datetime('now'), started_at = NULL WHERE id = ?`)
+            .run(skipMsg, task.id)
+          db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+            .run('system', '⏸️ Preflight', '⏸️', '#f59e0b', `Skipped "${task.title}" — market closed.${nextOpen} Will retry when open.`)
+          console.log(`⏸️ Preflight: skipped trading task "${task.title}" — market closed`)
+          removeActiveRun(agent.id, task.id)
+          traceBus.emit('task:update', { id: task.id, status: 'todo', agent_id: agent.id })
+          return
+        }
+      } catch (e) {
+        console.log(`⚠️ Preflight market check failed (proceeding anyway): ${e.message}`)
+      }
+    }
+
+    // GitHub tasks: verify there are actually issues to fix before burning tokens
+    if (taskText.includes('fix next open issue') || taskText.includes('fix open issue')) {
+      try {
+        const ghTool = TOOLS.find(t => t.name === 'github_get_issues')
+        if (ghTool) {
+          const frontendIssues = await ghTool.execute({ repo: 'Jmerc151/sous-frontend', state: 'open' })
+          const backendIssues = await ghTool.execute({ repo: 'Jmerc151/sous-backend', state: 'open' })
+          const frontendCount = Array.isArray(frontendIssues) ? frontendIssues.length : 0
+          const backendCount = Array.isArray(backendIssues) ? backendIssues.length : 0
+          if (frontendCount === 0 && backendCount === 0) {
+            const skipMsg = `Preflight skip: No open issues in sous-frontend or sous-backend. Nothing to fix.`
+            db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+              .run(task.id, agent.id, skipMsg, 'info')
+            db.prepare(`UPDATE tasks SET status = 'done', output = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
+              .run('No open issues found — repos are clean.', task.id)
+            db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+              .run(task.id, agent.id, 'Task completed — no issues to fix', 'success')
+            console.log(`✅ Preflight: "${task.title}" — no open issues, marked done`)
+            removeActiveRun(agent.id, task.id)
+            traceBus.emit('task:update', { id: task.id, status: 'done', agent_id: agent.id })
+            return
+          } else {
+            db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+              .run(task.id, agent.id, `Preflight: found ${frontendCount} frontend + ${backendCount} backend open issues. Proceeding.`, 'info')
+          }
+        }
+      } catch (e) {
+        console.log(`⚠️ Preflight GitHub check failed (proceeding anyway): ${e.message}`)
+      }
+    }
+
+    // Generic preflight: use a cheap LLM call to sanity-check the task
+    if (!task.spawned_by) {
+      try {
+        const preflightResponse = await callClaude({
+          model: 'anthropic/claude-haiku-4-5',
+          max_tokens: 200,
+          system: 'You are a task validator. Reply with ONLY valid JSON: {"proceed":true/false,"reason":"..."}. Assess if this task can produce a concrete deliverable right now. Say false if: the task is vague with no clear deliverable, it duplicates recently completed work, or it requires external conditions that probably aren\'t met (e.g. market hours for trading). Say true if the task has a clear, actionable goal.',
+          messages: [{ role: 'user', content: `Task: ${task.title}\nDescription: ${task.description || 'none'}\nAgent: ${agent.id} (${agent.name})\nCurrent time: ${new Date().toISOString()}` }]
+        }, agent.id, task.id)
+        const preflightText = preflightResponse.content?.map(b => b.text || '').join('') || ''
+        const preflightJson = JSON.parse(preflightText.match(/\{[\s\S]*\}/)?.[0] || '{"proceed":true}')
+        if (!preflightJson.proceed) {
+          const skipMsg = `Preflight rejected: ${preflightJson.reason || 'Task not actionable right now'}`
+          db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+            .run(task.id, agent.id, skipMsg, 'warning')
+          db.prepare(`UPDATE tasks SET status = 'todo', error = ?, updated_at = datetime('now'), started_at = NULL WHERE id = ?`)
+            .run(skipMsg, task.id)
+          console.log(`⏸️ Preflight rejected "${task.title}": ${preflightJson.reason}`)
+          removeActiveRun(agent.id, task.id)
+          traceBus.emit('task:update', { id: task.id, status: 'todo', agent_id: agent.id })
+          return
+        }
+      } catch (e) {
+        // Preflight failed — proceed anyway, don't block on validation errors
+        console.log(`⚠️ Preflight validation error (proceeding): ${e.message}`)
+      }
+    }
+  } catch (e) {
+    console.log(`⚠️ Preflight system error (proceeding): ${e.message}`)
+  }
+
   // ── ReAct Loop (with tool execution) ─────────────
   try {
     const agentMemory = readAgentMemory(agent.id)
