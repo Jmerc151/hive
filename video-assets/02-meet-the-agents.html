@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@300;400;500;600&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    overflow: hidden;
+    padding: 60px;
+  }
+  .container { text-align: center; width: 100%; max-width: 1200px; }
+  h2 {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 48px;
+    color: rgba(255,255,255,0.3);
+    letter-spacing: 8px;
+    margin-bottom: 60px;
+  }
+  .agents {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+  }
+  .agent {
+    background: #1c1c1e;
+    border-radius: 20px;
+    padding: 36px 24px;
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .tile {
+    width: 56px;
+    height: 56px;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 16px;
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 28px;
+    color: white;
+  }
+  .scout .tile { background: linear-gradient(135deg, #e74c3c, #c0392b); }
+  .forge .tile { background: linear-gradient(135deg, #3498db, #2980b9); }
+  .quill .tile { background: linear-gradient(135deg, #2ecc71, #27ae60); }
+  .dealer .tile { background: linear-gradient(135deg, #e67e22, #d35400); }
+  .oracle .tile { background: linear-gradient(135deg, #9b59b6, #8e44ad); }
+  .nexus .tile { background: linear-gradient(135deg, #1abc9c, #16a085); }
+  .name {
+    font-family: 'Inter', sans-serif;
+    font-size: 20px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 6px;
+  }
+  .role {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    color: rgba(255,255,255,0.4);
+    font-weight: 300;
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <h2>MEET THE AGENTS</h2>
+    <div class="agents">
+      <div class="agent scout"><div class="tile">S</div><div class="name">Scout</div><div class="role">Research & Intelligence</div></div>
+      <div class="agent forge"><div class="tile">F</div><div class="name">Forge</div><div class="role">Build & Ship Code</div></div>
+      <div class="agent quill"><div class="tile">Q</div><div class="name">Quill</div><div class="role">Write & Create Content</div></div>
+      <div class="agent dealer"><div class="tile">D</div><div class="name">Dealer</div><div class="role">Sell & Close Deals</div></div>
+      <div class="agent oracle"><div class="tile">O</div><div class="name">Oracle</div><div class="role">Analyze & Trade Markets</div></div>
+      <div class="agent nexus"><div class="tile">N</div><div class="name">Nexus</div><div class="role">Manage & Coordinate</div></div>
+    </div>
+  </div>
+</body>
+</html>

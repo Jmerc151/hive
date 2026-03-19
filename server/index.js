@@ -7307,13 +7307,10 @@ app.get('/api/smoke-tests/status', (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
-// ── Serve static frontend ─────────────────────────
+// ── Serve static frontend (static assets only — catch-all moved to end of file) ──
 const distPath = join(__dirname, '..', 'dist')
 if (existsSync(distPath)) {
   app.use(express.static(distPath))
-  app.get('/{*splat}', (req, res) => {
-    res.sendFile(join(distPath, 'index.html'))
-  })
 }
 
 // ── Seed Example Pipeline ─────────────────────────
@@ -10081,6 +10078,13 @@ try {
   const cleanOld = db.prepare("DELETE FROM tasks WHERE status IN ('backlog', 'todo') AND created_at < datetime('now', '-7 days') AND spawned_by IS NOT NULL AND spawned_by != ''").run()
   if (cleanOld.changes > 0) console.log(`🧹 Cleaned ${cleanOld.changes} old auto-spawned tasks`)
 } catch (e) { console.error('Cleanup error:', e.message) }
+
+// ── SPA catch-all (MUST be last route — all /api routes must be defined above) ──
+if (existsSync(distPath)) {
+  app.get('/{*splat}', (req, res) => {
+    res.sendFile(join(distPath, 'index.html'))
+  })
+}
 
 const PORT = process.env.API_PORT || process.env.PORT || 3002
 const server = app.listen(PORT, '0.0.0.0', () => {

@@ -1,0 +1,368 @@
+export const BASE = import.meta.env.VITE_API_URL || '/api'
+export const API_KEY = import.meta.env.VITE_API_KEY || localStorage.getItem('hive_api_key') || ''
+
+// Session token (set after login)
+export function getSessionToken() {
+  return localStorage.getItem('hive_session_token') || ''
+}
+export function setSessionToken(token) {
+  if (token) localStorage.setItem('hive_session_token', token)
+  else localStorage.removeItem('hive_session_token')
+}
+export function getAuthToken() {
+  return getSessionToken() || API_KEY
+}
+
+async function request(path, options = {}) {
+  const maxRetries = 2
+  let lastError
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const headers = { 'Content-Type': 'application/json' }
+      const token = getAuthToken()
+      if (token) headers['Authorization'] = `Bearer ${token}`
+
+      const res = await fetch(`${BASE}${path}`, {
+        headers,
+        ...options,
+        body: options.body ? JSON.stringify(options.body) : undefined
+      })
+
+      if (res.status === 401) {
+        // If we had a session token, it's expired — clear and reload to show login
+        if (getSessionToken()) {
+          setSessionToken(null)
+          window.location.reload()
+          throw new Error('Session expired')
+        }
+        // Fallback: prompt for API key
+        const key = prompt('Enter your Hive API key:')
+        if (key) {
+          localStorage.setItem('hive_api_key', key)
+          window.location.reload()
+        }
+        throw new Error('Unauthorized')
+      }
+
+      // Don't retry 4xx client errors (except 429)
+      if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+        const data = await res.json().catch(() => ({}))
+        throw Object.assign(new Error(data.error || `Request failed: ${res.status}`), { status: res.status })
+      }
+
+      // Retry 5xx and 429 (rate limit)
+      if (!res.ok) {
+        throw Object.assign(new Error(`Server error: ${res.status}`), { status: res.status, retryable: true })
+      }
+
+      return await res.json()
+    } catch (err) {
+      lastError = err
+      if (attempt < maxRetries && (err.retryable || err.name === 'TypeError')) {
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)))
+        continue
+      }
+      throw err
+    }
+  }
+  throw lastError
+}
+
+export const api = {
+  // Agents
+  getAgents: () => request('/agents'),
+
+  // Tasks
+  getTasks: () => request('/tasks'),
+  createTask: (data) => request('/tasks', { method: 'POST', body: data }),
+  updateTask: (id, data) => request(`/tasks/${id}`, { method: 'PATCH', body: data }),
+  deleteTask: (id) => request(`/tasks/${id}`, { method: 'DELETE' }),
+  runTask: (id) => request(`/tasks/${id}/run`, { method: 'POST' }),
+  getTaskLogs: (id) => request(`/tasks/${id}/logs`),
+
+  // Agent control
+  stopAgent: (id) => request(`/agents/${id}/stop`, { method: 'POST' }),
+
+  // Stats
+  getStats: () => request('/stats'),
+
+  // Chat
+  getMessages: (mode) => request(`/messages${mode ? `?mode=${mode}` : ''}`),
+  sendMessage: (data) => request('/messages', { method: 'POST', body: data }),
+  clearMessages: () => request('/messages', { method: 'DELETE' }),
+  triggerStandup: () => request('/chat/standup', { method: 'POST' }),
+  askChat: async (message) => {
+    const headers = { 'Content-Type': 'application/json' }
+    const chatToken = getAuthToken()
+    if (chatToken) headers['Authorization'] = `Bearer ${chatToken}`
+    const res = await fetch(`${BASE}/chat/ask`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ message })
+    })
+    if (!res.ok) throw new Error(`Chat error: ${res.status}`)
+    return res
+  },
+
+  // Push notifications
+  getVapidKey: () => request('/push/vapid-key'),
+  subscribePush: (subscription) => request('/push/subscribe', { method: 'POST', body: subscription }),
+
+  // Spend & Settings
+  getSpend: () => request('/spend'),
+  getSettings: () => request('/settings'),
+  updateSettings: (data) => request('/settings', { method: 'PATCH', body: data }),
+
+  // Prompt Optimizer
+  optimizePrompt: (id) => request(`/tasks/${id}/optimize`, { method: 'POST' }),
+
+  // Bot Generator
+  getBotSuggestions: () => request('/bot-suggestions'),
+  refreshBotSuggestions: () => request('/bot-suggestions/refresh', { method: 'POST' }),
+  dismissSuggestion: (id) => request(`/bot-suggestions/${id}`, { method: 'DELETE' }),
+  downloadBot: async (taskId) => {
+    const headers = {}
+    const dlToken = getAuthToken()
+    if (dlToken) headers['Authorization'] = `Bearer ${dlToken}`
+    const res = await fetch(`${BASE}/tasks/${taskId}/download`, { headers })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Download failed' }))
+      throw new Error(err.error || `Download failed: ${res.status}`)
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const filename = res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1] || 'bot-package.zip'
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  },
+
+  // Task Files
+  getTaskFiles: (id) => request(`/tasks/${id}/files`),
+
+  // Network Graph (BUILD 2)
+  getGraphNodes: () => request('/graph/nodes'),
+  getGraphEdges: (range) => request(`/graph/edges?range=${range || '24h'}`),
+
+  // Analytics (BUILD 3)
+  getAnalyticsSpend: (range, agent) => request(`/analytics/spend?range=${range || '7d'}${agent ? '&agent=' + agent : ''}`),
+  getSpendByTask: (limit) => request(`/analytics/spend/by-task?limit=${limit || 50}`),
+  getAgentsSummary: (range) => request(`/analytics/agents/summary?range=${range || '30d'}`),
+
+  // Intel Feed (BUILD 4)
+  getIntel: (params) => {
+    const clean = params ? Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null)) : null
+    return request(`/intel${clean && Object.keys(clean).length ? '?' + new URLSearchParams(clean) : ''}`)
+  },
+  updateIntelStatus: (id, status) => request(`/intel/${id}/status`, { method: 'PATCH', body: { status } }),
+
+  // Command Bar (BUILD 5)
+  parseCommand: (text) => request('/commands/parse', { method: 'POST', body: { text } }),
+
+  // Skills V2 (BUILD 6)
+  getSkillsV2: (params) => {
+    const clean = params ? Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')) : null
+    return request(`/skills${clean && Object.keys(clean).length ? '?' + new URLSearchParams(clean) : ''}`)
+  },
+  getSkillDetail: (slug) => request(`/skills/${slug}`),
+  createSkillV2: (data) => request('/skills', { method: 'POST', body: data }),
+  updateSkillV2: (slug, data) => request(`/skills/${slug}`, { method: 'PUT', body: data }),
+  deleteSkillV2: (slug) => request(`/skills/${slug}`, { method: 'DELETE' }),
+  getAgentSkillsV2: (agentId) => request(`/agents/${agentId}/skills-v2`),
+  assignSkill: (agentId, slug) => request(`/agents/${agentId}/skills-v2/${slug}`, { method: 'POST' }),
+  unassignSkill: (agentId, slug) => request(`/agents/${agentId}/skills-v2/${slug}`, { method: 'DELETE' }),
+  toggleSkillV2: (agentId, slug, data) => request(`/agents/${agentId}/skills-v2/${slug}`, { method: 'PATCH', body: data }),
+
+  // Projects V2 (Roadmap)
+  getProjectsV2: () => request('/projects-v2'),
+  getProjectV2: (id) => request(`/projects-v2/${id}`),
+  createProjectV2: (data) => request('/projects-v2', { method: 'POST', body: data }),
+  updateProjectV2: (id, data) => request(`/projects-v2/${id}`, { method: 'PATCH', body: data }),
+  deleteProjectV2: (id) => request(`/projects-v2/${id}`, { method: 'DELETE' }),
+  addMilestone: (projectId, data) => request(`/projects-v2/${projectId}/milestones`, { method: 'POST', body: data }),
+  updateMilestone: (id, data) => request(`/milestones/${id}`, { method: 'PATCH', body: data }),
+  deleteMilestone: (id) => request(`/milestones/${id}`, { method: 'DELETE' }),
+  generateRoadmap: (projectId) => request(`/projects-v2/${projectId}/generate-roadmap`, { method: 'POST' }),
+  executeMilestone: (id) => request(`/milestones/${id}/execute`, { method: 'POST' }),
+
+  // Scorecards
+  getScorecard: (agentId) => request(`/agents/${agentId}/scorecard`),
+  getScoreboards: () => request('/scorecards'),
+
+  // Approval Gates
+  approveTask: (id) => request(`/tasks/${id}/approve`, { method: 'POST' }),
+  rejectTask: (id) => request(`/tasks/${id}/reject`, { method: 'POST' }),
+
+  // Traces
+  getTraces: (id) => request(`/tasks/${id}/traces`),
+
+  // Pipelines
+  getPipelines: () => request('/pipelines'),
+  createPipeline: (data) => request('/pipelines', { method: 'POST', body: data }),
+  updatePipeline: (id, data) => request(`/pipelines/${id}`, { method: 'PATCH', body: data }),
+  deletePipeline: (id) => request(`/pipelines/${id}`, { method: 'DELETE' }),
+  runPipeline: (id) => request(`/pipelines/${id}/run`, { method: 'POST' }),
+  replayPipeline: (id, fromStep, modifiedInput) => request(`/pipelines/${id}/replay`, { method: 'POST', body: { from_step: fromStep, modified_input: modifiedInput } }),
+
+  // Revenue
+  getRevenue: (params) => request(`/revenue${params ? '?' + new URLSearchParams(params) : ''}`),
+  createRevenue: (data) => request('/revenue', { method: 'POST', body: data }),
+  deleteRevenue: (id) => request(`/revenue/${id}`, { method: 'DELETE' }),
+  getRevenueSummary: () => request('/revenue/summary'),
+
+  // Event Triggers
+  getTriggers: () => request('/triggers'),
+  createTrigger: (data) => request('/triggers', { method: 'POST', body: data }),
+  updateTrigger: (id, data) => request(`/triggers/${id}`, { method: 'PATCH', body: data }),
+  deleteTrigger: (id) => request(`/triggers/${id}`, { method: 'DELETE' }),
+
+  // A/B Testing
+  abTest: (taskId, data) => request(`/tasks/${taskId}/ab-test`, { method: 'POST', body: data }),
+
+  // Agent Skills
+  getSkills: (agentId) => request(`/agents/${agentId}/skills`),
+  createSkill: (agentId, data) => request(`/agents/${agentId}/skills`, { method: 'POST', body: data }),
+  updateSkill: (id, data) => request(`/skills/${id}`, { method: 'PATCH', body: data }),
+  deleteSkill: (id) => request(`/skills/${id}`, { method: 'DELETE' }),
+
+  // Market Data
+  getQuote: (symbol) => request(`/market/quote/${symbol}`),
+  getHistory: (symbol, params) => request(`/market/history/${symbol}?${new URLSearchParams(params || {})}`),
+  getIndicators: (symbol) => request(`/market/indicators/${symbol}`),
+  searchSymbols: (q) => request(`/market/search?q=${q}`),
+
+  // Trading
+  getTradingAccount: () => request('/trading/account'),
+  getPositions: () => request('/trading/positions'),
+  placeOrder: (data) => request('/trading/orders', { method: 'POST', body: data }),
+  getOrders: (status) => request(`/trading/orders?status=${status || 'all'}`),
+  cancelOrder: (id) => request(`/trading/orders/${id}/cancel`, { method: 'POST' }),
+  closePosition: (symbol) => request(`/trading/close/${symbol}`, { method: 'POST' }),
+  closeAllPositions: () => request('/trading/close-all', { method: 'POST' }),
+  getMarketStatus: () => request('/trading/market-status'),
+  getTradeHistory: () => request('/trading/trades'),
+  getTradingConfig: () => request('/trading/config'),
+  updateTradingConfig: (data) => request('/trading/config', { method: 'PATCH', body: data }),
+  getWatchlist: () => request('/trading/watchlist'),
+  addToWatchlist: (data) => request('/trading/watchlist', { method: 'POST', body: data }),
+  removeFromWatchlist: (id) => request(`/trading/watchlist/${id}`, { method: 'DELETE' }),
+  getPortfolioHistory: () => request('/trading/portfolio-history'),
+
+  // Strategies
+  getStrategies: (params) => request(`/strategies${params ? '?' + new URLSearchParams(params) : ''}`),
+  createStrategy: (data) => request('/strategies', { method: 'POST', body: data }),
+  updateStrategy: (id, data) => request(`/strategies/${id}`, { method: 'PATCH', body: data }),
+  deleteStrategy: (id) => request(`/strategies/${id}`, { method: 'DELETE' }),
+  runBacktest: (id, data) => request(`/strategies/${id}/backtest`, { method: 'POST', body: data }),
+  getBacktests: (id) => request(`/strategies/${id}/backtests`),
+  getBacktest: (id) => request(`/backtests/${id}`),
+  deployStrategy: (id) => request(`/strategies/${id}/deploy`, { method: 'POST' }),
+  getDeployments: () => request('/deployments'),
+  pauseDeployment: (id) => request(`/deployments/${id}/pause`, { method: 'POST' }),
+  stopDeployment: (id) => request(`/deployments/${id}/stop`, { method: 'POST' }),
+  getStrategyPerformance: (id) => request(`/strategies/${id}/performance`),
+  getPerformanceLeaderboard: () => request('/performance/leaderboard'),
+
+  // Analysis — Multi-Lens Oracle
+  analyzeSymbol: (symbol) => request(`/analysis/${symbol}`),
+  getTradeConstraints: (symbol, side) => request(`/analysis/${symbol}/constraints?side=${side || 'buy'}`),
+  getTradeDecision: (symbol) => request(`/analysis/${symbol}/decide`, { method: 'POST' }),
+  getEnsemble: (symbol) => request(`/analysis/${symbol}/ensemble`),
+  getPersonas: () => request('/analysis/personas'),
+
+  // Projects
+  getProjects: () => request('/projects'),
+
+  // Deliverables
+  getDeliverables: (params) => request(`/deliverables${params ? '?' + new URLSearchParams(params) : ''}`),
+
+  // History
+  getHistory: (params) => request(`/history${params ? '?' + new URLSearchParams(params) : ''}`),
+
+  // Search
+  search: (q) => request(`/search?q=${encodeURIComponent(q)}`),
+
+  // Pipeline Status
+  getPipelineStatus: (id) => request(`/pipelines/${id}/status`),
+
+  // Proposals
+  getProposals: (status) => request(`/proposals${status ? `?status=${status}` : ''}`),
+  createProposal: (data) => request('/proposals', { method: 'POST', body: data }),
+  updateProposal: (id, data) => request(`/proposals/${id}`, { method: 'PATCH', body: data }),
+  deleteProposal: (id) => request(`/proposals/${id}`, { method: 'DELETE' }),
+
+  // Task Checkpoints
+  resumeTask: (id) => request(`/tasks/${id}/resume`, { method: 'POST' }),
+  approveContinue: (id) => request(`/tasks/${id}/approve-continue`, { method: 'POST' }),
+  rejectContinue: (id) => request(`/tasks/${id}/reject-continue`, { method: 'POST' }),
+
+  // Eval Harness
+  getEvalCases: () => request('/eval/cases'),
+  createEvalCase: (data) => request('/eval/cases', { method: 'POST', body: data }),
+  deleteEvalCase: (id) => request(`/eval/cases/${id}`, { method: 'DELETE' }),
+  runEval: (caseId) => request(`/eval/run/${caseId}`, { method: 'POST' }),
+  runAllEvals: () => request('/eval/run-all', { method: 'POST' }),
+  getEvalHistory: (caseId, limit) => request(`/eval/history?${caseId ? 'case_id=' + caseId + '&' : ''}limit=${limit || 50}`),
+
+  // MCP Servers
+  getMCPServers: () => request('/mcp/servers'),
+  addMCPServer: (data) => request('/mcp/servers', { method: 'POST', body: data }),
+  deleteMCPServer: (id) => request(`/mcp/servers/${id}`, { method: 'DELETE' }),
+  testMCPServer: (id) => request(`/mcp/servers/${id}/test`, { method: 'POST' }),
+  getMCPTools: () => request('/mcp/tools'),
+
+  // Semantic Memory
+  searchMemory: (query, agentId, topK) => request(`/memory/search?query=${encodeURIComponent(query)}${agentId ? '&agent_id=' + agentId : ''}${topK ? '&top_k=' + topK : ''}`),
+  getMemoryEntries: (agentId, limit) => request(`/memory/entries?${agentId ? 'agent_id=' + agentId + '&' : ''}limit=${limit || 50}`),
+  deleteMemoryEntry: (id) => request(`/memory/${id}`, { method: 'DELETE' }),
+
+  // Scheduled Jobs
+  getScheduledJobs: () => request('/scheduled-jobs'),
+  createScheduledJob: (data) => request('/scheduled-jobs', { method: 'POST', body: data }),
+  updateScheduledJob: (id, data) => request(`/scheduled-jobs/${id}`, { method: 'PATCH', body: data }),
+  deleteScheduledJob: (id) => request(`/scheduled-jobs/${id}`, { method: 'DELETE' }),
+
+  // OTLP Trace Export
+  getOTLPTrace: (taskId) => request(`/traces/${taskId}/otlp`),
+
+  // Guardrail Events
+  getGuardrailEvents: (limit) => request(`/guardrails/events?limit=${limit || 50}`),
+
+  // Skill Import/Export
+  exportSkill: (slug) => `${BASE}/skills/${slug}/export?token=${getAuthToken()}`,
+  importSkill: (content) => request('/skills/import', { method: 'POST', body: { content } }),
+  importSkillUrl: (url) => request('/skills/import-url', { method: 'POST', body: { url } }),
+
+  // Agent Sandbox
+  getAgentPrompt: (agentId) => request(`/agents/${agentId}/prompt`),
+  runSandbox: (data) => request('/sandbox/run', { method: 'POST', body: data }),
+
+  // Knowledge Base (RAG)
+  getKnowledge: () => request('/knowledge'),
+  addKnowledge: (data) => request('/knowledge', { method: 'POST', body: data }),
+  deleteKnowledge: (id) => request(`/knowledge/${id}`, { method: 'DELETE' }),
+  getKnowledgeChunks: (id) => request(`/knowledge/${id}/chunks`),
+  searchKnowledge: (query, topK) => request('/knowledge/search', { method: 'POST', body: { query, topK } }),
+  importKnowledgeUrl: (url, title) => request('/knowledge/import-url', { method: 'POST', body: { url, title } }),
+
+  // A2A Protocol
+  getA2AAgents: () => request('/a2a/agents'),
+  addA2AAgent: (data) => request('/a2a/agents', { method: 'POST', body: data }),
+  deleteA2AAgent: (id) => request(`/a2a/agents/${id}`, { method: 'DELETE' }),
+  testA2AAgent: (id) => request(`/a2a/agents/${id}/test`, { method: 'POST' }),
+  callA2AAgent: (url, message) => request('/a2a/call', { method: 'POST', body: { agent_url: url, message } }),
+
+  // Auth
+  login: (username, password) => request('/auth/login', { method: 'POST', body: { username, password } }),
+  logout: () => request('/auth/logout', { method: 'POST' }),
+  getMe: () => request('/auth/me'),
+  getUsers: () => request('/users'),
+  createUser: (data) => request('/users', { method: 'POST', body: data }),
+  updateUser: (id, data) => request(`/users/${id}`, { method: 'PATCH', body: data }),
+  deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),
+}

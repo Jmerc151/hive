@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@300;400;600&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    overflow: hidden;
+  }
+  .container { text-align: center; }
+  .stats {
+    display: flex;
+    gap: 64px;
+    justify-content: center;
+    margin-bottom: 64px;
+  }
+  .stat-num {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 80px;
+    color: #d4a853;
+    line-height: 1;
+  }
+  .stat-label {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    color: rgba(255,255,255,0.4);
+    font-weight: 300;
+    letter-spacing: 1px;
+  }
+  .integrations {
+    display: flex;
+    gap: 32px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .integration {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    color: rgba(255,255,255,0.25);
+    font-weight: 300;
+  }
+  .integration .dot {
+    color: #2ecc71;
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <div class="stats">
+      <div><div class="stat-num">500+</div><div class="stat-label">Tasks Completed</div></div>
+      <div><div class="stat-num">6</div><div class="stat-label">AI Agents</div></div>
+      <div><div class="stat-num">44</div><div class="stat-label">Skills Installed</div></div>
+      <div><div class="stat-num">50+</div><div class="stat-label">Tools Available</div></div>
+    </div>
+    <div class="integrations">
+      <div class="integration"><span class="dot">&#9679;</span> Stripe</div>
+      <div class="integration"><span class="dot">&#9679;</span> Alpaca Trading</div>
+      <div class="integration"><span class="dot">&#9679;</span> Gumroad</div>
+      <div class="integration"><span class="dot">&#9679;</span> Dev.to</div>
+      <div class="integration"><span class="dot">&#9679;</span> Netlify</div>
+      <div class="integration"><span class="dot">&#9679;</span> Hunter.io</div>
+      <div class="integration"><span class="dot">&#9679;</span> Gmail</div>
+    </div>
+  </div>
+</body>
+</html>
