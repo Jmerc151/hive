@@ -3795,7 +3795,9 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
     }
 
     // Generic preflight: use a cheap LLM call to sanity-check the task
-    if (!task.spawned_by) {
+    // Skip for Oracle trading tasks — they have their own market-hours preflight above
+    const isOracleTrading = agent.id === 'oracle' && (taskText.includes('trad') || taskText.includes('signal') || taskText.includes('position') || taskText.includes('indicator'))
+    if (!task.spawned_by && !isOracleTrading) {
       try {
         const preflightResponse = await callClaude({
           model: 'anthropic/claude-haiku-4-5',
