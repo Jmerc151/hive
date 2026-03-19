@@ -3876,11 +3876,40 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
       }
     }
 
+    // Pre-fetch Oracle's live trading context so it doesn't waste steps on discovery
+    let oracleContext = ''
+    if (agent.id === 'oracle') {
+      try {
+        const [marketOpen, positions, account] = await Promise.all([
+          breakers.alpaca.call(() => broker.isMarketOpen()).catch(() => null),
+          breakers.alpaca.call(() => broker.getPositions()).catch(() => []),
+          breakers.alpaca.call(() => broker.getAccount()).catch(() => null)
+        ])
+        const posStr = positions.length > 0
+          ? positions.map(p => `  ${p.symbol}: ${p.qty} shares @ $${p.avgEntry.toFixed(2)} (P&L: ${p.unrealizedPnl >= 0 ? '+' : ''}$${p.unrealizedPnl.toFixed(2)} / ${p.unrealizedPnlPercent.toFixed(1)}%)`).join('\n')
+          : '  No open positions'
+        oracleContext = `## Live Trading Context (pre-fetched — do NOT re-call these)
+Market open: ${marketOpen?.isOpen ?? 'unknown'}${marketOpen?.nextOpen ? ` | Next open: ${marketOpen.nextOpen}` : ''}${marketOpen?.nextClose ? ` | Closes: ${marketOpen.nextClose}` : ''}
+Account: $${account?.equity?.toFixed(2) || '?'} equity | $${account?.buyingPower?.toFixed(2) || '?'} buying power | Day P&L: ${account?.dayPnl >= 0 ? '+' : ''}$${account?.dayPnl?.toFixed(2) || '?'}
+Current positions (${positions.length}/5 max):
+${posStr}
+
+Strategy: RSI Mean Reversion on SPY, QQQ, AAPL, NVDA, MSFT, TSLA, AMZN
+Rules: RSI<38 → BUY $500 | RSI>68 + held → SELL | Bollinger pb<0.2 + RSI<45 → BUY $500
+Constraints: Max 5 positions, max $1000/position, max 3 trades/day, 5% stop-loss
+
+SKIP is_market_open, get_positions, get_account — already provided above.
+Go DIRECTLY to get_indicators for each symbol, then trade.\n\n`
+      } catch (e) {
+        console.log(`⚠️ Oracle context pre-fetch failed (proceeding without): ${e.message}`)
+      }
+    }
+
     const initialPrompt = `Task: ${task.title}
 
 Details: ${task.description || 'No additional details.'}
 
-${parentContext}${agentMemory ? `## Your Memory (learnings from past tasks):\n${agentMemory.slice(-2000)}\n` : ''}
+${oracleContext}${parentContext}${agentMemory ? `## Your Memory (learnings from past tasks):\n${agentMemory.slice(-2000)}\n` : ''}
 
 ## MANDATORY: Use Tools — Do NOT Just Write Text
 
