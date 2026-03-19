@@ -389,7 +389,9 @@ async function callClaude(opts, agentId, taskId, externalSignal) {
     const msg = response.choices?.[0]?.message || {}
 
     // Parse native tool_calls if present
-    const nativeToolCalls = (msg.tool_calls || []).map(tc => ({
+    const rawToolCalls = msg.tool_calls || []
+    const nativeToolCalls = rawToolCalls.map(tc => ({
+      id: tc.id,
       name: tc.function?.name,
       args: (() => { try { return JSON.parse(tc.function?.arguments || '{}') } catch { return {} } })(),
       raw: `${tc.function?.name}(${tc.function?.arguments || '{}'})`,
@@ -400,6 +402,7 @@ async function callClaude(opts, agentId, taskId, externalSignal) {
       content: [{ type: 'text', text: msg.content || '' }],
       usage: { input_tokens: tokensIn, output_tokens: tokensOut },
       nativeToolCalls,
+      rawToolCalls,
     }
   } catch (err) {
     if (err.name === 'AbortError' || err.message?.includes('aborted')) {
@@ -3829,7 +3832,7 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
     const agentMemory = readAgentMemory(agent.id)
     const MAX_STEPS = parseInt(db.prepare("SELECT value FROM settings WHERE key = 'max_react_steps'").get()?.value || '8')
     const STEP_TIMEOUT = parseInt(db.prepare("SELECT value FROM settings WHERE key = 'step_timeout_ms'").get()?.value || '300000')
-    const MAX_TOOLS_PER_STEP = 5
+    const MAX_TOOLS_PER_STEP = 8
     let messages = []
     let fullOutput = ''
     let totalToolCalls = 0
@@ -4002,7 +4005,13 @@ START WITH TOOL CALLS NOW.`
 
       const stepOutput = response.content.map(b => b.type === 'text' ? b.text : '').join('\n')
       fullOutput += `\n--- Step ${step + 1} ---\n${stepOutput}`
-      messages.push({ role: 'assistant', content: stepOutput })
+      // For native function calling, include tool_calls in assistant message so model keeps context
+      const hasNativeTools = response.rawToolCalls && response.rawToolCalls.length > 0
+      if (hasNativeTools) {
+        messages.push({ role: 'assistant', content: stepOutput || null, tool_calls: response.rawToolCalls })
+      } else {
+        messages.push({ role: 'assistant', content: stepOutput })
+      }
 
       // Log trace
       db.prepare('INSERT INTO task_traces (task_id, agent_id, step, type, input_summary, output_summary, tokens_in, tokens_out, cost, duration_ms, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -4041,7 +4050,6 @@ START WITH TOOL CALLS NOW.`
         const dedupedCalls = toolCalls.filter(tc => {
           const sig = `${tc.name}:${JSON.stringify(tc.args || {})}`
           if (previousToolCalls.has(sig)) return false
-          previousToolCalls.add(sig)
           return true
         })
         if (dedupedCalls.length < toolCalls.length) {
@@ -4054,6 +4062,10 @@ START WITH TOOL CALLS NOW.`
           }
         }
         const callsToRun = dedupedCalls.slice(0, MAX_TOOLS_PER_STEP)
+        // Only mark tool calls as "previous" after they're selected for execution
+        for (const tc of callsToRun) {
+          previousToolCalls.add(`${tc.name}:${JSON.stringify(tc.args || {})}`)
+        }
         totalToolCalls += callsToRun.length
         for (const tc of callsToRun) { toolUsageCounts[tc.name] = (toolUsageCounts[tc.name] || 0) + 1 }
 
@@ -4109,7 +4121,18 @@ START WITH TOOL CALLS NOW.`
           step-- // Will be incremented by the for loop, net zero
         }
 
-        messages.push({ role: 'user', content: resultsText.trim() + '\n\nContinue working on the task with these results.' })
+        // For native function calling, send results as role:tool messages with matching IDs
+        if (hasNativeTools && callsToRun.some(tc => tc.native && tc.id)) {
+          for (let i = 0; i < results.length; i++) {
+            const r = results[i]
+            const tc = callsToRun[i]
+            if (tc?.native && tc?.id) {
+              messages.push({ role: 'tool', tool_call_id: tc.id, content: r.error ? `TOOL FAILED: ${r.error}` : (r.resultStr || '') })
+            }
+          }
+        } else {
+          messages.push({ role: 'user', content: resultsText.trim() + '\n\nContinue working on the task with these results.' })
+        }
         // Save checkpoint after tool execution
         db.prepare('INSERT OR REPLACE INTO task_checkpoints (task_id, step, messages_json, tool_counts_json, full_output) VALUES (?, ?, ?, ?, ?)')
           .run(task.id, step, JSON.stringify(messages), JSON.stringify(toolUsageCounts), fullOutput)
