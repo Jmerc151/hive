@@ -2620,7 +2620,7 @@ async function updateAgentMemory(agent, task, output) {
     const currentMemory = readAgentMemory(agent.id)
 
     const response = await callClaude({
-      model: getSmartModel(agent.id),
+      model: 'anthropic/claude-haiku-4-5', // Always Haiku — memory curation doesn't need Sonnet
       max_tokens: 1024,
       system: `You are a memory curator for ${agent.name} (${agent.role}). Extract the most important learnings, decisions, and context from completed work that would help this agent perform better on future tasks.
 
@@ -2791,7 +2791,7 @@ async function generateFollowUpTasks(completedTask, agent, output) {
     const taskContext = allTasks.map(t => `- [${t.status}] ${t.title}`).join('\n')
 
     const response = await callClaude({
-      model: getSmartModel('nexus'),
+      model: 'anthropic/claude-haiku-4-5', // Haiku — simple JSON task generation
       max_tokens: 300,
       system: `You are a task planner for Hive, an AI agent team. Generate exactly 1 follow-up task.
 
@@ -3076,7 +3076,7 @@ async function reviewCompletedWork(completedTask, agent, output) {
       : 'NO TOOLS USED — text-only output'
 
     const response = await callClaude({
-      model: getSmartModel('nexus'),
+      model: 'anthropic/claude-haiku-4-5', // Haiku — QA scoring is mechanical, doesn't need Sonnet
       max_tokens: 2048,
       system: `You are Nexus, the quality reviewer for Hive. You evaluate agent work PRIMARILY on whether they used tools to produce REAL results.
 
@@ -3203,7 +3203,7 @@ async function troubleshootAndRetry(failedTask, agent, errorMsg) {
       .run(failedTask.id, 'system', `Troubleshooting failure (attempt ${retries + 1}/${MAX_RETRIES})...`, 'info')
 
     const response = await callClaude({
-      model: getSmartModel('nexus'),
+      model: 'anthropic/claude-haiku-4-5', // Haiku — failure diagnosis is simple classification
       max_tokens: 1024,
       system: `You are a troubleshooter for Hive, a personal AI agent team. A task just failed. Your job is to:
 1. Diagnose WHY it failed based on the error message and logs
@@ -6060,7 +6060,7 @@ app.post('/api/chat/standup', async (req, res) => {
 
   try {
     const response = await callClaude({
-      model: getSmartModel('nexus'),
+      model: 'anthropic/claude-haiku-4-5', // Haiku — creative writing doesn't need Sonnet
       max_tokens: 1024,
       messages: [{
         role: 'user',
@@ -6959,6 +6959,7 @@ app.post('/api/projects-v2/:id/generate-roadmap', async (req, res) => {
 
   try {
     const response = await callClaude({
+      model: 'anthropic/claude-haiku-4-5', // Was missing model — defaulted to expensive Sonnet
       system: `You are a project planner for Hive, an AI agent platform with 6 agents:
 ${agentsJson}
 
