@@ -3766,7 +3766,7 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
     // GitHub tasks: verify there are actually issues to fix before burning tokens
     if (taskText.includes('fix next open issue') || taskText.includes('fix open issue')) {
       try {
-        const ghTool = TOOLS.find(t => t.name === 'github_get_issues')
+        const ghTool = TOOL_REGISTRY.find(t => t.name === 'github_get_issues')
         if (ghTool) {
           const frontendIssues = await ghTool.execute({ repo: 'Jmerc151/sous-frontend', state: 'open' })
           const backendIssues = await ghTool.execute({ repo: 'Jmerc151/sous-backend', state: 'open' })
@@ -9827,37 +9827,37 @@ const masterPipelines = [
     name: 'Ember Dev Daily',
     description: 'Scout researches restaurant pain point → Forge implements fix. Runs 9am weekdays.',
     steps: [
-      { position: 1, agent_id: 'scout', prompt_template: 'Research one specific restaurant owner pain point or competitor feature gap. Find a real example with source URL. Return JSON with finding and recommended Ember feature.' },
-      { position: 2, agent_id: 'forge', prompt_template: 'Read Scout\'s finding. Check Ember GitHub issues for related existing work. If finding maps to a quick improvement (< 2 hours), implement it and open a PR. If complex, create a GitHub issue for tracking.\n\nScout\'s finding:\n{{previous_output}}' }
+      { position: 1, agent_id: 'scout', prompt_template: 'Step 1: recall_memory for past Ember research. Step 2: web_search for ONE specific restaurant pain point from r/KitchenConfidential, r/restaurantowners, or G2 reviews of Toast/7shifts/meez. Step 3: Identify how Ember could solve this. REQUIRED OUTPUT: JSON {pain_point, source_url, evidence_quote, ember_feature, priority, implementation_notes}. If you cannot find a real source URL, the task has FAILED.' },
+      { position: 2, agent_id: 'forge', prompt_template: 'You MUST ship code today. Step 1: Read Scout\'s finding below. Step 2: github_get_issues on Jmerc151/sous-frontend AND Jmerc151/sous-backend. Step 3: github_list_files to understand current code. Step 4: github_read_file on relevant files. Step 5: github_create_branch. Step 6: github_write_file with your changes. Step 7: github_create_pr with clear description linking to Scout\'s finding. If Scout\'s finding doesn\'t map to a code change, pick the top priority from Forge missions (P0-P4) instead. REQUIRED OUTPUT: PR URL or github_create_issue URL. Zero PRs = task FAILED.\n\nScout\'s finding:\n{{previous_output}}' }
     ]
   },
   {
     name: 'AgentForge Build',
     description: 'Forge builds next AgentForge phase. Runs 10am Mon/Wed/Fri.',
     steps: [
-      { position: 1, agent_id: 'forge', prompt_template: 'Check current AgentForge repo state with github_list_files on Jmerc151/agentforge. Identify what\'s been built vs what\'s next in the build order (Phase 1→5 in your mission). Build the next logical piece. Open a PR.' }
+      { position: 1, agent_id: 'forge', prompt_template: 'You MUST open a PR today. Step 1: github_list_files on Jmerc151/agentforge to see current state. Step 2: github_read_file on key files to understand what exists. Step 3: Determine next piece to build from Phase 1→5 order. Step 4: github_create_branch. Step 5: github_write_file with complete, working code (not stubs). Step 6: github_create_pr with description of what was built and what\'s next. REQUIRED OUTPUT: PR URL. Zero PRs = task FAILED.' }
     ]
   },
   {
     name: 'Trading Session',
-    description: 'Oracle checks indicators and executes trades. Runs 9:31am weekdays.',
+    description: 'Oracle checks indicators and executes trades. Runs 9:35am weekdays.',
     steps: [
-      { position: 1, agent_id: 'oracle', prompt_template: 'Check is_market_open. If open: check get_positions for current holdings. Run get_indicators on SPY, QQQ, AAPL, NVDA, MSFT, TSLA, AMZN. Execute any RSI signals found (RSI<32 buy, RSI>72 sell existing position). Log all decisions to memory. Report: positions checked, signals found, trades executed.' }
+      { position: 1, agent_id: 'oracle', prompt_template: 'You MUST place at least one trade today if any signal exists. Step 1: is_market_open (if closed, stop). Step 2: get_positions to check current holdings. Step 3: Run get_indicators on ALL of: SPY, QQQ, AAPL, NVDA, MSFT, TSLA, AMZN. Step 4: For EACH symbol, check signals: RSI < 38 AND not already held → place_order BUY $500. RSI > 68 AND position held → place_order SELL. Price below lower Bollinger Band (pb < 0.2) AND RSI < 45 → place_order BUY $500. Step 5: store_memory with every decision and the data behind it. REQUIRED OUTPUT: Table of all 7 symbols with RSI, Bollinger %B, signal, and action taken. If you placed zero trades, explain exactly why for each symbol.' }
     ]
   },
   {
     name: 'Opportunity Scan',
     description: 'Scout finds AI opportunities → Nexus evaluates. Runs 9am Mondays.',
     steps: [
-      { position: 1, agent_id: 'scout', prompt_template: 'Scan for AI business opportunities this week. Search Product Hunt AI section, r/SideProject, IndieHackers, Acquire.com. Find 3 opportunities with revenue potential. Output JSON: [{business_type, problem, ai_solution, effort, revenue_potential}]' },
-      { position: 2, agent_id: 'nexus', prompt_template: 'Evaluate Scout\'s 3 opportunities. Score each on profitability, speed to revenue, technical fit. Brief each in one paragraph. Create task for Forge to prototype if score > 7.\n\nScout\'s findings:\n{{previous_output}}' }
+      { position: 1, agent_id: 'scout', prompt_template: 'Step 1: recall_memory for past opportunity research. Step 2: web_search Product Hunt AI section, r/SideProject, IndieHackers for businesses that need AI automation. Step 3: For each opportunity found, web_search to validate market size. REQUIRED OUTPUT: JSON array of exactly 3 opportunities: [{business_type, problem, ai_solution, effort_hours, monthly_revenue_potential, evidence_url, competition}]. Every field must have real data from web_search. Made-up data = task FAILED.' },
+      { position: 2, agent_id: 'nexus', prompt_template: 'Score Scout\'s 3 opportunities below. For each: web_search to verify competition and market claims. Score 1-10 on: (a) time to first dollar, (b) revenue potential, (c) fit with Ember/AgentForge/Trading pillars. If any scores > 7, create_task for Forge with specific build instructions. REQUIRED OUTPUT: Scoring table with justification per score. If all < 7, explain why and what to look for next week.\n\nScout\'s findings:\n{{previous_output}}' }
     ]
   },
   {
     name: 'Weekly Sprint',
     description: 'Nexus reviews week and plans next sprint. Runs 6pm Sundays.',
     steps: [
-      { position: 1, agent_id: 'nexus', prompt_template: 'Review all tasks completed this week. Score quality. Identify what moved Ember and AgentForge forward vs what was noise. Create next week\'s priority task list: 3 Forge tasks (Ember improvements), 2 Scout tasks, 1 Quill article, 1 Dealer outreach batch. Create all tasks immediately.' }
+      { position: 1, agent_id: 'nexus', prompt_template: 'Step 1: list_tasks to get this week\'s completed tasks. Step 2: For each, check if it produced a real deliverable (PR, published article, trade placed, email sent). Step 3: Score each 1-10 using your scoring rules. Step 4: create_task for next week — each task MUST have specific deliverables, not vague research. Create: 3 Forge tasks (specific Ember P0-P4 items or AgentForge phases with file names), 2 Scout tasks (specific research targets with expected output format), 1 Quill task (specific article title and platform), 1 Dealer task (specific outreach target). REQUIRED OUTPUT: Week review table (task, agent, score, deliverable produced) + next week\'s task list with expected deliverables.' }
     ]
   }
 ]
@@ -9931,7 +9931,7 @@ function scheduleWeekdayHeartbeat(name, hour, minute, fn) {
 }
 
 scheduleWeekdayHeartbeat('ember-dev-daily', 9, 0, () => runPipelineByName('Ember Dev Daily'))
-scheduleWeekdayHeartbeat('trading-session', 9, 31, () => runPipelineByName('Trading Session'))
+scheduleWeekdayHeartbeat('trading-session', 9, 35, () => runPipelineByName('Trading Session'))
 
 // AgentForge Build — 10am Mon/Wed/Fri
 registerHeartbeat('agentforge-build', 24 * 60 * 60 * 1000, () => {
