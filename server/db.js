@@ -635,7 +635,7 @@ try {
 const defaults = {
   daily_limit_usd: '5.00',
   monthly_limit_usd: '75.00',
-  per_task_token_budget: '131072',
+  per_task_token_budget: '200000',
   max_concurrent_tasks: '4',
   pause_all_agents: 'false',
   qa_reviews_enabled: 'true',
@@ -704,9 +704,9 @@ try {
 // Migration: bump token budget — tasks were hitting ceiling before producing deliverables
 try {
   const currentBudget = db.prepare("SELECT value FROM settings WHERE key = 'per_task_token_budget'").get()?.value
-  if (['16384', '65536'].includes(currentBudget)) {
-    db.prepare("UPDATE settings SET value = '131072' WHERE key = 'per_task_token_budget'").run()
-    console.log('[migration] Bumped per_task_token_budget from', currentBudget, 'to 131072')
+  if (['16384', '65536', '131072'].includes(currentBudget)) {
+    db.prepare("UPDATE settings SET value = '200000' WHERE key = 'per_task_token_budget'").run()
+    console.log('[migration] Bumped per_task_token_budget from', currentBudget, 'to 200000')
   }
 } catch (e) { /* already migrated */ }
 
