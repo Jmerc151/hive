@@ -21,6 +21,21 @@ import sseRoutes from './routes/sse.js'
 import { seedSkills } from '../scripts/seed-skills.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+// ── Load .env file ──────────────────────────────────
+const envPath = join(__dirname, '..', '.env')
+if (existsSync(envPath)) {
+  for (const line of readFileSync(envPath, 'utf8').split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const eq = trimmed.indexOf('=')
+    if (eq === -1) continue
+    const key = trimmed.slice(0, eq)
+    const val = trimmed.slice(eq + 1)
+    if (!process.env[key]) process.env[key] = val
+  }
+}
+
 const app = express()
 
 // ── Structured Logging ────────────────────────────
@@ -3176,7 +3191,7 @@ async function troubleshootAndRetry(failedTask, agent, errorMsg) {
       log('warn', 'max_retries_reached', { taskId: failedTask.id, agentId: agent.id, title: failedTask.title })
       try {
         db.prepare("INSERT OR IGNORE INTO dead_letters (id, task_id, agent_id, error, retries) VALUES (?, ?, ?, ?, ?)").run(uuid(), failedTask.id, agent.id, errorMsg.slice(0, 500), retries)
-        email.sendMail({ subject: `⛔ Hive Dead Letter: ${failedTask.title}`, html: `<p>Task "<b>${failedTask.title}</b>" (${agent.id}) failed ${MAX_RETRIES} times via troubleshooter.</p><p>Error: ${errorMsg.slice(0, 200)}</p>` }).catch(() => {})
+        email.sendEmail({ subject: `⛔ Hive Dead Letter: ${failedTask.title}`, html: `<p>Task "<b>${failedTask.title}</b>" (${agent.id}) failed ${MAX_RETRIES} times via troubleshooter.</p><p>Error: ${errorMsg.slice(0, 200)}</p>` }).catch(() => {})
       } catch {}
       return
     }
@@ -4055,7 +4070,7 @@ START WITH TOOL CALLS NOW.`
           db.prepare("UPDATE tasks SET status = 'paused', updated_at = datetime('now') WHERE id = ?").run(task.id)
           db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
             .run(task.id, agent.id, `Task paused: ${consecutiveFailures} consecutive tool failures`, 'error')
-          try { email.sendNotificationEmail('Task Paused — Tool Failures', `Task "${task.title}" (${agent.name}) paused after ${consecutiveFailures} consecutive tool failures.`).catch(() => {}) } catch {}
+          try { email.sendEmail({ subject: 'Task Paused — Tool Failures', html: `Task "${task.title}" (${agent.name}) paused after ${consecutiveFailures} consecutive tool failures.` }).catch(() => {}) } catch {}
           removeActiveRun(agent.id, task.id)
           traceBus.emit('task:update', { id: task.id, status: 'paused', agent_id: agent.id })
           return
@@ -4382,7 +4397,7 @@ START WITH TOOL CALLS NOW.`
         try {
           db.prepare("INSERT OR IGNORE INTO dead_letters (id, task_id, agent_id, error, retries) VALUES (?, ?, ?, ?, ?)").run(uuid(), task.id, agent.id, errorMsg.slice(0, 500), task.retries || 0)
           log('warn', 'dead_letter_created', { taskId: task.id, agentId: agent.id, error: errorMsg.slice(0, 100) })
-          email.sendMail({ subject: `⛔ Hive Dead Letter: ${task.title}`, html: `<p>Task "<b>${task.title}</b>" (${agent.id}) failed ${MAX_AUTO_RETRIES} times.</p><p>Error: ${errorMsg.slice(0, 200)}</p>` }).catch(() => {})
+          email.sendEmail({ subject: `⛔ Hive Dead Letter: ${task.title}`, html: `<p>Task "<b>${task.title}</b>" (${agent.id}) failed ${MAX_AUTO_RETRIES} times.</p><p>Error: ${errorMsg.slice(0, 200)}</p>` }).catch(() => {})
         } catch {}
       }
     }
@@ -10004,7 +10019,7 @@ async function sendDailyDigest() {
   <p style="color: #6b7280; font-size: 12px;">Spend: $${todaySpend.toFixed(2)} today | $${monthSpend.toFixed(2)} this month</p>
 </div>`
 
-    await email.sendNotificationEmail(`Hive Daily — ${dayName} ${today}`, html)
+    await email.sendEmail({ subject: `Hive Daily — ${dayName} ${today}`, html })
     db.prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('digest_last_sent', ?, datetime('now'))").run(today)
     console.log('📧 Daily digest sent')
   } catch (e) {
@@ -10053,8 +10068,7 @@ registerHeartbeat('ai-services-check', 24 * 60 * 60 * 1000, () => {
 
       // Notify
       try {
-        email.sendNotificationEmail('🚀 AI Services Pipeline Activated',
-          'Ember has 3 paying customers and AgentForge Phase 2 is complete. Scout is now hunting for AI services clients.').catch(() => {})
+        email.sendEmail({ subject: '🚀 AI Services Pipeline Activated', html: 'Ember has 3 paying customers and AgentForge Phase 2 is complete. Scout is now hunting for AI services clients.' }).catch(() => {})
       } catch {}
 
       console.log('🚀 AI Services pipeline activated!')
@@ -10161,7 +10175,7 @@ registerHeartbeat('ember-smoke-test', 30 * 60 * 1000, async () => {
       const notifEmail = getSetting('notification_email')
       if (notifEmail && getSetting('email_enabled') === 'true') {
         try {
-          await email.sendNotificationEmail(`🛡️ ${result.failed} Ember smoke test(s) failed`, `<pre>${body}</pre>`)
+          await email.sendEmail({ subject: `🛡️ ${result.failed} Ember smoke test(s) failed`, html: `<pre>${body}</pre>` })
         } catch (e) { log('error', 'smoke_email_failed', { error: e.message }) }
       }
 
@@ -10218,7 +10232,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 
     if (issues.length > 0) {
       log('error', 'startup_selftest_failed', { issues })
-      try { await email.sendNotificationEmail('⚠️ Hive Startup Issues', `<ul>${issues.map(i => `<li>${i}</li>`).join('')}</ul>`) } catch {}
+      try { await email.sendEmail({ subject: '⚠️ Hive Startup Issues', html: `<ul>${issues.map(i => `<li>${i}</li>`).join('')}</ul>` }) } catch {}
     } else {
       log('info', 'startup_selftest_passed')
     }
