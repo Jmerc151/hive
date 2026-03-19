@@ -3795,6 +3795,8 @@ START WITH TOOL CALLS NOW.`
       messages.push({ role: 'user', content: initialPrompt })
     }
 
+    const previousToolCalls = new Set() // Track tool+args signatures to detect loops
+
     for (let step = startStep; step < MAX_STEPS; step++) {
       if (abortController.signal.aborted) throw new Error('AbortError')
 
@@ -3901,7 +3903,23 @@ START WITH TOOL CALLS NOW.`
       // Execute tool calls (max 5 per step)
       if (toolCalls.length > 0 && step < MAX_STEPS - 1) {
         hadAction = true
-        const callsToRun = toolCalls.slice(0, MAX_TOOLS_PER_STEP)
+        // Dedup: skip tool calls with identical name+args already executed in previous steps
+        const dedupedCalls = toolCalls.filter(tc => {
+          const sig = `${tc.name}:${JSON.stringify(tc.args || {})}`
+          if (previousToolCalls.has(sig)) return false
+          previousToolCalls.add(sig)
+          return true
+        })
+        if (dedupedCalls.length < toolCalls.length) {
+          const skipped = toolCalls.length - dedupedCalls.length
+          db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+            .run(task.id, agent.id, `Skipped ${skipped} duplicate tool call(s) — already executed with same args`, 'warning')
+          if (dedupedCalls.length === 0) {
+            messages.push({ role: 'user', content: 'All tool calls in this step were duplicates of previous calls. You already have these results above. Use the existing results to produce your deliverable instead of re-calling the same tools.' })
+            continue
+          }
+        }
+        const callsToRun = dedupedCalls.slice(0, MAX_TOOLS_PER_STEP)
         totalToolCalls += callsToRun.length
         for (const tc of callsToRun) { toolUsageCounts[tc.name] = (toolUsageCounts[tc.name] || 0) + 1 }
 
@@ -4046,7 +4064,9 @@ START WITH TOOL CALLS NOW.`
     const currentUsage = db.prepare('SELECT tokens_used FROM tasks WHERE id = ?').get(task.id)
     const taskBudgetFinal = task.token_budget || parseInt(getSetting('per_task_token_budget') || '0')
     const hitBudget = taskBudgetFinal > 0 && currentUsage && currentUsage.tokens_used >= taskBudgetFinal
-    const outputTooShort = fullOutput.trim().length < 200
+    // Strip tool result lines from output to measure actual agent-produced content
+    const strippedOutput = fullOutput.replace(/--- Tools \(Step \d+\) ---[\s\S]*?(?=--- Step|$)/g, '').replace(/--- Step \d+ ---/g, '').trim()
+    const outputTooShort = strippedOutput.length < 1000
     if (hitBudget && outputTooShort) {
       // Budget exhausted with no meaningful output — treat as failure, auto-retry
       const retries = task.retries || 0
