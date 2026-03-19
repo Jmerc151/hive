@@ -221,8 +221,8 @@ const AGENT_MODELS = {
   forge:    'anthropic/claude-haiku-4-5',
   quill:    'anthropic/claude-haiku-4-5',
   dealer:   'anthropic/claude-haiku-4-5',
-  oracle:   'anthropic/claude-sonnet-4-5',
-  nexus:    'anthropic/claude-sonnet-4-5',
+  oracle:   'anthropic/claude-haiku-4-5',
+  nexus:    'anthropic/claude-haiku-4-5',
   sentinel: 'anthropic/claude-haiku-4-5',
 }
 function getAgentModel(agentId) {
@@ -3794,33 +3794,30 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
       }
     }
 
-    // Generic preflight: use a cheap LLM call to sanity-check the task
-    // Skip for Oracle trading tasks — they have their own market-hours preflight above
-    const isOracleTrading = agent.id === 'oracle' && (taskText.includes('trad') || taskText.includes('signal') || taskText.includes('position') || taskText.includes('indicator'))
-    if (!task.spawned_by && !isOracleTrading) {
-      try {
-        const preflightResponse = await callClaude({
-          model: 'anthropic/claude-haiku-4-5',
-          max_tokens: 200,
-          system: 'You are a task validator. Reply with ONLY valid JSON: {"proceed":true/false,"reason":"..."}. Assess if this task can produce a concrete deliverable right now. Say false if: the task is vague with no clear deliverable, it duplicates recently completed work, or it requires external conditions that probably aren\'t met (e.g. market hours for trading). Say true if the task has a clear, actionable goal.',
-          messages: [{ role: 'user', content: `Task: ${task.title}\nDescription: ${task.description || 'none'}\nAgent: ${agent.id} (${agent.name})\nCurrent time: ${new Date().toISOString()}` }]
-        }, agent.id, task.id)
-        const preflightText = preflightResponse.content?.map(b => b.text || '').join('') || ''
-        const preflightJson = JSON.parse(preflightText.match(/\{[\s\S]*\}/)?.[0] || '{"proceed":true}')
-        if (!preflightJson.proceed) {
-          const skipMsg = `Preflight rejected: ${preflightJson.reason || 'Task not actionable right now'}`
-          db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
-            .run(task.id, agent.id, skipMsg, 'warning')
-          db.prepare(`UPDATE tasks SET status = 'todo', error = ?, updated_at = datetime('now'), started_at = NULL WHERE id = ?`)
-            .run(skipMsg, task.id)
-          console.log(`⏸️ Preflight rejected "${task.title}": ${preflightJson.reason}`)
-          removeActiveRun(agent.id, task.id)
-          traceBus.emit('task:update', { id: task.id, status: 'todo', agent_id: agent.id })
-          return
-        }
-      } catch (e) {
-        // Preflight failed — proceed anyway, don't block on validation errors
-        console.log(`⚠️ Preflight validation error (proceeding): ${e.message}`)
+    // Rule-based preflight (no LLM call — saves ~$0.005/task)
+    if (!task.spawned_by) {
+      const titleLower = (task.title || '').toLowerCase()
+      const descLower = (task.description || '').toLowerCase()
+      const combined = titleLower + ' ' + descLower
+      // Block vague/empty tasks
+      if (combined.trim().length < 10) {
+        const skipMsg = 'Preflight rejected: Task title + description too short to be actionable'
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)').run(task.id, agent.id, skipMsg, 'warning')
+        db.prepare(`UPDATE tasks SET status = 'todo', error = ?, updated_at = datetime('now'), started_at = NULL WHERE id = ?`).run(skipMsg, task.id)
+        removeActiveRun(agent.id, task.id)
+        traceBus.emit('task:update', { id: task.id, status: 'todo', agent_id: agent.id })
+        return
+      }
+      // Block off-pillar tasks
+      const offPillar = ['healthcare', 'medical', 'hipaa', 'credential validation', 'enterprise outreach']
+      const isOffPillar = offPillar.some(kw => combined.includes(kw))
+      if (isOffPillar) {
+        const skipMsg = 'Preflight rejected: Task is outside the 3 business pillars (Ember, Hive, Trading)'
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)').run(task.id, agent.id, skipMsg, 'warning')
+        db.prepare(`UPDATE tasks SET status = 'todo', error = ?, updated_at = datetime('now'), started_at = NULL WHERE id = ?`).run(skipMsg, task.id)
+        removeActiveRun(agent.id, task.id)
+        traceBus.emit('task:update', { id: task.id, status: 'todo', agent_id: agent.id })
+        return
       }
     }
   } catch (e) {
