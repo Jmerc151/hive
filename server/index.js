@@ -3851,7 +3851,7 @@ START WITH TOOL CALLS NOW.`
         callClaude({
           model: agentModel,
           max_tokens: 4096,
-          system: `## BUSINESS FOCUS — 3 PILLARS ONLY\nAll work must relate to: (1) Ember — restaurant kitchen management SaaS, (2) Hive — this AI agent platform, (3) Trading — Alpaca paper trading strategies.\nDo NOT work on healthcare, enterprise outreach, credential validation, or anything outside these 3 pillars.\n\n` + agent.systemPrompt + toolsPrompt + skillsContext + goalContext + knowledgeContext + `\n\n## DELIVERABLE REQUIREMENT\nYour FINAL step must contain a clear, structured deliverable — the actual result of your work. Not a plan. Not a summary of what you did. The ACTUAL output:\n- Research tasks: Include the data/findings in your response (lists, tables, JSON)\n- Build tasks: Confirm what was built with file paths and key code snippets\n- Content tasks: Include the full written content in your response\n- Trading tasks: Include the analysis table and trade decisions\n- Outreach tasks: Include the contact list with names and details\nIf your task was to "find 50 restaurants" your output must CONTAIN those 50 restaurants. If it was to "write landing page copy" your output must CONTAIN that copy. Never end with "I'll do this next" — deliver it NOW.`,
+          system: `## BUSINESS FOCUS — 3 PILLARS ONLY\nAll work must relate to: (1) Ember — restaurant kitchen management SaaS, (2) Hive — this AI agent platform, (3) Trading — Alpaca paper trading strategies.\nDo NOT work on healthcare, enterprise outreach, credential validation, or anything outside these 3 pillars.\n\n` + agent.systemPrompt + toolsPrompt + skillsContext + goalContext + knowledgeContext + `\n\n## OUTPUT RULES (MANDATORY)\n### Rule 1: NO NARRATION\nNever write "Let me check...", "I'll research...", "Now let me...". These are filler. Instead, USE your tools silently and then WRITE THE ACTUAL CONTENT.\n\n### Rule 2: EVERY STEP must contain useful content\nDo not waste a step describing what you plan to do. Each step should OUTPUT real work:\n- If researching: write findings as you go (bullet points, data, names)\n- If building: show the code or confirm the file paths\n- If writing content: write the actual content in your response\n\n### Rule 3: FINAL STEP = COMPLETE DELIVERABLE\nYour last step must be a structured, complete deliverable. Examples:\n- "Find 10 restaurants" → output a table with 10 real restaurant names, cuisine, location\n- "Write landing page copy" → output the full landing page copy (headlines, sections, CTAs)\n- "Audit codebase" → output a numbered list of issues found with file paths and fixes\n- "Research competitors" → output a comparison table with real company names and data\n\nNever end with "I'll do this next" or "Let me continue." DELIVER THE WORK PRODUCT NOW.\n\n### Rule 4: USE TABLES AND STRUCTURE\nFormat deliverables as markdown tables, numbered lists, or code blocks. Not paragraphs of prose.`,
           messages,
           tools: toolsSchema || undefined,
         }, agent.id, task.id, abortController.signal),
@@ -3865,7 +3865,16 @@ START WITH TOOL CALLS NOW.`
       const traceCost = (traceTokensIn * tracePricing.input) + (traceTokensOut * tracePricing.output)
 
       const stepOutput = response.content.map(b => b.type === 'text' ? b.text : '').join('\n')
-      fullOutput += `\n--- Step ${step + 1} ---\n${stepOutput}`
+      // Filter narration filler from fullOutput — only keep substantive content
+      const narrationPatterns = /^(let me |i'll |i will |now let me |let's |now i'll |i need to |i should |i'm going to |first,? i|next,? i|step \d|okay,? |alright,? |sure,? |great,? )/i
+      const substantiveLines = stepOutput.split('\n').filter(line => {
+        const trimmed = line.trim()
+        if (!trimmed) return false
+        if (narrationPatterns.test(trimmed)) return false
+        return true
+      })
+      const cleanOutput = substantiveLines.join('\n').trim()
+      fullOutput += cleanOutput ? `\n--- Step ${step + 1} ---\n${cleanOutput}` : ''
       messages.push({ role: 'assistant', content: stepOutput })
 
       // Log trace
@@ -3933,11 +3942,20 @@ START WITH TOOL CALLS NOW.`
           })
         }
 
-        // Append tool results summary to fullOutput so users can see what tools returned
+        // Append tool results summary to fullOutput — smart previews by tool type
+        const fileTools = ['github_read_file', 'read_file', 'write_file', 'github_create_file', 'github_update_file']
         const toolResultsSummary = results.map(r => {
           if (r.error) return `❌ ${r.name}: ${r.error.slice(0, 200)}`
-          const preview = (r.resultStr || '').slice(0, 1000)
-          return `✅ ${r.name}: ${preview}`
+          const result = r.resultStr || ''
+          // File tools: just show the path/filename, not raw code
+          if (fileTools.includes(r.name)) {
+            const pathMatch = result.match(/(?:path|file|filename)['":\s]*([^\s'",}]+)/i)
+            return `✅ ${r.name}: ${pathMatch ? pathMatch[1] : '(file operation completed)'}`
+          }
+          // Web search: show more preview (actually useful)
+          if (r.name === 'web_search') return `✅ ${r.name}: ${result.slice(0, 500)}`
+          // All other tools: brief preview
+          return `✅ ${r.name}: ${result.slice(0, 200)}`
         }).join('\n')
         fullOutput += `\n--- Tools (Step ${step + 1}) ---\n${toolResultsSummary}\n`
 
@@ -4000,14 +4018,20 @@ START WITH TOOL CALLS NOW.`
         }
       }
 
-      // On second-to-last step, nudge agent to produce final deliverable
+      // Nudge agent to start producing deliverable with 2 steps left
+      if (step === MAX_STEPS - 3 && totalToolCalls > 0) {
+        messages.push({
+          role: 'user',
+          content: `You have ${MAX_STEPS - step - 1} steps remaining. Start writing your DELIVERABLE now — the actual structured output (table, list, report). Do not narrate. Do not say "let me check." Write the actual findings and results you've gathered so far.`
+        })
+      }
+      // Final step nudge — force deliverable output
       if (step === MAX_STEPS - 2 && totalToolCalls > 0) {
-        const lastOutput = stepOutput.toLowerCase()
-        const hasDeliverable = lastOutput.includes('|') || lastOutput.includes('```') || lastOutput.includes('{') || lastOutput.length > 500
+        const hasDeliverable = stepOutput.includes('|') || stepOutput.includes('```') || stepOutput.includes('{') || stepOutput.length > 800
         if (!hasDeliverable) {
           messages.push({
             role: 'user',
-            content: `You have ONE step remaining. You've gathered data with your tools — now PRODUCE THE DELIVERABLE. Write out the actual result: the list, the content, the analysis, the code. Do not summarize what you did. Output the actual work product NOW.`
+            content: `FINAL STEP. Write your complete deliverable NOW. Format as a markdown table or numbered list. Include all data you found. No narration, no planning, no "let me" — just the work product.`
           })
         }
       }
