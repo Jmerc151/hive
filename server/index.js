@@ -3866,15 +3866,20 @@ START WITH TOOL CALLS NOW.`
 
       const stepOutput = response.content.map(b => b.type === 'text' ? b.text : '').join('\n')
       // Filter narration filler from fullOutput — only keep substantive content
-      const narrationPatterns = /^(let me |i'll |i will |now let me |let's |now i'll |i need to |i should |i'm going to |first,? i|next,? i|step \d|okay,? |alright,? |sure,? |great,? )/i
+      const narrationPatterns = /^(let me |i'll |i will |now (let me|i)|let's |i need to |i should |i'm going to |i am going to |first,? (i|let)|next,? (i|let)|step \d|okay[,.]? |alright[,.]? |sure[,.]? |great[!.]? |perfect[!.]? |excellent[!.]? |good[!.]? |now i|i see |i understand |both repos |the (search|tool|issue|frontend|backend) |i encountered |i apologize )/i
+      const toolCallPattern = /^\[TOOL:/
       const substantiveLines = stepOutput.split('\n').filter(line => {
         const trimmed = line.trim()
         if (!trimmed) return false
         if (narrationPatterns.test(trimmed)) return false
+        if (toolCallPattern.test(trimmed)) return false
         return true
       })
       const cleanOutput = substantiveLines.join('\n').trim()
-      fullOutput += cleanOutput ? `\n--- Step ${step + 1} ---\n${cleanOutput}` : ''
+      // Only add step header if there's real content (skip empty narration-only steps)
+      if (cleanOutput && cleanOutput.length > 20) {
+        fullOutput += `\n${cleanOutput}\n`
+      }
       messages.push({ role: 'assistant', content: stepOutput })
 
       // Log trace
@@ -3942,22 +3947,31 @@ START WITH TOOL CALLS NOW.`
           })
         }
 
-        // Append tool results summary to fullOutput — smart previews by tool type
+        // Append tool results to fullOutput — only show genuinely useful results
+        // Skip noise tools that don't add value to the user-facing output
+        const skipTools = ['recall_memory', 'store_memory', 'github_list_files', 'github_get_issues']
         const fileTools = ['github_read_file', 'read_file', 'write_file', 'github_create_file', 'github_update_file']
-        const toolResultsSummary = results.map(r => {
-          if (r.error) return `❌ ${r.name}: ${r.error.slice(0, 200)}`
+        const usefulResults = results.filter(r => !skipTools.includes(r.name) || r.error).map(r => {
+          if (r.error) return `❌ ${r.name}: ${r.error.slice(0, 150)}`
           const result = r.resultStr || ''
-          // File tools: just show the path/filename, not raw code
+          // File tools: just show the path
           if (fileTools.includes(r.name)) {
             const pathMatch = result.match(/(?:path|file|filename)['":\s]*([^\s'",}]+)/i)
-            return `✅ ${r.name}: ${pathMatch ? pathMatch[1] : '(file operation completed)'}`
+            return pathMatch ? `📄 ${pathMatch[1]}` : null
           }
-          // Web search: show more preview (actually useful)
-          if (r.name === 'web_search') return `✅ ${r.name}: ${result.slice(0, 500)}`
-          // All other tools: brief preview
-          return `✅ ${r.name}: ${result.slice(0, 200)}`
-        }).join('\n')
-        fullOutput += `\n--- Tools (Step ${step + 1}) ---\n${toolResultsSummary}\n`
+          // Trade tools: show key info
+          if (['place_trade', 'get_positions', 'get_account'].includes(r.name)) return `📊 ${r.name}: ${result.slice(0, 300)}`
+          // Web search: useful, show preview
+          if (r.name === 'web_search') return `🔍 ${result.slice(0, 400)}`
+          // Email/publish: show confirmation
+          if (['send_email', 'devto_publish', 'twitter_post', 'stripe_create_link'].includes(r.name)) return `✅ ${r.name}: ${result.slice(0, 200)}`
+          // Everything else: brief
+          return `${r.name}: ${result.slice(0, 150)}`
+        }).filter(Boolean)
+        // Only add tools section if there's something worth showing
+        if (usefulResults.length > 0) {
+          fullOutput += `\n${usefulResults.join('\n')}\n`
+        }
 
         // If 3+ consecutive tool failures, pause task and notify
         if (consecutiveFailures >= 3) {
