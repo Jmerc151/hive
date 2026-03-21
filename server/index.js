@@ -3411,8 +3411,11 @@ async function checkEmberContinuousDev(completedTask) {
       nextDesc = `Forge just submitted work. Review open PRs on Jmerc151/sous-frontend and Jmerc151/sous-backend. Score each PR on correctness, mobile-first, error handling. Create follow-up tasks for any fixes needed. Then create 2 new prioritized tasks for the team.\n\nDELIVERABLE: QA scores and new tasks created.`
     } else if (completedTask.agent_id === 'nexus') {
       nextAgent = 'scout'
-      nextTitle = 'Ember: Find and file 3 new issues'
-      nextDesc = `Review Jmerc151/sous-frontend and Jmerc151/sous-backend for real bugs, UX issues, or missing features. Focus on P0 priorities: Stripe billing, sample data on signup, loading states, mobile touch targets. File 3 specific GitHub issues with file/line references.\n\nDELIVERABLE: 3 GitHub issue URLs.`
+      nextTitle = 'Ember: Find and file 3 new issues or research SLO market'
+      nextDesc = `Two options — pick whichever has more impact right now:
+OPTION A: Review Jmerc151/sous-frontend and Jmerc151/sous-backend for real bugs, UX issues, or missing features. Focus on P0 priorities: Stripe billing, sample data on signup, loading states, mobile touch targets. File 3 specific GitHub issues with file/line references.
+OPTION B: Research San Luis Obispo County restaurants for Ember outreach. Find 5 new independent restaurants (not chains) in SLO, Paso Robles, Pismo Beach, Morro Bay, or Atascadero. Get: name, cuisine, website, Instagram, Google rating, contact info, estimated size.
+\nDELIVERABLE: 3 GitHub issue URLs (Option A) OR JSON array of 5 restaurants (Option B).`
     }
 
     if (!nextAgent) return
@@ -10091,17 +10094,34 @@ Position Ember as: simplest, mobile-first, built for independent restaurants.
 CTA: "Try Ember free at sous-chef.app"
 DELIVERABLE: Published article URL (dev.to) or complete markdown file.` },
 
-    { agent: 'scout', title: 'Ember P1: Research 20 Portland restaurants for outreach', priority: 'medium',
-      desc: `Find 20 independent restaurants in Portland, OR that could use Ember. For each:
-1. Restaurant name and cuisine
+    { agent: 'scout', title: 'Ember P0: Research 20 San Luis Obispo restaurants for outreach', priority: 'critical',
+      desc: `Find 20 independent restaurants in San Luis Obispo, CA that could use Ember. This is our LOCAL market — we live here, so these are restaurants we can walk into and demo in person. For each:
+1. Restaurant name and cuisine type
 2. Website URL
 3. Whether they have online ordering (indicates tech-savvy)
 4. Instagram handle and follower count
 5. Google Maps rating and review count
-6. Contact email or contact form URL
+6. Contact email, phone, or contact form URL
+7. Number of employees (estimate from reviews/photos)
+8. Whether they appear to use any kitchen management software already
 
-Focus on: 10-50 employee restaurants, locally owned (not chains), active social media.
-DELIVERABLE: JSON array of 20 restaurants with all fields. Use web_search tool for each.` },
+Focus on: independently owned (NOT chains), 5-50 employees, active on social media, good Google reviews (4.0+).
+Search: "San Luis Obispo restaurants", "SLO restaurants independent", "best restaurants San Luis Obispo CA"
+Also search surrounding areas: Paso Robles, Atascadero, Pismo Beach, Morro Bay, Arroyo Grande — the whole SLO County restaurant scene.
+
+DELIVERABLE: JSON array of 20 restaurants with all fields populated. Use web_search for each restaurant to get real data.` },
+
+    { agent: 'scout', title: 'Ember P1: Research SLO County restaurant industry landscape', priority: 'high',
+      desc: `Deep research on the San Luis Obispo County restaurant market for Ember sales strategy:
+1. How many restaurants are in SLO County? (search health department permits, Yelp counts)
+2. What's the restaurant turnover rate locally?
+3. What restaurant tech is commonly used here? (Toast, Square, Clover, etc.)
+4. Are there local restaurant associations or groups? (SLO Chamber, Downtown SLO, restaurant owner meetups)
+5. Local food events/festivals where we could demo Ember (SLO Food & Wine, farmers markets)
+6. Local food media/bloggers who could review Ember
+7. Competitor presence: does meez, FreshCheq, or MarketMan have any SLO clients?
+
+DELIVERABLE: Structured report with specific names, URLs, dates, and contact info for each finding. No generic advice — real local data only.` },
   ]
 
   for (const t of emberBacklog) {
