@@ -73,6 +73,13 @@ Trading:  Alpaca paper trading + Yahoo Finance
 Deploy:   AWS Lightsail VM 4GB (PM2, port 3002) + Netlify
 DB:       SQLite (hive.db) — WAL mode, foreign keys ON
 VM IP:    16.145.215.162
+API Key:  2d14429f-beee-4b5b-92d8-b1044c974e41-c287302e-d264-4725-a829-0136e14105b9
+```
+
+### API Access
+Use the API key for all Hive API calls:
+```bash
+curl -s "http://16.145.215.162:3002/api/tasks?token=2d14429f-beee-4b5b-92d8-b1044c974e41-c287302e-d264-4725-a829-0136e14105b9"
 ```
 
 ### Agent Model Routing (via OpenRouter)
