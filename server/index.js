@@ -3378,25 +3378,171 @@ registerHeartbeat('bot-opportunity-scan', 7 * 24 * 60 * 60 * 1000, async () => {
   }
 })
 
-// Ember auto-development: every 6 hours, pick next P0 task and start working
-registerHeartbeat('ember-auto-dev', 6 * 60 * 60 * 1000, async () => {
+// Ember continuous dev: when an Ember task finishes, immediately queue the next one
+// This keeps Ember work flowing 24/7 without waiting for the heartbeat
+async function checkEmberContinuousDev(completedTask) {
+  try {
+    if (!completedTask.title || !completedTask.title.includes('Ember')) return
+    if (!process.env.GITHUB_TOKEN) return
+
+    // Budget check
+    const dailyLimit = parseFloat(getSetting('daily_limit_usd') || '20')
+    if (getTodaySpend() > dailyLimit * 0.9) return
+
+    // Don't pile up — skip if Ember tasks already queued
+    const queued = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo','backlog') AND title LIKE '%Ember%'").get().c
+    if (queued >= 2) return
+
+    // After Scout finds bugs → Forge should fix them
+    // After Forge submits PRs → Nexus should QA them
+    // After Nexus QAs → Scout should find more bugs
+    // This creates a continuous Scout → Forge → Nexus → Scout cycle
+    let nextAgent = null
+    let nextTitle = ''
+    let nextDesc = ''
+
+    if (completedTask.agent_id === 'scout') {
+      nextAgent = 'forge'
+      nextTitle = 'Ember: Fix highest priority open issue with PR'
+      nextDesc = `Scout just filed new issues. Pick the highest priority open issue from Jmerc151/sous-frontend or Jmerc151/sous-backend using github_get_issues. Read the code, create a branch, fix it, and submit a PR.\n\nDELIVERABLE: PR URL that fixes the issue.`
+    } else if (completedTask.agent_id === 'forge') {
+      nextAgent = 'nexus'
+      nextTitle = 'Ember: QA review latest PRs and plan next work'
+      nextDesc = `Forge just submitted work. Review open PRs on Jmerc151/sous-frontend and Jmerc151/sous-backend. Score each PR on correctness, mobile-first, error handling. Create follow-up tasks for any fixes needed. Then create 2 new prioritized tasks for the team.\n\nDELIVERABLE: QA scores and new tasks created.`
+    } else if (completedTask.agent_id === 'nexus') {
+      nextAgent = 'scout'
+      nextTitle = 'Ember: Find and file 3 new issues'
+      nextDesc = `Review Jmerc151/sous-frontend and Jmerc151/sous-backend for real bugs, UX issues, or missing features. Focus on P0 priorities: Stripe billing, sample data on signup, loading states, mobile touch targets. File 3 specific GitHub issues with file/line references.\n\nDELIVERABLE: 3 GitHub issue URLs.`
+    }
+
+    if (!nextAgent) return
+
+    const taskId = uuid()
+    db.prepare("INSERT INTO tasks (id, title, description, priority, agent_id, status, spawned_by) VALUES (?, ?, ?, 'high', ?, 'todo', ?)")
+      .run(taskId, nextTitle, nextDesc, nextAgent, completedTask.id)
+    setTimeout(() => processAgentQueue(nextAgent), 5000)
+    log('info', 'ember_continuous_dev', { from: completedTask.agent_id, to: nextAgent, taskId })
+    console.log(`🔥 Ember continuous: ${completedTask.agent_id} done → queued ${nextTitle} for ${nextAgent}`)
+  } catch (e) {
+    log('error', 'ember_continuous_dev_failed', { error: e.message })
+  }
+}
+
+// Ember auto-development: every 2 hours, ensure there's always Ember work queued
+registerHeartbeat('ember-auto-dev', 2 * 60 * 60 * 1000, async () => {
   try {
     if (!process.env.GITHUB_TOKEN) return
-    // Check spend budget first — only dev when under 80% daily limit
-    const dailyLimit = parseFloat(getSetting('daily_spend_limit') || '5')
-    const todaySpend = Object.values(agents.reduce((acc, a) => { acc[a.id] = getTodaySpend(a.id); return acc }, {})).reduce((s, v) => s + v, 0)
-    if (todaySpend > dailyLimit * 0.8) return
+
+    // Use correct setting key, generous budget for cheap models
+    const dailyLimit = parseFloat(getSetting('daily_limit_usd') || '20')
+    const todaySpend = getTodaySpend()
+    if (todaySpend > dailyLimit * 0.9) return
 
     // Check no Ember tasks already running
     const running = db.prepare("SELECT id FROM tasks WHERE status = 'in_progress' AND title LIKE '%Ember%'").get()
     if (running) return
 
-    // Pick a development task — rotate between repos
+    // Check we don't already have Ember tasks queued
+    const queued = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo','backlog') AND title LIKE '%Ember%'").get().c
+    if (queued >= 3) return
+
+    // Real company dev rotation — specific, deliverable-focused tasks
+    // Each task MUST produce a PR, issue, or concrete artifact
     const devTasks = [
-      { agent: 'scout', title: 'Ember: Audit sous-frontend for issues', desc: 'Use github_list_files and github_read_file to explore Jmerc151/sous-frontend. Look for: missing mobile responsiveness, broken imports, inconsistent styling, unused code, missing error handling. Create GitHub issues for each problem found using github_create_issue with appropriate labels (bug, enhancement, frontend, p0/p1/p2).' },
-      { agent: 'scout', title: 'Ember: Audit sous-backend for issues', desc: 'Use github_list_files and github_read_file to explore Jmerc151/sous-backend. Look for: missing input validation, SQL injection risks, missing error handling, hardcoded values, missing indexes, API inconsistencies. Create GitHub issues for each problem found using github_create_issue.' },
-      { agent: 'forge', title: 'Ember: Fix next open issue', desc: 'Use github_get_issues on Jmerc151/sous-frontend and Jmerc151/sous-backend to find the highest priority open issue. Read the relevant code with github_read_file, create a feature branch with github_create_branch, implement the fix with github_write_file, and create a PR with github_create_pr. Pick bugs and p0 issues first.' },
-      { agent: 'nexus', title: 'Ember: Review recent PRs and plan next sprint', desc: 'Check Jmerc151/sous-frontend and Jmerc151/sous-backend for open issues using github_get_issues. Prioritize them, identify dependencies, and create a task for Forge to implement the highest-impact item. Also review if any existing issues can be closed or are duplicates.' },
+      // Scout: find real bugs and create actionable issues
+      { agent: 'scout', title: 'Ember: Find and file 3 bugs in sous-frontend', desc: `Use github_list_files on Jmerc151/sous-frontend. Read key files: src/App.jsx, src/pages/*.jsx, src/components/*.jsx. Look for REAL bugs:
+- Broken imports or missing dependencies
+- API calls without error handling
+- Missing loading states
+- Hardcoded values that should be configurable
+- Mobile layout breaks (elements without responsive classes)
+- Accessibility issues (missing alt, aria, labels)
+
+For EACH bug found, use github_create_issue with:
+- Clear reproduction steps
+- The exact file and line number
+- Suggested fix approach
+- Label: bug, frontend, p1
+
+DELIVERABLE: 3 GitHub issues created with real file/line references. Output the issue URLs.` },
+
+      { agent: 'scout', title: 'Ember: Find and file 3 bugs in sous-backend', desc: `Use github_list_files on Jmerc151/sous-backend. Read controllers/*.js and routes/*.js. Look for REAL bugs:
+- SQL injection risks (string concatenation in queries)
+- Missing input validation on POST/PUT endpoints
+- Endpoints without auth middleware
+- Missing error responses (bare throw without status code)
+- Race conditions in concurrent requests
+- Missing database indexes for common queries
+
+For EACH bug found, use github_create_issue with:
+- The exact file, line, and vulnerable code snippet
+- Security impact if applicable
+- Suggested fix with code
+- Labels: bug, backend, security/p0/p1
+
+DELIVERABLE: 3 GitHub issues created. Output the issue URLs.` },
+
+      // Forge: fix actual issues with PRs
+      { agent: 'forge', title: 'Ember: Fix highest priority open issue with PR', desc: `1. Use github_get_issues on Jmerc151/sous-frontend AND Jmerc151/sous-backend
+2. Pick the highest priority open issue (p0 > p1 > bug > enhancement)
+3. Read the relevant files with github_read_file to understand the code
+4. Create a feature branch with github_create_branch (name: fix/issue-N-description)
+5. Implement the fix with github_write_file
+6. Create a PR with github_create_pr that:
+   - References the issue number (Fixes #N)
+   - Explains what changed and why
+   - Lists files modified
+
+DELIVERABLE: A merged-ready PR. Output the PR URL. If no open issues exist, create an improvement PR for the most impactful code quality issue you find.` },
+
+      { agent: 'forge', title: 'Ember: Add loading skeletons to Kitchen Bible', desc: `Read Jmerc151/sous-frontend src/pages and src/components to find pages that show raw loading text or empty states.
+1. Create a branch: feature/loading-skeletons
+2. Add Tailwind skeleton components (animate-pulse with bg-gray-200 blocks) to replace "Loading..." text
+3. Every list view and detail view needs a skeleton
+4. Create PR with before/after description
+
+DELIVERABLE: PR with skeleton components. Output the PR URL.` },
+
+      { agent: 'forge', title: 'Ember: Improve mobile touch targets to 44px minimum', desc: `Read Jmerc151/sous-frontend Kitchen Bible components (the staff-facing pages).
+1. Find all interactive elements (buttons, links, tappable items) with height/padding < 44px
+2. Create branch: fix/mobile-touch-targets
+3. Update each element to meet 44px minimum touch target (min-h-[44px] p-3 or similar)
+4. Create PR listing every component updated
+
+DELIVERABLE: PR fixing mobile touch targets. Output the PR URL.` },
+
+      // Nexus: QA and planning
+      { agent: 'nexus', title: 'Ember: QA review all open PRs', desc: `Use github_get_issues with type 'pull' on Jmerc151/sous-frontend and Jmerc151/sous-backend.
+For each open PR:
+1. Read the changed files with github_read_file
+2. Score quality 1-10 on: correctness, mobile-first, error handling, security
+3. If score >= 7, approve with comment via github_create_issue (comment on PR)
+4. If score < 7, list specific fixes needed
+
+DELIVERABLE: QA scores for all open PRs with specific feedback. Create follow-up tasks for Forge if fixes are needed.` },
+
+      { agent: 'nexus', title: 'Ember: Create prioritized sprint backlog', desc: `1. Use github_get_issues on both Jmerc151/sous-frontend and Jmerc151/sous-backend
+2. Review all open issues and current codebase state
+3. Create 5 new specific tasks for Forge, prioritized by user impact:
+   - Each task title starts with "Ember:"
+   - Each description includes exact files to modify and expected outcome
+   - Set priority to high
+   - These should be things a real user would notice
+
+DELIVERABLE: 5 new tasks created in Hive (use the output to describe them). Focus on: Stripe billing, sample data on signup, onboarding flow.` },
+
+      // Quill: content that drives signups
+      { agent: 'quill', title: 'Ember: Write restaurant tech comparison article', desc: `Write a 1500-word article comparing restaurant kitchen management tools: Ember (sous-chef.app) vs meez vs FreshCheq vs paper systems.
+Structure:
+- H1: "Why Your Kitchen Still Runs on Paper (And How to Fix It)"
+- Pain points section with real quotes from r/KitchenConfidential
+- Feature comparison table
+- Ember positioning: simplest, mobile-first, built for small restaurants
+- CTA: "Try Ember free — sous-chef.app"
+
+Publish to dev.to using write_to_devto tool if available, otherwise output the full markdown.
+
+DELIVERABLE: Published article URL or complete markdown ready to publish.` },
     ]
 
     const pick = devTasks[Math.floor(Math.random() * devTasks.length)]
@@ -4251,6 +4397,7 @@ START WITH TOOL CALLS NOW.`
         return autoTasksEnabled ? generateFollowUpTasks(task, agent, fullOutput) : null
       })
       .then(() => checkAutoChain(task, fullOutput))
+      .then(() => checkEmberContinuousDev(task))
       .then(() => {
         // Extract discovered skills from Scout discovery tasks → create proposals
         if (task.agent_id === 'scout' && task.title.startsWith('Discover skills:')) {
@@ -9849,7 +9996,13 @@ function scheduleWeekdayHeartbeat(name, hour, minute, fn) {
   console.log(`📅 ${name} scheduled for ${next.toLocaleString()} (in ${Math.round(delay / 60000)}min)`)
 }
 
+// Ember runs 7 days a week — morning and afternoon sessions
 scheduleWeekdayHeartbeat('ember-dev-daily', 9, 0, () => runPipelineByName('Ember Dev Daily'))
+// Afternoon Ember session — every day including weekends
+registerHeartbeat('ember-dev-afternoon', 24 * 60 * 60 * 1000, () => {
+  const h = new Date().getHours()
+  if (h >= 14 && h <= 16) runPipelineByName('Ember Dev Daily')
+})
 scheduleWeekdayHeartbeat('trading-session', 9, 31, () => runPipelineByName('Trading Session'))
 
 // AgentForge Build — 10am Mon/Wed/Fri
