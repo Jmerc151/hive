@@ -76,12 +76,14 @@ VM IP:    16.145.215.162
 ```
 
 ### Agent Model Routing (via OpenRouter)
-- scout: anthropic/claude-haiku-4-5 (web_search tool still uses perplexity/sonar-pro internally)
-- forge: anthropic/claude-haiku-4-5
-- quill: anthropic/claude-haiku-4-5
-- dealer: anthropic/claude-haiku-4-5
-- oracle: anthropic/claude-sonnet-4-5
-- nexus: anthropic/claude-sonnet-4-5
+- scout: qwen/qwen3-235b-a22b (web_search tool still uses perplexity/sonar-pro internally)
+- forge: qwen/qwen3-235b-a22b
+- quill: qwen/qwen3-235b-a22b
+- dealer: anthropic/claude-haiku-4-5 (sales needs reliable function calling)
+- oracle: deepseek/deepseek-r1-0528 (top reasoning model, 85% cheaper than sonnet)
+- nexus: anthropic/claude-sonnet-4-5 (orchestration needs reliability)
+- sentinel: qwen/qwen3-235b-a22b
+- Fallbacks: qwen3 → qwen-2.5-72b-instruct, deepseek-r1-0528 → deepseek-r1
 
 ### Key Files
 - `server/index.js` — Main Express server (~9000+ lines). All API routes, ReAct loop, spend controls, agent execution, consultations, QA reviews, auto-task generation, heartbeats, pipelines, trading endpoints, skills, guardrails, graceful shutdown, health checks, dead letter queue.

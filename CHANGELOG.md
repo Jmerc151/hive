@@ -1,5 +1,14 @@
 # Hive Changelog
 
+## 2026-03-21 — Chinese Model Integration for Cost Reduction
+
+- **Agent model swap** — Scout, Forge, Quill, Sentinel switched from claude-haiku-4-5 to qwen/qwen3-235b-a22b (~55% cost reduction)
+- **Oracle model swap** — switched from claude-sonnet-4-5 to deepseek/deepseek-r1-0528 (~85% cost reduction, top reasoning model)
+- **Dealer + Nexus unchanged** — kept on Claude for reliable function calling (sales) and orchestration (scoring)
+- **Model fallbacks** — qwen3 falls back to qwen-2.5-72b-instruct, deepseek-r1-0528 falls back to deepseek-r1 when budget-constrained
+- **Cost tracking** — added MODEL_COSTS entries for all new models with accurate OpenRouter pricing
+- **Function calling registry** — all new models registered in SUPPORTS_FUNCTION_CALLING
+
 ## 2026-03-16 — Master Plan: 4-Pillar Agent Refocus + Platform Upgrades
 
 - **4-pillar agent system** — all 6 agents refocused on Ember, AgentForge, Trading, AI Services

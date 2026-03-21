@@ -202,13 +202,13 @@ const openai = new OpenAI({
 
 // ── Agent Model Assignment ──────────────────────────
 const AGENT_MODELS = {
-  scout:    'anthropic/claude-haiku-4-5',
-  forge:    'anthropic/claude-haiku-4-5',
-  quill:    'anthropic/claude-haiku-4-5',
-  dealer:   'anthropic/claude-haiku-4-5',
-  oracle:   'anthropic/claude-sonnet-4-5',
-  nexus:    'anthropic/claude-sonnet-4-5',
-  sentinel: 'anthropic/claude-haiku-4-5',
+  scout:    'qwen/qwen3-235b-a22b',           // was claude-haiku-4-5 — 55% cheaper, tool calling supported
+  forge:    'qwen/qwen3-235b-a22b',           // was claude-haiku-4-5 — strong at coding + agent tasks
+  quill:    'qwen/qwen3-235b-a22b',           // was claude-haiku-4-5 — good writing quality
+  dealer:   'anthropic/claude-haiku-4-5',      // keep — sales outreach needs reliable function calling
+  oracle:   'deepseek/deepseek-r1-0528',       // was claude-sonnet-4-5 — 85% cheaper, top reasoning model
+  nexus:    'anthropic/claude-sonnet-4-5',     // keep — orchestration/scoring needs reliability
+  sentinel: 'qwen/qwen3-235b-a22b',           // was claude-haiku-4-5 — monitoring tasks, cheaper
 }
 function getAgentModel(agentId) {
   return AGENT_MODELS[agentId] || 'anthropic/claude-sonnet-4-5'
@@ -220,6 +220,8 @@ const MODEL_FALLBACKS = {
   'anthropic/claude-haiku-4-5': 'anthropic/claude-haiku-4-5',
   'perplexity/sonar-pro': 'perplexity/sonar-pro',
   'deepseek/deepseek-r1': 'deepseek/deepseek-r1',
+  'qwen/qwen3-235b-a22b': 'qwen/qwen-2.5-72b-instruct',    // fallback to smaller/cheaper Qwen
+  'deepseek/deepseek-r1-0528': 'deepseek/deepseek-r1',       // fallback to older R1
 }
 
 function getSmartModel(agentId) {
@@ -246,6 +248,9 @@ const SUPPORTS_FUNCTION_CALLING = {
   'anthropic/claude-haiku-4-5': true,
   'openai/gpt-4o': true,
   'openai/gpt-4o-mini': true,
+  'qwen/qwen3-235b-a22b': true,
+  'qwen/qwen-2.5-72b-instruct': true,
+  'deepseek/deepseek-r1-0528': true,
   // Text-only models (use [TOOL:name] syntax):
   // 'perplexity/sonar-pro': false
   // 'deepseek/deepseek-r1': false
@@ -255,8 +260,11 @@ const SUPPORTS_FUNCTION_CALLING = {
 const MODEL_COSTS = {
   'perplexity/sonar-pro':         { input: 3 / 1_000_000, output: 15 / 1_000_000 },
   'deepseek/deepseek-r1':         { input: 0.55 / 1_000_000, output: 2.19 / 1_000_000 },
+  'deepseek/deepseek-r1-0528':    { input: 0.45 / 1_000_000, output: 2.15 / 1_000_000 },
   'anthropic/claude-haiku-4-5':   { input: 0.80 / 1_000_000, output: 4 / 1_000_000 },
   'anthropic/claude-sonnet-4-5':  { input: 3 / 1_000_000, output: 15 / 1_000_000 },
+  'qwen/qwen3-235b-a22b':        { input: 0.455 / 1_000_000, output: 1.82 / 1_000_000 },
+  'qwen/qwen-2.5-72b-instruct':  { input: 0.12 / 1_000_000, output: 0.39 / 1_000_000 },
 }
 const DEFAULT_COST = MODEL_COSTS['anthropic/claude-sonnet-4-5']
 
