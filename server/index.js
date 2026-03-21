@@ -2603,7 +2603,32 @@ async function executeTool(toolCall, agentId, taskId) {
     if (resultStr.length > 10000) resultStr = resultStr.slice(0, 10000) + '...(truncated)'
     return { name: toolCall.name, resultStr }
   } catch (e) {
-    return { name: toolCall.name, error: e.message }
+    // ── Smart Error Classification ──────────────────
+    // Classify the error and provide targeted guidance so agents know what to do
+    const errMsg = e.message || ''
+    let classification = 'unknown'
+    let guidance = ''
+
+    if (/rate.?limit|429|too many requests/i.test(errMsg)) {
+      classification = 'rate_limit'
+      guidance = 'RATE LIMITED — wait and try again, or use a different tool/approach.'
+    } else if (/401|403|unauthorized|forbidden|auth/i.test(errMsg)) {
+      classification = 'auth_error'
+      guidance = 'PERMISSION DENIED — you do not have access. Use propose_feature to email the founder asking for access, or try a different approach that does not require this permission.'
+    } else if (/404|not found/i.test(errMsg)) {
+      classification = 'not_found'
+      guidance = 'NOT FOUND — the resource does not exist. Check spelling, check if the repo/file/path is correct. Use github_list_files to find the right path.'
+    } else if (/timeout|timed out|ECONNREFUSED|ENOTFOUND|network/i.test(errMsg)) {
+      classification = 'network_error'
+      guidance = 'NETWORK ERROR — the service is temporarily unavailable. Try again once, then use a different tool or skip this step.'
+    } else if (/Missing required param/i.test(errMsg)) {
+      classification = 'invalid_input'
+      guidance = 'INVALID INPUT — you are missing a required parameter. Check the tool documentation and provide all required fields.'
+    } else {
+      guidance = 'Try a different approach or tool. If repeatedly failing, use propose_feature to email the founder explaining the blocker.'
+    }
+
+    return { name: toolCall.name, error: `${errMsg} [${classification}] ${guidance}`, classification }
   }
 }
 
@@ -3940,11 +3965,71 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
       }
     }
 
+    // ── Self-Correction Context ──────────────────────────
+    // If this task was rejected by proof-of-work and is retrying,
+    // inject WHY it failed so the agent tries a different approach
+    const retries = task.retries || 0
+    const previousError = task.error || ''
+    const previousOutput = (retries > 0 && task.output) ? task.output.slice(0, 1500) : ''
+    let selfCorrectionContext = ''
+    if (retries > 0 && previousError) {
+      selfCorrectionContext = `
+## ⚠️ SELF-CORRECTION REQUIRED (Attempt ${retries + 1})
+
+Your previous attempt at this task was REJECTED. Here's why:
+**Rejection reason:** ${previousError}
+
+${previousOutput ? `**Your previous output (which was not good enough):**\n${previousOutput}\n` : ''}
+
+**What you MUST do differently this time:**
+- If tools returned empty results last time, use COMPLETELY different tools or approaches
+- If you produced text-only output, you MUST use tools to create real artifacts (files, PRs, issues)
+- If you couldn't find issues, READ the actual code with github_read_file and identify problems yourself
+- If you're blocked, use propose_feature to email the founder explaining what you need
+- Do NOT repeat the same approach that failed
+
+`
+    }
+
+    // ── Per-Agent Deliverable Requirements ──────────────
+    const agentDeliverables = {
+      scout: `**YOUR REQUIRED DELIVERABLES (Scout):**
+- You MUST save research to a file using write_file (e.g., "research-topic.md")
+- You MUST create GitHub issues for bugs found using github_create_issue
+- If you find something the founder should know, use propose_feature to email them
+- Text-only research summaries are REJECTED. Save your work to files.`,
+      forge: `**YOUR REQUIRED DELIVERABLES (Forge):**
+- You MUST create a feature branch with github_create_branch
+- You MUST write/modify files with github_write_file
+- You MUST create a PR with github_create_pr
+- Output the PR URL. If no PR = task REJECTED.
+- If blocked (no issues, permissions, etc.), use propose_feature to email the founder.`,
+      nexus: `**YOUR REQUIRED DELIVERABLES (Nexus):**
+- You MUST create follow-up tasks using create_task tool
+- You MUST produce a structured assessment (scores, priorities, action items)
+- Planning without creating tasks = REJECTED.`,
+      quill: `**YOUR REQUIRED DELIVERABLES (Quill):**
+- You MUST save content to a file using write_file
+- You MUST publish if a platform tool is available (devto, etc.)
+- Drafts without saving = REJECTED.`,
+      oracle: `**YOUR REQUIRED DELIVERABLES (Oracle):**
+- You MUST call get_quote and get_indicators before any analysis
+- You MUST place_order if signals are present, or explain with real data why not
+- Analysis without real market data = REJECTED.`,
+      dealer: `**YOUR REQUIRED DELIVERABLES (Dealer):**
+- You MUST send real emails to real addresses found via web_search
+- You MUST log outreach results
+- Plans to "reach out" without sending = REJECTED.`,
+    }
+    const deliverableReqs = agentDeliverables[agent.id] || ''
+
     const initialPrompt = `Task: ${task.title}
 
 Details: ${task.description || 'No additional details.'}
 
-${parentContext}${agentMemory ? `## Your Memory (learnings from past tasks):\n${agentMemory.slice(-2000)}\n` : ''}
+${selfCorrectionContext}${parentContext}${agentMemory ? `## Your Memory (learnings from past tasks):\n${agentMemory.slice(-2000)}\n` : ''}
+
+${deliverableReqs}
 
 ## MANDATORY: Use Tools — Do NOT Just Write Text
 
@@ -3952,9 +4037,10 @@ You MUST produce REAL work using your tools. Text-only responses are REJECTED.
 
 **Your first response MUST start with tool calls.** Examples:
 - Research task → [TOOL:web_search]{"query":"..."}[/TOOL]
-- Build task → [TOOL:write_file]{"path":"...","content":"..."}[/TOOL]
+- Build task → [TOOL:github_read_file]{"repo":"...","path":"..."}[/TOOL] then [TOOL:github_write_file]...
 - Trading task → [TOOL:get_quote]{"symbol":"..."}[/TOOL]
-- Outreach task → [TOOL:send_email]{"to":"...","subject":"...","body":"..."}[/TOOL]
+- Bug hunting → [TOOL:github_list_files]{"repo":"..."}[/TOOL] then [TOOL:github_read_file]...
+- Blocked? → [TOOL:propose_feature]{"subject":"...","body":"..."}[/TOOL]
 
 After getting results, take the NEXT action — don't just summarize. Use [TOOL:create_task] to delegate follow-up work to other agents.
 
@@ -4161,7 +4247,43 @@ START WITH TOOL CALLS NOW.`
           step-- // Will be incremented by the for loop, net zero
         }
 
-        messages.push({ role: 'user', content: resultsText.trim() + '\n\nContinue working on the task with these results.' })
+        // ── Empty Result Pivot Injection ──────────────────
+        // When tools return empty/useless results, inject guidance to pivot strategy
+        // This prevents the "call same tool 8 times" death spiral
+        const emptyResultPivots = []
+        for (const r of results) {
+          if (r.error) continue
+          const resultStr = r.resultStr || ''
+          const isEmpty = resultStr === '[]' || resultStr === '{}' || resultStr === 'null' ||
+            resultStr === '{"results":[]}' || resultStr === '{"issues":[]}' ||
+            resultStr.length < 5 || /^\[\s*\]$/.test(resultStr) || /^\{\s*\}$/.test(resultStr)
+
+          if (isEmpty) {
+            const pivots = {
+              github_get_issues: `github_get_issues returned EMPTY — there are no open issues. Do NOT call it again. Instead: read the actual code with github_read_file and find issues yourself, OR use github_list_files to explore the repo structure, OR create improvements based on what you know about the codebase.`,
+              github_list_files: `github_list_files returned EMPTY — the path may be wrong. Try the repo root or a different directory. Check if the repo name is correct (case-sensitive).`,
+              web_search: `web_search returned no results for that query. Rephrase with different keywords, be more specific, or try a different angle. Do NOT repeat the same search.`,
+              recall_memory: `recall_memory found nothing relevant. This is fine — proceed with the task using other tools. Don't keep searching memory.`,
+              get_positions: `get_positions returned EMPTY — no current positions. Proceed with analysis and new trade decisions.`,
+              github_read_file: `github_read_file returned empty — the file may not exist or the path is wrong. Use github_list_files first to find the correct file path.`,
+            }
+            const pivot = pivots[r.name] || `${r.name} returned EMPTY results. Do NOT call it again with the same arguments. Try a different approach or different tool.`
+            emptyResultPivots.push(pivot)
+
+            // Track repeated empty calls to detect death spirals
+            const emptyKey = `${r.name}_empty`
+            toolUsageCounts[emptyKey] = (toolUsageCounts[emptyKey] || 0) + 1
+            if (toolUsageCounts[emptyKey] >= 3) {
+              emptyResultPivots.push(`⚠️ CRITICAL: You have called ${r.name} ${toolUsageCounts[emptyKey]} times with empty results. You MUST use a completely different tool or approach NOW. If you cannot complete this task, use propose_feature to email the founder explaining what you need.`)
+            }
+          }
+        }
+
+        const pivotText = emptyResultPivots.length > 0
+          ? `\n\n⚠️ PIVOT REQUIRED:\n${emptyResultPivots.join('\n')}`
+          : ''
+
+        messages.push({ role: 'user', content: resultsText.trim() + pivotText + '\n\nContinue working on the task with these results.' })
         // Save checkpoint after tool execution
         db.prepare('INSERT OR REPLACE INTO task_checkpoints (task_id, step, messages_json, tool_counts_json, full_output) VALUES (?, ?, ?, ?, ?)')
           .run(task.id, step, JSON.stringify(messages), JSON.stringify(toolUsageCounts), fullOutput)
@@ -4305,7 +4427,7 @@ START WITH TOOL CALLS NOW.`
       evidenceObj.issues_created > 0 || evidenceObj.emails_sent > 0 ||
       evidenceObj.trades_placed > 0 || evidenceObj.tasks_created > 0 ||
       evidenceObj.revenue_logged > 0
-    const retries = task.retries || 0
+    const taskRetries = task.retries || 0
 
     // Narration-only output: < 500 chars with zero artifacts = not real work
     if (outputLen < 500 && !hasArtifacts && totalToolCalls <= 2) {
@@ -4314,12 +4436,12 @@ START WITH TOOL CALLS NOW.`
       db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
         .run(task.id, agent.id, reason, 'error')
 
-      if (retries < 2) {
+      if (taskRetries < 2) {
         db.prepare(`UPDATE tasks SET status = 'todo', retries = ?, error = ?, output = ?, evidence = ?, completed_at = NULL, started_at = NULL, tokens_used = 0, updated_at = datetime('now') WHERE id = ?`)
-          .run(retries + 1, reason, fullOutput.slice(0, 50000), evidence, task.id)
+          .run(taskRetries + 1, reason, fullOutput.slice(0, 50000), evidence, task.id)
         db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
-          .run('system', '🚫 Proof-of-Work', '🚫', '#ef4444', `Rejected "${task.title}" — no deliverables produced. Retry ${retries + 1}/2`)
-        console.log(`🚫 ${agent.name}: "${task.title}" rejected — ${reason} (retry ${retries + 1})`)
+          .run('system', '🚫 Proof-of-Work', '🚫', '#ef4444', `Rejected "${task.title}" — no deliverables produced. Retry ${taskRetries + 1}/2`)
+        console.log(`🚫 ${agent.name}: "${task.title}" rejected — ${reason} (retry ${taskRetries + 1})`)
         setTimeout(() => processAgentQueue(agent.id), 10000)
       } else {
         db.prepare(`UPDATE tasks SET status = 'failed', error = ?, output = ?, evidence = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
@@ -4327,25 +4449,55 @@ START WITH TOOL CALLS NOW.`
         db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
           .run('system', '❌ Quality Failure', '❌', '#ef4444', `"${task.title}" failed 3 times with no deliverables — needs human review`)
       }
-      traceBus.emit('task:update', { id: task.id, status: retries < 2 ? 'todo' : 'failed', agent_id: agent.id })
+      traceBus.emit('task:update', { id: task.id, status: taskRetries < 2 ? 'todo' : 'failed', agent_id: agent.id })
       return
     }
 
-    // Ember/AgentForge tasks specifically need artifacts (PRs, issues, files) — not just research
-    const isDevTask = /ember|agentforge|sous-/i.test(task.title)
-    if (isDevTask && !hasArtifacts && outputLen < 2000 && retries < 1) {
-      const reason = `Dev task produced no artifacts (no PRs, issues, or files created)`
-      log('warn', 'dev_task_no_artifacts', { taskId: task.id, agentId: agent.id, outputLen })
-      db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
-        .run(task.id, agent.id, reason, 'warning')
-      db.prepare(`UPDATE tasks SET status = 'todo', retries = ?, error = ?, output = ?, evidence = ?, completed_at = NULL, started_at = NULL, tokens_used = 0, updated_at = datetime('now') WHERE id = ?`)
-        .run(retries + 1, reason, fullOutput.slice(0, 50000), evidence, task.id)
-      db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
-        .run('system', '🔁 Needs Artifacts', '🔁', '#f59e0b', `"${task.title}" retrying — dev tasks must produce PRs, issues, or files`)
-      console.log(`🔁 ${agent.name}: dev task "${task.title}" had no artifacts, retrying`)
-      setTimeout(() => processAgentQueue(agent.id), 10000)
-      traceBus.emit('task:update', { id: task.id, status: 'todo', agent_id: agent.id })
-      return
+    // ── Per-Agent Output Validation ──────────────────
+    // Each agent type has specific deliverable requirements
+    const agentOutputChecks = {
+      scout: () => {
+        if (evidenceObj.files_created > 0 || evidenceObj.issues_created > 0) return null
+        if (outputLen > 3000 && evidenceObj.web_searches > 2) return null // substantial research with sources
+        return 'Scout must save research to a file (write_file) or create GitHub issues (github_create_issue). Text-only research is rejected.'
+      },
+      forge: () => {
+        if (evidenceObj.prs_created > 0 || evidenceObj.files_created > 0) return null
+        return 'Forge must create PRs (github_create_pr) or write files (write_file/github_write_file). No code artifacts found.'
+      },
+      nexus: () => {
+        if (evidenceObj.tasks_created > 0) return null
+        if (outputLen > 2000) return null // substantial QA review is OK
+        return 'Nexus must create follow-up tasks (create_task) or produce a substantial QA review. Neither found.'
+      },
+      quill: () => {
+        if (evidenceObj.files_created > 0) return null
+        if (outputLen > 2000) return null // substantial written content is OK
+        return 'Quill must save content to a file (write_file) or produce substantial written output (2000+ chars).'
+      },
+      oracle: () => {
+        if (evidenceObj.trades_placed > 0) return null
+        if (outputLen > 1000 && evidenceObj.web_searches > 0) return null // market analysis is OK
+        return 'Oracle must place trades (place_order) or produce substantial market analysis with real data.'
+      },
+    }
+
+    const checkFn = agentOutputChecks[agent.id]
+    if (checkFn && taskRetries < 2) {
+      const rejection = checkFn()
+      if (rejection) {
+        log('warn', 'agent_output_rejected', { taskId: task.id, agentId: agent.id, reason: rejection, outputLen })
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+          .run(task.id, agent.id, rejection, 'warning')
+        db.prepare(`UPDATE tasks SET status = 'todo', retries = ?, error = ?, output = ?, evidence = ?, completed_at = NULL, started_at = NULL, tokens_used = 0, updated_at = datetime('now') WHERE id = ?`)
+          .run(taskRetries + 1, rejection, fullOutput.slice(0, 50000), evidence, task.id)
+        db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+          .run('system', '🔁 Needs Deliverables', '🔁', '#f59e0b', `"${task.title}" retrying — ${rejection.slice(0, 100)}`)
+        console.log(`🔁 ${agent.name}: "${task.title}" rejected — ${rejection}`)
+        setTimeout(() => processAgentQueue(agent.id), 10000)
+        traceBus.emit('task:update', { id: task.id, status: 'todo', agent_id: agent.id })
+        return
+      }
     }
 
     db.prepare(`UPDATE tasks SET status = 'done', output = ?, evidence = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
