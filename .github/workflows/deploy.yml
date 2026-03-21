@@ -14,9 +14,12 @@ jobs:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
+          port: 22
+          script_stop: true
+          command_timeout: 60s
           script: |
             cd ~/hive
-            git stash
+            git stash || true
             git pull origin main
             pm2 restart hive --update-env
             sleep 3
