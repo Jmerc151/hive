@@ -2592,6 +2592,17 @@ async function executeTool(toolCall, agentId, taskId) {
   const guard = validateToolCall(toolCall, agentId, taskId)
   if (!guard.allowed) return { name: toolCall.name, error: `Guardrail: ${guard.reason}` }
 
+  // Auto-fill common missing params that models forget
+  if (toolCall.name === 'github_write_file' && !toolCall.args.message) {
+    toolCall.args.message = `Update ${toolCall.args.path || 'file'} via Hive agent`
+  }
+  if (toolCall.name === 'github_create_issue' && !toolCall.args.body) {
+    toolCall.args.body = toolCall.args.title || 'Created by Hive agent'
+  }
+  if (toolCall.name === 'create_task' && !toolCall.args.description) {
+    toolCall.args.description = toolCall.args.title || 'Auto-created task'
+  }
+
   for (const [param, schema] of Object.entries(tool.params)) {
     if (schema.required && (toolCall.args[param] === undefined || toolCall.args[param] === null)) {
       return { name: toolCall.name, error: `Missing required param: ${param}` }
