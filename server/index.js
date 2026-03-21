@@ -4399,7 +4399,6 @@ START WITH TOOL CALLS NOW.`
         hadAction = true
         const callsToRun = toolCalls.slice(0, MAX_TOOLS_PER_STEP)
         totalToolCalls += callsToRun.length
-        for (const tc of callsToRun) { toolUsageCounts[tc.name] = (toolUsageCounts[tc.name] || 0) + 1 }
 
         db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
           .run(task.id, agent.id, `Executing ${callsToRun.length} tool(s): ${callsToRun.map(c => c.name).join(', ')}`, 'info')
@@ -4408,9 +4407,11 @@ START WITH TOOL CALLS NOW.`
 
         let resultsText = ''
         let consecutiveFailures = 0
+        let stepFailures = 0
         for (const r of results) {
           if (r.error) {
             consecutiveFailures++
+            stepFailures++
             resultsText += `[TOOL_ERROR:${r.name}]TOOL FAILED: ${r.error}. This action did NOT complete. Do not report success. Either try an alternative or report you cannot complete without configuration.[/TOOL_ERROR]\n\n`
             db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
               .run(task.id, agent.id, `Tool failed: ${r.name} — ${r.error}`, 'error')
@@ -4418,6 +4419,8 @@ START WITH TOOL CALLS NOW.`
               .run(task.id, agent.id, step + 1, 'tool_error', r.name, r.error, 0)
           } else {
             consecutiveFailures = 0
+            // Only count successful tool calls in usage counts (used for proof-of-work)
+            toolUsageCounts[r.name] = (toolUsageCounts[r.name] || 0) + 1
             resultsText += `[TOOL_RESULT:${r.name}]${r.resultStr}[/TOOL_RESULT]\n\n`
             db.prepare('INSERT INTO task_traces (task_id, agent_id, step, type, input_summary, output_summary, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)')
               .run(task.id, agent.id, step + 1, 'tool_call', `${r.name}(${JSON.stringify(toolCalls.find(tc => tc.name === r.name)?.args || {}).slice(0, 200)})`, (r.resultStr || '').slice(0, 500), 0)
@@ -4466,9 +4469,14 @@ START WITH TOOL CALLS NOW.`
           return
         }
 
-        // Don't count step if ALL tools failed (give agent another chance)
+        // Don't count step if ALL tools failed (give agent another chance, max 2 free passes)
         if (results.length > 0 && results.every(r => r.error)) {
-          step-- // Will be incremented by the for loop, net zero
+          const freePassKey = '_all_fail_free_passes'
+          toolUsageCounts[freePassKey] = (toolUsageCounts[freePassKey] || 0) + 1
+          if (toolUsageCounts[freePassKey] <= 2) {
+            step-- // Will be incremented by the for loop, net zero
+          }
+          // After 2 free passes, failed steps count normally — agent will run out of steps
         }
 
         // ── Empty Result Pivot Injection ──────────────────
@@ -4629,8 +4637,14 @@ START WITH TOOL CALLS NOW.`
     // Clean up checkpoints on successful completion
     db.prepare('DELETE FROM task_checkpoints WHERE task_id = ?').run(task.id)
 
+    // Count only successful tool calls (failures are excluded from toolUsageCounts)
+    const successfulToolCalls = Object.entries(toolUsageCounts)
+      .filter(([k]) => !k.startsWith('_')) // exclude internal counters
+      .reduce((sum, [, v]) => sum + v, 0)
+
     const evidenceObj = {
       tools_used: totalToolCalls,
+      successful_tools: successfulToolCalls,
       tool_breakdown: toolUsageCounts,
       files_created: toolUsageCounts.write_file || toolUsageCounts.github_write_file || 0,
       prs_created: toolUsageCounts.github_create_pr || 0,
@@ -4654,8 +4668,11 @@ START WITH TOOL CALLS NOW.`
     const taskRetries = task.retries || 0
 
     // Narration-only output: < 500 chars with zero artifacts = not real work
-    if (outputLen < 500 && !hasArtifacts && totalToolCalls <= 2) {
-      const reason = `Proof-of-work rejected: ${outputLen} chars output, 0 artifacts, ${totalToolCalls} tool calls`
+    // Also reject if ALL tool calls failed (successfulToolCalls === 0)
+    if ((outputLen < 500 && !hasArtifacts && successfulToolCalls <= 2) || (totalToolCalls > 0 && successfulToolCalls === 0)) {
+      const reason = successfulToolCalls === 0 && totalToolCalls > 0
+        ? `Proof-of-work rejected: ${totalToolCalls} tool calls attempted but ALL failed (0 successful). No real work produced.`
+        : `Proof-of-work rejected: ${outputLen} chars output, 0 artifacts, ${successfulToolCalls} successful tool calls`
       log('warn', 'proof_of_work_rejected', { taskId: task.id, agentId: agent.id, reason, outputLen, totalToolCalls })
       db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
         .run(task.id, agent.id, reason, 'error')
