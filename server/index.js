@@ -3646,9 +3646,20 @@ app.get('/api/tasks', (req, res) => {
 })
 
 app.post('/api/tasks', (req, res) => {
-  const { title, description, priority, agent_id, token_budget, requires_approval } = req.body
+  const { title, description, priority, agent_id, token_budget, requires_approval, skip_dedup } = req.body
   const id = uuid()
   const budget = token_budget || parseInt(getSetting('per_task_token_budget') || '0')
+
+  // Deduplication: reject if same title + agent exists in last 48h (unless manual override)
+  if (!skip_dedup && agent_id && title) {
+    const recent = db.prepare(
+      "SELECT id, status FROM tasks WHERE agent_id = ? AND title = ? AND created_at >= datetime('now', '-2 days') LIMIT 1"
+    ).get(agent_id, title)
+    if (recent) {
+      return res.status(409).json({ error: `Duplicate task — "${title}" already exists for ${agent_id} (${recent.status}, id: ${recent.id})` })
+    }
+  }
+
   db.prepare(`
     INSERT INTO tasks (id, title, description, priority, agent_id, status, token_budget, requires_approval)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -4267,16 +4278,71 @@ START WITH TOOL CALLS NOW.`
     // Clean up checkpoints on successful completion
     db.prepare('DELETE FROM task_checkpoints WHERE task_id = ?').run(task.id)
 
-    const evidence = JSON.stringify({
+    const evidenceObj = {
       tools_used: totalToolCalls,
       tool_breakdown: toolUsageCounts,
-      files_created: toolUsageCounts.write_file || 0,
+      files_created: toolUsageCounts.write_file || toolUsageCounts.github_write_file || 0,
+      prs_created: toolUsageCounts.github_create_pr || 0,
+      issues_created: toolUsageCounts.github_create_issue || 0,
       emails_sent: toolUsageCounts.send_email || 0,
       trades_placed: toolUsageCounts.place_order || 0,
       tasks_created: toolUsageCounts.create_task || 0,
       web_searches: toolUsageCounts.web_search || 0,
       revenue_logged: toolUsageCounts.log_revenue || 0,
-    })
+    }
+    const evidence = JSON.stringify(evidenceObj)
+
+    // ── Proof-of-Work Gate ──────────────────────────────
+    // Tasks must produce real artifacts to be marked "done"
+    // Otherwise they get rejected back to "failed" with a specific reason
+    const outputLen = fullOutput.trim().length
+    const hasArtifacts = evidenceObj.files_created > 0 || evidenceObj.prs_created > 0 ||
+      evidenceObj.issues_created > 0 || evidenceObj.emails_sent > 0 ||
+      evidenceObj.trades_placed > 0 || evidenceObj.tasks_created > 0 ||
+      evidenceObj.revenue_logged > 0
+    const retries = task.retries || 0
+
+    // Narration-only output: < 500 chars with zero artifacts = not real work
+    if (outputLen < 500 && !hasArtifacts && totalToolCalls <= 2) {
+      const reason = `Proof-of-work rejected: ${outputLen} chars output, 0 artifacts, ${totalToolCalls} tool calls`
+      log('warn', 'proof_of_work_rejected', { taskId: task.id, agentId: agent.id, reason, outputLen, totalToolCalls })
+      db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+        .run(task.id, agent.id, reason, 'error')
+
+      if (retries < 2) {
+        db.prepare(`UPDATE tasks SET status = 'todo', retries = ?, error = ?, output = ?, evidence = ?, completed_at = NULL, started_at = NULL, tokens_used = 0, updated_at = datetime('now') WHERE id = ?`)
+          .run(retries + 1, reason, fullOutput.slice(0, 50000), evidence, task.id)
+        db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+          .run('system', '🚫 Proof-of-Work', '🚫', '#ef4444', `Rejected "${task.title}" — no deliverables produced. Retry ${retries + 1}/2`)
+        console.log(`🚫 ${agent.name}: "${task.title}" rejected — ${reason} (retry ${retries + 1})`)
+        setTimeout(() => processAgentQueue(agent.id), 10000)
+      } else {
+        db.prepare(`UPDATE tasks SET status = 'failed', error = ?, output = ?, evidence = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
+          .run(`Failed after 3 attempts: ${reason}`, fullOutput.slice(0, 50000), evidence, task.id)
+        db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+          .run('system', '❌ Quality Failure', '❌', '#ef4444', `"${task.title}" failed 3 times with no deliverables — needs human review`)
+      }
+      traceBus.emit('task:update', { id: task.id, status: retries < 2 ? 'todo' : 'failed', agent_id: agent.id })
+      return
+    }
+
+    // Ember/AgentForge tasks specifically need artifacts (PRs, issues, files) — not just research
+    const isDevTask = /ember|agentforge|sous-/i.test(task.title)
+    if (isDevTask && !hasArtifacts && outputLen < 2000 && retries < 1) {
+      const reason = `Dev task produced no artifacts (no PRs, issues, or files created)`
+      log('warn', 'dev_task_no_artifacts', { taskId: task.id, agentId: agent.id, outputLen })
+      db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+        .run(task.id, agent.id, reason, 'warning')
+      db.prepare(`UPDATE tasks SET status = 'todo', retries = ?, error = ?, output = ?, evidence = ?, completed_at = NULL, started_at = NULL, tokens_used = 0, updated_at = datetime('now') WHERE id = ?`)
+        .run(retries + 1, reason, fullOutput.slice(0, 50000), evidence, task.id)
+      db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+        .run('system', '🔁 Needs Artifacts', '🔁', '#f59e0b', `"${task.title}" retrying — dev tasks must produce PRs, issues, or files`)
+      console.log(`🔁 ${agent.name}: dev task "${task.title}" had no artifacts, retrying`)
+      setTimeout(() => processAgentQueue(agent.id), 10000)
+      traceBus.emit('task:update', { id: task.id, status: 'todo', agent_id: agent.id })
+      return
+    }
+
     db.prepare(`UPDATE tasks SET status = 'done', output = ?, evidence = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
       .run(fullOutput.slice(0, 50000), evidence, task.id)
     db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
@@ -9954,9 +10020,99 @@ const spendDefaults = {
 for (const [key, value] of Object.entries(spendDefaults)) {
   db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)").run(key, value)
 }
-console.log('💰 Spend limits updated: $8/day global, per-agent caps set')
+console.log('💰 Spend limits updated: $20/day global, per-agent caps set')
 
-console.log('✅ Master plan seeding complete — skills + pipelines + settings')
+// ── Seed Ember Product Backlog — Real startup features ──────────────
+// Only seed if no Ember backlog tasks exist yet
+const emberBacklogCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE title LIKE 'Ember P%' AND status IN ('todo','backlog')").get().c
+if (emberBacklogCount === 0) {
+  const emberBacklog = [
+    // P0: Stripe Billing (must have for revenue)
+    { agent: 'forge', title: 'Ember P0: Integrate Stripe Checkout for $49/mo subscription', priority: 'critical',
+      desc: `Implement Stripe subscription billing in Jmerc151/sous-backend:
+1. github_read_file on sous-backend/package.json to check if stripe is installed
+2. Create controllers/billing.js with: POST /api/billing/create-checkout-session (creates Stripe checkout), POST /api/billing/webhook (handles subscription events), GET /api/billing/status (returns current plan)
+3. Add restaurant.subscription_status and restaurant.stripe_customer_id columns
+4. Create feature branch, implement, submit PR.
+DELIVERABLE: PR URL with working Stripe checkout endpoint.` },
+
+    { agent: 'forge', title: 'Ember P0: Add billing UI to admin dashboard', priority: 'critical',
+      desc: `Implement billing page in Jmerc151/sous-frontend:
+1. Read existing admin pages to match patterns
+2. Create src/pages/Billing.jsx with: current plan display, upgrade/downgrade buttons, payment history, Stripe checkout redirect
+3. Add route to App.jsx, add nav link
+4. Create feature branch, implement, submit PR.
+DELIVERABLE: PR URL with billing page component.` },
+
+    // P1: Sample Data on Signup
+    { agent: 'forge', title: 'Ember P1: Seed sample Kitchen Bible data on new restaurant signup', priority: 'high',
+      desc: `When a new restaurant signs up, Kitchen Bible is empty which kills activation. Fix in sous-backend:
+1. Read the signup/registration controller
+2. Create a seed function that inserts: 5 sample recipes (burger, pasta, salad, soup, dessert), 3 checklists (opening, closing, cleaning), sample prep lists
+3. Call this seed function after restaurant creation
+4. Create feature branch, implement, submit PR.
+DELIVERABLE: PR URL. New signups should see pre-filled Kitchen Bible.` },
+
+    // P2: Loading Skeletons
+    { agent: 'forge', title: 'Ember P2: Add loading skeletons to all Kitchen Bible tabs', priority: 'high',
+      desc: `Kitchen Bible shows blank or "Loading..." text. Fix in sous-frontend:
+1. Read src/pages for Kitchen Bible components (recipes, checklists, prep lists)
+2. Create a SkeletonLoader component with Tailwind animate-pulse
+3. Replace all "Loading..." text with contextual skeletons (recipe cards, checklist rows, etc.)
+4. Create feature branch, implement, submit PR.
+DELIVERABLE: PR URL with skeleton components in every Kitchen Bible tab.` },
+
+    // P3: Mobile Touch Targets
+    { agent: 'forge', title: 'Ember P3: Fix all mobile touch targets to 44px minimum', priority: 'high',
+      desc: `Kitchen Bible is used by kitchen staff on phones. All interactive elements need 44px min touch targets. In sous-frontend:
+1. Read all Kitchen Bible components
+2. Find buttons, links, checkboxes, toggles with height < 44px
+3. Update each to min-h-[44px] with adequate padding
+4. Test checklist completion flow especially — staff tap checkboxes hundreds of times per shift
+5. Create feature branch, implement, submit PR.
+DELIVERABLE: PR URL listing every component updated with before/after measurements.` },
+
+    // P4: Onboarding Flow
+    { agent: 'forge', title: 'Ember P4: Build 3-step onboarding wizard for new restaurants', priority: 'medium',
+      desc: `New restaurants need guided setup. In sous-frontend:
+1. Create src/pages/Onboarding.jsx — 3 steps: (1) Restaurant name + cuisine type, (2) Upload logo + set hours, (3) Invite first staff member
+2. Show progress bar, skip buttons, "Get Started" CTA
+3. Redirect here after signup if onboarding_completed is false
+4. Mark onboarding_completed in backend after step 3
+5. Create feature branch, implement, submit PR.
+DELIVERABLE: PR URL with onboarding wizard component.` },
+
+    // Content & Growth
+    { agent: 'quill', title: 'Ember P2: Write restaurant comparison article for SEO', priority: 'medium',
+      desc: `Write a 2000-word SEO article: "Best Kitchen Management Software for Small Restaurants (2026 Comparison)"
+Compare: Ember vs meez vs FreshCheq vs MarketMan vs paper systems.
+Include: pricing table, feature matrix, pros/cons, real Reddit quotes from r/KitchenConfidential.
+Position Ember as: simplest, mobile-first, built for independent restaurants.
+CTA: "Try Ember free at sous-chef.app"
+DELIVERABLE: Published article URL (dev.to) or complete markdown file.` },
+
+    { agent: 'scout', title: 'Ember P1: Research 20 Portland restaurants for outreach', priority: 'medium',
+      desc: `Find 20 independent restaurants in Portland, OR that could use Ember. For each:
+1. Restaurant name and cuisine
+2. Website URL
+3. Whether they have online ordering (indicates tech-savvy)
+4. Instagram handle and follower count
+5. Google Maps rating and review count
+6. Contact email or contact form URL
+
+Focus on: 10-50 employee restaurants, locally owned (not chains), active social media.
+DELIVERABLE: JSON array of 20 restaurants with all fields. Use web_search tool for each.` },
+  ]
+
+  for (const t of emberBacklog) {
+    const taskId = uuid()
+    db.prepare("INSERT INTO tasks (id, title, description, priority, agent_id, status) VALUES (?, ?, ?, ?, ?, 'todo')")
+      .run(taskId, t.title, t.desc, t.priority, t.agent)
+  }
+  console.log(`🔥 Seeded ${emberBacklog.length} Ember product backlog tasks`)
+}
+
+console.log('✅ Master plan seeding complete — skills + pipelines + settings + backlog')
 } catch (masterPlanErr) {
   console.error('❌ MASTER PLAN SEEDING ERROR:', masterPlanErr.message, masterPlanErr.stack)
 }
