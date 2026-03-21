@@ -828,6 +828,31 @@ const TOOL_REGISTRY = [
     }
   },
   {
+    name: 'propose_feature',
+    description: 'Email the founder with a feature proposal, research finding, or question that needs human decision. Use this whenever you discover something that requires human input — new features to add, architectural decisions, competitor insights worth acting on, or blockers you cannot resolve alone.',
+    params: {
+      subject: { type: 'string', required: true, description: 'Email subject line — be specific (e.g. "Ember: Should we add recipe costing like meez?")' },
+      body: { type: 'string', required: true, description: 'Email body — include what you found, why it matters, your recommendation, and what you need from the founder. Be concise but thorough.' },
+      category: { type: 'string', required: false, description: 'Category: feature_proposal, research_finding, blocker, question, competitor_alert' }
+    },
+    agents: ['scout', 'forge', 'quill', 'nexus', 'oracle'],
+    execute: async (args, ctx) => {
+      const OWNER_EMAIL = process.env.GMAIL_USER || 'Johnmercurio151@gmail.com'
+      try {
+        const agentName = ctx?.agentId || 'Agent'
+        const category = args.category || 'general'
+        const emailBody = `From: ${agentName} (Hive AI Agent)\nCategory: ${category}\nTask: ${ctx?.taskId || 'N/A'}\n\n${args.body}\n\n---\nReply to this email or open the Hive dashboard to respond.\nHive Dashboard: https://hive.netlify.app`
+        await email.sendEmail(OWNER_EMAIL, `[Hive ${agentName}] ${args.subject}`, emailBody)
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+          .run(ctx?.taskId || '', agentName, `📧 Emailed founder: ${args.subject}`, 'info')
+        log('info', 'feature_proposed', { agentId: agentName, subject: args.subject, category })
+        return { sent: true, message: `Email sent to founder: "${args.subject}"` }
+      } catch (e) {
+        return { sent: false, message: `Failed to send email: ${e.message}` }
+      }
+    }
+  },
+  {
     name: 'request_approval',
     description: 'Pause execution and request human approval before proceeding with a sensitive action (e.g. large spend, live deployment)',
     params: {
@@ -2886,22 +2911,13 @@ async function checkAutoChain(completedTask, output) {
     let followAgent = null
     let prefix = ''
 
+    // FOCUS MODE: Development only — no marketing, no outreach, no dealer chains
     if (sourceAgent === 'scout') {
-      if (/content|article|blog|write about/i.test(title) || /content|article|blog/i.test(outputLower)) {
-        followAgent = 'quill'; prefix = 'Write content about'
-      } else if (/product|opportunity|build|feature|prototype/i.test(title)) {
+      if (/product|opportunity|build|feature|prototype|audit|competitor|research/i.test(title)) {
         followAgent = 'forge'; prefix = 'Build based on research'
-      } else if (/beta.*customer|prospect|outreach|contact/i.test(title)) {
-        followAgent = 'dealer'; prefix = 'Reach out to prospects from'
-      }
-    } else if (sourceAgent === 'quill') {
-      if (outputLower.includes('dev.to') || outputLower.includes('published')) {
-        followAgent = 'dealer'; prefix = 'Promote published content'
       }
     } else if (sourceAgent === 'forge') {
-      if (outputLower.includes('gumroad.com') || outputLower.includes('product')) {
-        followAgent = 'quill'; prefix = 'Write about new product'
-      } else if (outputLower.includes('github.com/pull') || outputLower.includes('PR #')) {
+      if (outputLower.includes('github.com/pull') || outputLower.includes('PR #')) {
         followAgent = 'nexus'; prefix = 'QA review PR from'
       }
     }
@@ -3411,11 +3427,11 @@ async function checkEmberContinuousDev(completedTask) {
       nextDesc = `Forge just submitted work. Review open PRs on Jmerc151/sous-frontend and Jmerc151/sous-backend. Score each PR on correctness, mobile-first, error handling. Create follow-up tasks for any fixes needed. Then create 2 new prioritized tasks for the team.\n\nDELIVERABLE: QA scores and new tasks created.`
     } else if (completedTask.agent_id === 'nexus') {
       nextAgent = 'scout'
-      nextTitle = 'Ember: Find and file 3 new issues or research SLO market'
+      nextTitle = 'Ember: Research competitor feature or find bugs'
       nextDesc = `Two options — pick whichever has more impact right now:
-OPTION A: Review Jmerc151/sous-frontend and Jmerc151/sous-backend for real bugs, UX issues, or missing features. Focus on P0 priorities: Stripe billing, sample data on signup, loading states, mobile touch targets. File 3 specific GitHub issues with file/line references.
-OPTION B: Research San Luis Obispo County restaurants for Ember outreach. Find 5 new independent restaurants (not chains) in SLO, Paso Robles, Pismo Beach, Morro Bay, or Atascadero. Get: name, cuisine, website, Instagram, Google rating, contact info, estimated size.
-\nDELIVERABLE: 3 GitHub issue URLs (Option A) OR JSON array of 5 restaurants (Option B).`
+OPTION A: Pick ONE competitor (meez, FreshCheq, MarketMan, Toast, Jolt, 7shifts) and research a feature they have that Ember doesn't. Document how it works and use propose_feature to email the founder with your recommendation. Create a GitHub issue with the feature spec.
+OPTION B: Review Jmerc151/sous-frontend and Jmerc151/sous-backend for real bugs. Read the actual code, find issues, file 3 specific GitHub issues with file/line references and suggested fixes.
+\nDELIVERABLE: GitHub issue URLs + email to founder if proposing a feature.`
     }
 
     if (!nextAgent) return
@@ -3449,103 +3465,89 @@ registerHeartbeat('ember-auto-dev', 2 * 60 * 60 * 1000, async () => {
     const queued = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo','backlog') AND title LIKE '%Ember%'").get().c
     if (queued >= 3) return
 
-    // Real company dev rotation — specific, deliverable-focused tasks
-    // Each task MUST produce a PR, issue, or concrete artifact
+    // DEVELOPMENT ONLY — no marketing, no outreach, no content
+    // Research competitors, find bugs, build features, improve UX
+    // Agents should email founder (propose_feature) when they find something important
     const devTasks = [
-      // Scout: find real bugs and create actionable issues
-      { agent: 'scout', title: 'Ember: Find and file 3 bugs in sous-frontend', desc: `Use github_list_files on Jmerc151/sous-frontend. Read key files: src/App.jsx, src/pages/*.jsx, src/components/*.jsx. Look for REAL bugs:
+      // Scout: competitor research and bug hunting
+      { agent: 'scout', title: 'Ember: Research a competitor feature and propose it', desc: `Pick ONE competitor (meez, FreshCheq, MarketMan, Toast, Jolt, 7shifts) and research a specific feature they have that Ember doesn't.
+
+1. Search for reviews, screenshots, demo videos of that feature
+2. Document: how it works, why users like it, how hard it would be to build in Ember
+3. Read the current Ember code (github_read_file on relevant sous-frontend or sous-backend files) to assess effort
+4. Use propose_feature tool to email the founder with your recommendation:
+   - What the feature is
+   - Which competitor does it best
+   - How it would work in Ember
+   - Estimated effort (small/medium/large)
+5. Create a GitHub issue with the feature spec using github_create_issue
+
+DELIVERABLE: 1 GitHub issue created + 1 email sent to founder via propose_feature. Output both.` },
+
+      { agent: 'scout', title: 'Ember: Find and file 3 bugs in the codebase', desc: `Read code in BOTH Jmerc151/sous-frontend and Jmerc151/sous-backend. Look for REAL bugs:
 - Broken imports or missing dependencies
 - API calls without error handling
-- Missing loading states
-- Hardcoded values that should be configurable
-- Mobile layout breaks (elements without responsive classes)
-- Accessibility issues (missing alt, aria, labels)
+- Missing loading/empty states
+- Mobile layout breaks
+- Missing input validation on endpoints
+- Security issues (SQL injection, missing auth)
 
-For EACH bug found, use github_create_issue with:
-- Clear reproduction steps
-- The exact file and line number
-- Suggested fix approach
-- Label: bug, frontend, p1
-
-DELIVERABLE: 3 GitHub issues created with real file/line references. Output the issue URLs.` },
-
-      { agent: 'scout', title: 'Ember: Find and file 3 bugs in sous-backend', desc: `Use github_list_files on Jmerc151/sous-backend. Read controllers/*.js and routes/*.js. Look for REAL bugs:
-- SQL injection risks (string concatenation in queries)
-- Missing input validation on POST/PUT endpoints
-- Endpoints without auth middleware
-- Missing error responses (bare throw without status code)
-- Race conditions in concurrent requests
-- Missing database indexes for common queries
-
-For EACH bug found, use github_create_issue with:
-- The exact file, line, and vulnerable code snippet
-- Security impact if applicable
-- Suggested fix with code
-- Labels: bug, backend, security/p0/p1
+For EACH bug found, use github_create_issue with exact file, line number, and suggested fix.
 
 DELIVERABLE: 3 GitHub issues created. Output the issue URLs.` },
 
-      // Forge: fix actual issues with PRs
+      { agent: 'scout', title: 'Ember: Study competitor website and report UX patterns', desc: `Pick ONE competitor website (meez.com, freshcheq.com, marketman.com, toasttab.com, joltup.com, 7shifts.com) and do a deep UX analysis.
+
+Document:
+- Homepage layout (what's above the fold?)
+- How they explain their product
+- Navigation structure and information architecture
+- Feature pages — how do they show screenshots/demos?
+- Signup flow — how many steps?
+- Design style — colors, fonts, spacing
+- What makes it feel professional?
+- What would look good on our site?
+
+Use propose_feature to email the founder with the best ideas to steal.
+
+DELIVERABLE: UX analysis + email to founder. Save analysis to write_file.` },
+
+      // Forge: fix and build
       { agent: 'forge', title: 'Ember: Fix highest priority open issue with PR', desc: `1. Use github_get_issues on Jmerc151/sous-frontend AND Jmerc151/sous-backend
-2. Pick the highest priority open issue (p0 > p1 > bug > enhancement)
-3. Read the relevant files with github_read_file to understand the code
-4. Create a feature branch with github_create_branch (name: fix/issue-N-description)
-5. Implement the fix with github_write_file
-6. Create a PR with github_create_pr that:
-   - References the issue number (Fixes #N)
-   - Explains what changed and why
-   - Lists files modified
+2. Pick the highest priority open issue
+3. Read the code, create a branch, fix it, submit a PR
+4. If NO open issues exist: read the codebase and fix the most impactful code quality issue you find (missing error handling, broken mobile layout, missing loading state)
 
-DELIVERABLE: A merged-ready PR. Output the PR URL. If no open issues exist, create an improvement PR for the most impactful code quality issue you find.` },
+DELIVERABLE: PR URL. If you hit a blocker, use propose_feature to email the founder explaining what you need.` },
 
-      { agent: 'forge', title: 'Ember: Add loading skeletons to Kitchen Bible', desc: `Read Jmerc151/sous-frontend src/pages and src/components to find pages that show raw loading text or empty states.
-1. Create a branch: feature/loading-skeletons
-2. Add Tailwind skeleton components (animate-pulse with bg-gray-200 blocks) to replace "Loading..." text
-3. Every list view and detail view needs a skeleton
-4. Create PR with before/after description
+      { agent: 'forge', title: 'Ember: Improve onboarding experience', desc: `Read the current signup and first-run flow in Jmerc151/sous-frontend and sous-backend.
+1. What happens after a user signs up? Read the code.
+2. Is there sample data? Is there a setup wizard? Are there empty states with CTAs?
+3. Fix the biggest gap you find:
+   - If no sample data: add seed data on signup
+   - If no setup wizard: build one
+   - If empty states say "Loading..." or show nothing: add helpful empty states with CTAs
+4. Create branch, implement, submit PR
 
-DELIVERABLE: PR with skeleton components. Output the PR URL.` },
+DELIVERABLE: PR URL improving the onboarding experience.` },
 
-      { agent: 'forge', title: 'Ember: Improve mobile touch targets to 44px minimum', desc: `Read Jmerc151/sous-frontend Kitchen Bible components (the staff-facing pages).
-1. Find all interactive elements (buttons, links, tappable items) with height/padding < 44px
-2. Create branch: fix/mobile-touch-targets
-3. Update each element to meet 44px minimum touch target (min-h-[44px] p-3 or similar)
-4. Create PR listing every component updated
+      { agent: 'forge', title: 'Ember: Add loading skeletons and error states', desc: `Read ALL pages in Jmerc151/sous-frontend.
+1. Find every page that fetches data
+2. Replace "Loading..." with Tailwind skeleton components (animate-pulse)
+3. Add empty states ("No recipes yet — add your first recipe")
+4. Add error states ("Something went wrong — try again")
+5. Create branch, implement, submit PR
 
-DELIVERABLE: PR fixing mobile touch targets. Output the PR URL.` },
+DELIVERABLE: PR URL with loading/empty/error states.` },
 
-      // Nexus: QA and planning
-      { agent: 'nexus', title: 'Ember: QA review all open PRs', desc: `Use github_get_issues with type 'pull' on Jmerc151/sous-frontend and Jmerc151/sous-backend.
-For each open PR:
-1. Read the changed files with github_read_file
-2. Score quality 1-10 on: correctness, mobile-first, error handling, security
-3. If score >= 7, approve with comment via github_create_issue (comment on PR)
-4. If score < 7, list specific fixes needed
+      // Nexus: QA and sprint planning
+      { agent: 'nexus', title: 'Ember: QA review open PRs and plan next tasks', desc: `1. Check github_get_issues for open PRs on both Ember repos
+2. Read and QA score each PR (correctness, mobile-first, error handling)
+3. Review the current backlog — what's been done? What's next?
+4. Create 3 new development tasks for Forge based on what's most impactful
+5. If you discover something that needs the founder's input, use propose_feature to email them
 
-DELIVERABLE: QA scores for all open PRs with specific feedback. Create follow-up tasks for Forge if fixes are needed.` },
-
-      { agent: 'nexus', title: 'Ember: Create prioritized sprint backlog', desc: `1. Use github_get_issues on both Jmerc151/sous-frontend and Jmerc151/sous-backend
-2. Review all open issues and current codebase state
-3. Create 5 new specific tasks for Forge, prioritized by user impact:
-   - Each task title starts with "Ember:"
-   - Each description includes exact files to modify and expected outcome
-   - Set priority to high
-   - These should be things a real user would notice
-
-DELIVERABLE: 5 new tasks created in Hive (use the output to describe them). Focus on: Stripe billing, sample data on signup, onboarding flow.` },
-
-      // Quill: content that drives signups
-      { agent: 'quill', title: 'Ember: Write restaurant tech comparison article', desc: `Write a 1500-word article comparing restaurant kitchen management tools: Ember (sous-chef.app) vs meez vs FreshCheq vs paper systems.
-Structure:
-- H1: "Why Your Kitchen Still Runs on Paper (And How to Fix It)"
-- Pain points section with real quotes from r/KitchenConfidential
-- Feature comparison table
-- Ember positioning: simplest, mobile-first, built for small restaurants
-- CTA: "Try Ember free — sous-chef.app"
-
-Publish to dev.to using write_to_devto tool if available, otherwise output the full markdown.
-
-DELIVERABLE: Published article URL or complete markdown ready to publish.` },
+DELIVERABLE: QA scores + 3 new tasks created. No marketing or outreach tasks — development only.` },
     ]
 
     const pick = devTasks[Math.floor(Math.random() * devTasks.length)]
@@ -10026,35 +10028,71 @@ for (const [key, value] of Object.entries(spendDefaults)) {
 }
 console.log('💰 Spend limits updated: $20/day global, per-agent caps set')
 
-// ── Seed Ember Product Backlog — Real startup features ──────────────
+// ── Seed Ember Product Backlog — Development & Research Only ──────────────
+// NO marketing, NO outreach, NO sales. Build the product first.
 // Only seed if no Ember backlog tasks exist yet
 const emberBacklogCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE title LIKE 'Ember Phase%' AND status IN ('todo','backlog')").get().c
 if (emberBacklogCount === 0) {
   const emberBacklog = [
     // ═══════════════════════════════════════════════════════
-    // PHASE 1: RESEARCH — Understand how to build a real app
-    // Scout researches best practices, competitors, and local market
-    // These must complete BEFORE Forge starts building
+    // PHASE 1: RESEARCH — How do real apps get built?
+    // Scout studies competitors, best practices, and our own gaps
     // ═══════════════════════════════════════════════════════
 
-    { agent: 'scout', title: 'Ember Phase 1: Research how top restaurant apps are built', priority: 'critical',
-      desc: `Research how successful restaurant management apps were built and launched. We need to understand the playbook before building more features.
+    { agent: 'scout', title: 'Ember Phase 1: SWOT analysis on all competitors', priority: 'critical',
+      desc: `Full SWOT analysis (Strengths, Weaknesses, Opportunities, Threats) for each of Ember's competitors. Research each one deeply:
 
-Search for and document:
-1. **App architecture patterns**: How do Toast, Square for Restaurants, meez, and MarketMan structure their apps? (monolith vs microservices, API-first, real-time sync)
-2. **Tech stack choices**: What frontend frameworks, databases, hosting, and mobile approaches do they use? (React Native vs PWA vs native, PostgreSQL vs MongoDB, AWS vs GCP)
-3. **Development methodology**: How do successful SaaS startups structure their dev process? (agile sprints, CI/CD pipelines, staging environments, feature flags, automated testing)
-4. **Launch strategy**: How did these apps go from MVP to first 100 customers? Search "how Toast got first customers", "restaurant SaaS go to market strategy", "B2B SaaS launch playbook"
-5. **Mobile-first patterns**: Kitchen staff use phones — research PWA vs React Native for restaurant apps. What works offline? What needs real-time?
-6. **Security & compliance**: What does a restaurant app need? (PCI for payments, data encryption, GDPR/CCPA for customer data, SOC 2)
-7. **Infrastructure for scale**: What hosting, CDN, database, and monitoring stack should a production restaurant SaaS use?
+1. **meez** (meez.com) — Search "meez recipe management review 2026", "meez pricing", "meez app demo", "meez G2 reviews", "meez Capterra reviews"
+2. **FreshCheq** (freshcheq.com) — Search "FreshCheq restaurant checklist review", "FreshCheq pricing", "FreshCheq vs competitors"
+3. **MarketMan** (marketman.com) — Search "MarketMan inventory review", "MarketMan pricing 2026", "MarketMan complaints"
+4. **Toast Back-of-House** (toasttab.com) — Search "Toast kitchen display", "Toast BOH features", "Toast restaurant management review"
+5. **Jolt** (joltup.com) — Search "Jolt restaurant app review", "Jolt food safety checklist", "Jolt pricing"
+6. **7shifts** (7shifts.com) — Search "7shifts restaurant scheduling", "7shifts review" (they do staff scheduling + team comms)
+7. **Restaurant365** (restaurant365.com) — Search "Restaurant365 review", "R365 features" (accounting + operations)
 
-Search sources: TechCrunch restaurant tech articles, Y Combinator restaurant startups, IndieHackers restaurant SaaS stories, GitHub repos of open-source restaurant tools, dev.to and Medium engineering blogs from Toast/Square engineers.
+For EACH competitor, document:
+**Strengths**: What do they do really well? What do users praise?
+**Weaknesses**: What do users complain about? (search Reddit r/KitchenConfidential, G2, Capterra, App Store reviews)
+**Opportunities**: What gaps can Ember fill that they miss?
+**Threats**: How could they crush us? What moats do they have?
 
-DELIVERABLE: Structured report with specific findings, URLs, and recommendations for Ember. Save to write_file as ember-app-research.md. Minimum 3000 words with real sources.` },
+Also document for each:
+- Pricing tiers and free trial details
+- Number of customers/restaurants (search for any public numbers)
+- Key features we're missing
+- Their mobile experience (search App Store / Play Store for screenshots and ratings)
 
-    { agent: 'scout', title: 'Ember Phase 1: Audit current Ember codebase and identify gaps', priority: 'critical',
-      desc: `Do a full technical audit of the current Ember app to understand where we are vs where we need to be.
+DELIVERABLE: SWOT analysis saved to write_file as ember-swot-analysis.md with all 7 competitors analyzed.` },
+
+    { agent: 'scout', title: 'Ember Phase 1: Research competitor websites and UX patterns', priority: 'critical',
+      desc: `Study how each competitor's website and app looks. We want to take the best ideas from each and make Ember better.
+
+Visit and document each competitor's website:
+1. **meez.com** — How does their landing page look? What's their value prop? How do they show features? What's their signup flow?
+2. **freshcheq.com** — Same analysis. How do they present checklists?
+3. **marketman.com** — How do they show inventory features? What integrations do they highlight?
+4. **toasttab.com/products** — How does Toast present their BOH tools? What's their design language?
+5. **joltup.com** — How do they present food safety features?
+6. **7shifts.com** — Great example of clean restaurant SaaS design. How do they do onboarding?
+7. **restaurant365.com** — Enterprise-grade but good feature presentation
+
+For each website document:
+- Homepage layout and hero section (what's above the fold?)
+- How they explain their product in the first 10 seconds
+- Navigation structure
+- Feature pages — how do they show screenshots/demos?
+- Pricing page layout
+- Signup flow — how many steps? What info do they ask?
+- Design style — colors, fonts, spacing, imagery
+- What makes their site feel professional vs amateur?
+- Mobile responsiveness — does the site work well on phone?
+
+Search for: "best restaurant SaaS website design", "SaaS landing page best practices 2026", "restaurant software website examples"
+
+DELIVERABLE: Competitor website analysis saved to write_file as ember-competitor-websites.md. Include specific URLs and describe what to steal from each.` },
+
+    { agent: 'scout', title: 'Ember Phase 1: Audit current Ember codebase and score every feature', priority: 'critical',
+      desc: `Full technical audit of the current Ember app. Read EVERY file in both repos.
 
 1. Read Jmerc151/sous-frontend — every page, component, and route:
    - github_list_files on the whole repo
@@ -10066,177 +10104,173 @@ DELIVERABLE: Structured report with specific findings, URLs, and recommendations
    - github_read_file on package.json, server.js or index.js, and every file in controllers/ and routes/
    - Document: What endpoints exist? What's the database? How is auth handled? What's missing?
 
-3. For each area, rate completeness 1-10:
-   - Auth & user management: signup, login, password reset, invite staff
-   - Restaurant setup: profile, hours, logo, settings
-   - Kitchen Bible: recipes, checklists, prep lists, inventory
-   - Billing: Stripe integration, subscription management, invoicing
-   - Admin dashboard: analytics, reports, staff management
-   - Mobile experience: responsive design, touch targets, offline capability
-   - Onboarding: first-run experience, sample data, guided setup
-   - Notifications: push, email, in-app
-   - Testing: unit tests, integration tests, e2e tests
-   - CI/CD: automated builds, staging deploys, production deploys
-   - Monitoring: error tracking, uptime monitoring, analytics
+3. Score completeness 1-10 for each area:
+   - Auth & user management (signup, login, password reset, invite staff, roles)
+   - Restaurant setup (profile, hours, logo, settings, branding)
+   - Kitchen Bible (recipes, checklists, prep lists, inventory tracking)
+   - Onboarding (first-run experience, sample data, guided setup)
+   - Mobile experience (responsive design, touch targets, PWA, offline)
+   - Error handling (loading states, error messages, empty states, skeletons)
+   - Testing (unit tests, integration tests, any test coverage at all?)
+   - CI/CD (automated builds, staging deploys, production deploys)
+   - Monitoring (error tracking, uptime, analytics)
 
-DELIVERABLE: Technical audit report saved to write_file as ember-audit.md. Include the completeness scores and a prioritized list of what to build next.` },
+4. List EVERY feature that's broken, incomplete, or missing compared to competitors
 
-    { agent: 'scout', title: 'Ember Phase 1: Research competitor apps hands-on', priority: 'critical',
-      desc: `Sign up for free trials or free tiers of Ember's competitors and document exactly how they work. We need to know what we're competing against.
+DELIVERABLE: Technical audit saved to write_file as ember-audit.md. Include scores, broken features list, and what to build next (prioritized).` },
 
-Research each competitor:
-1. **meez** (meez.com) — Search "meez recipe management demo", "meez app review", "meez pricing 2026". Document: signup flow, first-run experience, recipe features, mobile app quality, pricing tiers.
-2. **FreshCheq** (freshcheq.com) — Search "FreshCheq checklist app restaurant", "FreshCheq review". Document: what it does, how checklists work, mobile experience, pricing.
-3. **MarketMan** (marketman.com) — Search "MarketMan inventory management", "MarketMan vs competitors". Document: features, integrations, pricing, target restaurant size.
-4. **Toast** (toasttab.com) — Search "Toast kitchen display system", "Toast back of house features". Document: their BOH tools specifically (not POS).
-5. **Jolt** (joltup.com) — Search "Jolt app restaurant checklists", "Jolt review". Document: their checklist and food safety features.
+    { agent: 'scout', title: 'Ember Phase 1: Research how to build a production-quality app', priority: 'critical',
+      desc: `Research app development best practices. We need to know the RIGHT way to build before we build more.
 
-For each competitor document:
-- How many clicks to get set up from signup?
-- What does the mobile experience look like? (search for app store screenshots)
-- What's their pricing? Free tier?
-- What do users complain about? (search Reddit, G2, Capterra reviews)
-- What do they do better than Ember?
-- What does Ember do better or could do better?
+Search and document:
+1. **App architecture**: Search "restaurant SaaS architecture 2026", "React app architecture best practices", "Express API architecture patterns". What folder structure, state management, and API patterns should we use?
+2. **Testing strategy**: Search "SaaS testing strategy small team", "what tests to write first startup", "Vitest React testing". What testing framework and what to test first?
+3. **CI/CD for small teams**: Search "GitHub Actions CI/CD React Express", "automated deployment small SaaS". How to automate build + deploy?
+4. **Error monitoring**: Search "best error monitoring SaaS 2026", "Sentry vs LogRocket vs Bugsnag". What should we set up for production?
+5. **Performance optimization**: Search "React app performance optimization", "Express API performance", "Lighthouse score improvement". What are the benchmarks?
+6. **Mobile-first development**: Search "PWA vs React Native restaurant app", "mobile-first React development", "touch-friendly UI patterns". PWA or native? How to handle offline?
+7. **Database patterns**: Search "PostgreSQL best practices SaaS", "database indexing restaurant app", "query optimization Express". Are we doing it right?
+8. **Security checklist**: Search "SaaS security checklist 2026", "OWASP top 10 Node.js", "restaurant app data security". What are we missing?
 
-DELIVERABLE: Competitive analysis report saved to write_file as ember-competitors.md. Include specific screenshots/URLs and feature comparison matrix.` },
+DELIVERABLE: Development best practices report saved to write_file as ember-dev-practices.md. Specific recommendations for Ember, not generic advice. Include URLs to guides we should follow.` },
 
-    { agent: 'scout', title: 'Ember Phase 1: Research 20 SLO County restaurants for outreach', priority: 'critical',
-      desc: `Find 20 independent restaurants in San Luis Obispo County that could use Ember. This is our LOCAL market — we live here, so these are restaurants we can walk into and demo in person.
+    { agent: 'scout', title: 'Ember Phase 1: Research features we should add from competitors', priority: 'high',
+      desc: `Based on what competitors have, what features should Ember add? Search deeply for each feature area:
 
-For each restaurant:
-1. Restaurant name and cuisine type
-2. Website URL
-3. Whether they have online ordering (indicates tech-savvy)
-4. Instagram handle and follower count
-5. Google Maps rating and review count
-6. Contact email, phone, or contact form URL
-7. Number of employees (estimate from reviews/photos)
-8. Whether they appear to use any kitchen management software already
+1. **Recipe costing**: Search "recipe costing software features", "meez recipe costing how it works". Can we calculate food cost per dish?
+2. **Inventory tracking**: Search "restaurant inventory management features", "MarketMan inventory workflow". What's the minimum viable inventory feature?
+3. **Staff scheduling**: Search "restaurant scheduling features 7shifts", "staff management restaurant app". Should we add basic scheduling?
+4. **Food safety / HACCP**: Search "digital HACCP restaurant", "food safety compliance app features". Temperature logs, expiration tracking?
+5. **Analytics dashboard**: Search "restaurant analytics dashboard features", "KPIs for restaurant management". What metrics should we show?
+6. **Integrations**: Search "restaurant app integrations POS", "Toast Square integration API". What POS/accounting tools should Ember connect to?
+7. **Multi-location support**: Search "multi-location restaurant management", "franchise management software". Do we need this for growth?
+8. **Offline mode**: Search "PWA offline restaurant", "offline-first web app patterns". Kitchen staff need to work without internet sometimes.
 
-Cover all of SLO County: San Luis Obispo, Paso Robles, Atascadero, Pismo Beach, Morro Bay, Arroyo Grande, Templeton, Los Osos, Cayucos.
-Focus on: independently owned (NOT chains), 5-50 employees, active on social media, good Google reviews (4.0+).
+For each feature, evaluate:
+- How important is it? (must-have vs nice-to-have)
+- How hard to build? (days vs weeks vs months)
+- Do competitors charge extra for it?
+- Would SLO restaurants specifically want this?
 
-DELIVERABLE: JSON array of 20 restaurants saved to write_file as slo-restaurant-targets.json. Use web_search for each restaurant to get real data.` },
-
-    { agent: 'scout', title: 'Ember Phase 1: Research SLO County restaurant industry landscape', priority: 'high',
-      desc: `Deep research on the San Luis Obispo County restaurant market for Ember sales strategy:
-1. How many restaurants are in SLO County? (search health department permits, Yelp counts)
-2. What's the restaurant turnover rate locally?
-3. What restaurant tech is commonly used here? (Toast, Square, Clover, etc.)
-4. Are there local restaurant associations or groups? (SLO Chamber, Downtown SLO, restaurant owner meetups)
-5. Local food events/festivals where we could demo Ember (farmers markets, SLO food festivals, wine country events)
-6. Local food media/bloggers who could review Ember
-7. Competitor presence: does meez, FreshCheq, or MarketMan have any SLO clients?
-8. What POS systems do SLO restaurants use? (helps us know integration priorities)
-
-DELIVERABLE: Structured report saved to write_file as slo-market-landscape.md. Specific names, URLs, dates, and contact info. No generic advice.` },
+DELIVERABLE: Feature research saved to write_file as ember-feature-research.md. Prioritized list with effort estimates.` },
 
     // ═══════════════════════════════════════════════════════
-    // PHASE 2: PLAN — Nexus creates the development roadmap
-    // Based on Scout's research, create actionable sprint plans
+    // PHASE 2: PLAN — Turn research into a build plan
+    // Nexus reads all research and creates sprint tasks
     // ═══════════════════════════════════════════════════════
 
-    { agent: 'nexus', title: 'Ember Phase 2: Create full product development roadmap', priority: 'high',
-      desc: `Using Scout's research (check recent completed tasks for ember-app-research.md, ember-audit.md, ember-competitors.md), create a complete product development roadmap for Ember.
+    { agent: 'nexus', title: 'Ember Phase 2: Create development roadmap from research', priority: 'high',
+      desc: `Read ALL of Scout's completed research (check recent done tasks for ember-swot-analysis.md, ember-competitor-websites.md, ember-audit.md, ember-dev-practices.md, ember-feature-research.md).
 
-Structure the roadmap in sprints (2-week blocks):
+Based on the research, create a prioritized development roadmap. Structure in 2-week sprints:
 
-**Sprint 1-2: Foundation** — What infrastructure and architecture work is needed first?
-(CI/CD, testing framework, staging environment, error monitoring)
+**Sprint 1: Fix what's broken** — Based on the audit, what has the lowest scores? Fix those first.
+(Broken features, missing error handling, empty states, incomplete pages)
 
-**Sprint 3-4: Core Product Gaps** — What core features are missing or broken?
-(Based on the audit scores — fix anything rated below 5/10)
+**Sprint 2: Onboarding** — New user signs up, what happens? Make it seamless.
+(Sample data seeding, guided setup wizard, first-run experience)
 
-**Sprint 5-6: Revenue** — What's needed to charge money?
-(Stripe billing, subscription management, pricing page)
+**Sprint 3: Core features** — What are we missing that every competitor has?
+(Based on SWOT — fill the biggest gaps)
 
-**Sprint 7-8: Growth** — What's needed to acquire customers?
-(Onboarding flow, sample data, landing page, SEO)
+**Sprint 4: Mobile polish** — Kitchen staff use phones all day.
+(Touch targets, loading skeletons, PWA improvements, offline basics)
 
-**Sprint 9-10: Polish** — What makes the app feel professional?
-(Loading states, animations, error handling, mobile optimization)
+**Sprint 5: Website** — Our site needs to look as good as competitors.
+(Based on competitor website research — steal the best patterns)
 
-For EACH sprint, create specific tasks:
-- Task title (starts with "Ember Sprint X:")
-- Which agent should do it (forge for code, quill for content, scout for research, dealer for outreach)
-- Priority (critical/high/medium)
-- Exact description with files to modify and expected outcome
-- Dependencies (what must be done first)
+**Sprint 6: Infrastructure** — CI/CD, testing, monitoring.
+(Based on dev practices research)
 
-Create all tasks immediately using create_task tool.
+For EACH sprint create 3-4 specific tasks using create_task tool:
+- Title starts with "Ember Sprint X:"
+- Agent is forge (for code) or scout (for more research)
+- Description includes exact files to modify
+- Priority matches sprint number (sprint 1 = critical, sprint 6 = medium)
+- NO marketing tasks, NO outreach, NO sales — development only
 
-DELIVERABLE: Created 15-20 sprint tasks in Hive. List every task title and agent in your output.` },
-
-    { agent: 'nexus', title: 'Ember Phase 2: Define QA and testing strategy', priority: 'high',
-      desc: `Create a testing and quality assurance plan for Ember. Research what testing patterns work for small SaaS teams.
-
-Define:
-1. **Unit testing**: What framework? (Jest, Vitest?) What to test first? (API endpoints, auth, billing)
-2. **Integration testing**: How to test frontend + backend together? (Playwright, Cypress?)
-3. **Mobile testing**: How to verify mobile responsiveness? (Device list, viewport sizes, touch testing)
-4. **Manual QA checklist**: What should be tested before every deploy? (Create a checklist)
-5. **Monitoring**: What to set up for production? (Sentry for errors, UptimeRobot for uptime, PostHog for analytics)
-6. **Performance benchmarks**: What are our targets? (TTI < 3s, API < 500ms, Lighthouse > 90)
-
-Create tasks for Forge to implement the testing framework and monitoring setup.
-
-DELIVERABLE: QA strategy document + 5 tasks created for implementation.` },
+DELIVERABLE: 18-24 sprint tasks created in Hive. List every task in your output.` },
 
     // ═══════════════════════════════════════════════════════
-    // PHASE 3: BUILD — Forge implements based on the plan
-    // These are starter tasks; Nexus will create more specific ones
+    // PHASE 3: BUILD — Fix onboarding, add features, improve site
+    // Forge starts building while more research continues
     // ═══════════════════════════════════════════════════════
 
-    { agent: 'forge', title: 'Ember Phase 3: Set up CI/CD pipeline', priority: 'high',
-      desc: `Set up automated build and deploy pipeline for Ember. Read the current repo structure first.
+    { agent: 'forge', title: 'Ember Phase 3: Fix onboarding — seed sample data on signup', priority: 'critical',
+      desc: `The #1 problem: new restaurants sign up and Kitchen Bible is empty. Fix this NOW.
 
-1. github_read_file on Jmerc151/sous-frontend and Jmerc151/sous-backend for existing CI config (.github/workflows/)
-2. If no CI exists, create GitHub Actions workflow:
-   - On push to main: run linter, run tests (if any), build frontend, deploy
-   - On PR: run linter, run tests, build check (don't deploy)
-3. Create .github/workflows/ci.yml in both repos
-4. Add basic npm test script to package.json if missing
+1. Read Jmerc151/sous-backend signup/registration controller
+2. Create a seed function that inserts sample data when a new restaurant is created:
+   - 5 sample recipes with real restaurant data (Classic Burger, Caesar Salad, Pasta Carbonara, Tomato Soup, Chocolate Cake) — include ingredients, instructions, prep time, food cost
+   - 3 sample checklists (Opening Checklist, Closing Checklist, Cleaning Checklist) — with realistic items
+   - 2 sample prep lists (AM Prep, PM Prep) — with common prep items
+3. Call this seed function immediately after restaurant creation in the signup flow
+4. Make it obvious to the user that this is sample data they can edit/delete
+5. Create feature branch, implement, submit PR
 
-DELIVERABLE: PR with CI/CD workflow in both repos. Output PR URLs.` },
+DELIVERABLE: PR URL. Test by checking what a new signup sees.` },
 
-    { agent: 'forge', title: 'Ember Phase 3: Integrate Stripe Checkout for subscriptions', priority: 'high',
-      desc: `Implement Stripe subscription billing in Jmerc151/sous-backend:
-1. github_read_file on package.json and existing controllers to understand patterns
-2. Create controllers/billing.js:
-   - POST /api/billing/create-checkout-session (Stripe Checkout for $49/mo)
-   - POST /api/billing/webhook (handle subscription.created, invoice.paid, subscription.cancelled)
-   - GET /api/billing/status (current plan for logged-in restaurant)
-3. Add columns: restaurant.subscription_status, restaurant.stripe_customer_id
+    { agent: 'forge', title: 'Ember Phase 3: Fix onboarding — build setup wizard', priority: 'critical',
+      desc: `After signup, guide the restaurant owner through initial setup. Read existing frontend first.
+
+1. github_read_file on Jmerc151/sous-frontend src/App.jsx and routing
+2. Create src/pages/Setup.jsx — 4-step wizard:
+   Step 1: Restaurant basics (name already entered at signup — confirm, add cuisine type, add address)
+   Step 2: Your first recipe (show the sample recipe, let them edit it or add their own)
+   Step 3: Your first checklist (show sample checklist, let them customize it)
+   Step 4: Invite your team (enter staff email addresses to invite)
+3. Show progress bar (Step 1 of 4, Step 2 of 4, etc.)
+4. "Skip for now" option on each step
+5. After completing or skipping all steps, redirect to main dashboard
+6. Set onboarding_completed flag so wizard doesn't show again
+7. Create feature branch, implement, submit PR
+
+DELIVERABLE: PR URL with setup wizard.` },
+
+    { agent: 'forge', title: 'Ember Phase 3: Add loading skeletons and empty states everywhere', priority: 'high',
+      desc: `The app feels broken when things are loading. Fix every page.
+
+1. Read ALL pages in Jmerc151/sous-frontend src/pages/ and src/components/
+2. For every page that fetches data:
+   - Replace "Loading..." text with Tailwind skeleton (animate-pulse, bg-gray-200 blocks matching content shape)
+   - Add empty state when data is loaded but empty ("No recipes yet — add your first recipe" with a CTA button)
+   - Add error state when fetch fails ("Something went wrong — try again" with retry button)
+3. Create a reusable SkeletonCard and SkeletonList component
 4. Create feature branch, implement, submit PR
 
-DELIVERABLE: PR URL with working Stripe endpoints.` },
+DELIVERABLE: PR URL. Every page should have loading, empty, and error states.` },
 
-    // ═══════════════════════════════════════════════════════
-    // PHASE 4: GROW — Content, outreach, local presence
-    // ═══════════════════════════════════════════════════════
+    { agent: 'forge', title: 'Ember Phase 3: Mobile touch targets and responsive fixes', priority: 'high',
+      desc: `Kitchen staff tap screens hundreds of times per shift. Every interactive element needs to be easy to tap.
 
-    { agent: 'quill', title: 'Ember Phase 4: Write SLO-targeted landing page copy', priority: 'medium',
-      desc: `Write landing page copy specifically targeting San Luis Obispo County restaurant owners.
+1. Read ALL components in Jmerc151/sous-frontend
+2. Find every button, link, checkbox, toggle, and tappable element
+3. For each:
+   - Minimum 44px height (min-h-[44px])
+   - Adequate padding (p-3 minimum)
+   - Clear tap feedback (active:scale-95 or active:bg-gray-100)
+   - No tiny close buttons or hard-to-hit targets
+4. Check every page at 375px width (iPhone SE) — fix any overflow or layout breaks
+5. Create feature branch, implement, submit PR
 
-Include:
-- Hero: "Kitchen management software built for SLO County restaurants"
-- Pain points specific to small independent restaurants (paper checklists, recipe binders, staff turnover)
-- Feature highlights: Kitchen Bible, digital checklists, recipe management
-- Social proof: mention Honey Belly Korean BBQ as existing customer
-- Local angle: "Built in SLO, for SLO restaurants"
-- Pricing: $49/mo, free trial
-- CTA: "Start your free trial"
+DELIVERABLE: PR URL listing every component updated.` },
 
-DELIVERABLE: Complete landing page copy saved to write_file as ember-slo-landing.md. Include hero, 3 sections, pricing, and CTA.` },
+    { agent: 'forge', title: 'Ember Phase 3: Improve the website based on competitor patterns', priority: 'high',
+      desc: `Our website needs to look professional. Read Scout's competitor website research (ember-competitor-websites.md) and improve our site.
 
-    { agent: 'quill', title: 'Ember Phase 4: Write restaurant comparison article for SEO', priority: 'medium',
-      desc: `Write a 2000-word SEO article: "Best Kitchen Management Software for Small Restaurants (2026 Comparison)"
-Compare: Ember vs meez vs FreshCheq vs MarketMan vs paper systems.
-Include: pricing table, feature matrix, pros/cons, real Reddit quotes from r/KitchenConfidential.
-Position Ember as: simplest, mobile-first, built for independent restaurants.
-CTA: "Try Ember free at sous-chef.app"
-DELIVERABLE: Published article URL (dev.to) or complete markdown saved to write_file.` },
+1. Read the competitor website analysis from Scout's research
+2. Read Jmerc151/sous-frontend current landing/marketing pages
+3. Implement improvements inspired by the best competitor sites:
+   - Clear hero section with value prop (what does Ember do in 10 words?)
+   - Feature showcase with screenshots or mockups
+   - Clean navigation
+   - Professional typography and spacing
+   - Mobile-responsive layout
+   - Fast loading (no heavy images, use Tailwind)
+4. Don't copy — be inspired by what works and make it our own
+5. Create feature branch, implement, submit PR
+
+DELIVERABLE: PR URL with improved website pages.` },
   ]
 
   for (const t of emberBacklog) {
