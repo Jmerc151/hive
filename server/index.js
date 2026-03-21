@@ -2811,15 +2811,15 @@ async function generateFollowUpTasks(completedTask, agent, output) {
   try {
     // Cap: don't generate more if queue is already full
     const pendingCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo', 'in_progress')").get().c
-    if (pendingCount >= 10) {
-      console.log(`⏸️ Skipping follow-up generation — ${pendingCount} tasks already pending (max 10)`)
+    if (pendingCount >= 20) {
+      console.log(`⏸️ Skipping follow-up generation — ${pendingCount} tasks already pending (max 20)`)
       return
     }
 
-    // ANTI-SPIRAL: max 5 auto-generated tasks per day
+    // ANTI-SPIRAL: max 30 auto-generated tasks per day (spend limits are the real guardrail)
     const todayAutoCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE spawned_by IS NOT NULL AND created_at >= datetime('now', '-24 hours')").get().c
-    if (todayAutoCount >= 5) {
-      console.log(`⏸️ Skipping follow-up — ${todayAutoCount} auto-tasks today (max 5/day)`)
+    if (todayAutoCount >= 30) {
+      console.log(`⏸️ Skipping follow-up — ${todayAutoCount} auto-tasks today (max 30/day)`)
       return
     }
 
@@ -10721,30 +10721,35 @@ function scheduleWeekdayHeartbeat(name, hour, minute, fn) {
   console.log(`📅 ${name} scheduled for ${next.toLocaleString()} (in ${Math.round(delay / 60000)}min)`)
 }
 
-// Ember runs 7 days a week — morning and afternoon sessions
-scheduleWeekdayHeartbeat('ember-dev-daily', 9, 0, () => runPipelineByName('Ember Dev Daily'))
-// Afternoon Ember session — every day including weekends
-registerHeartbeat('ember-dev-afternoon', 24 * 60 * 60 * 1000, () => {
-  const h = new Date().getHours()
-  if (h >= 14 && h <= 16) runPipelineByName('Ember Dev Daily')
-})
-scheduleWeekdayHeartbeat('trading-session', 9, 31, () => runPipelineByName('Trading Session'))
+// ── 24/7 Continuous Pipeline Scheduling ──────────────────────
+// Agents aren't humans — they work around the clock.
+// Spend limits are the guardrail, not time-of-day.
 
-// AgentForge Build — 10am Mon/Wed/Fri
-registerHeartbeat('agentforge-build', 24 * 60 * 60 * 1000, () => {
-  const d = new Date()
-  if ([1, 3, 5].includes(d.getDay()) && d.getHours() >= 9 && d.getHours() <= 11) {
-    runPipelineByName('AgentForge Build')
-  }
+// Ember Dev — every 3 hours
+registerHeartbeat('ember-dev-continuous', 3 * 60 * 60 * 1000, () => {
+  const pending = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo','in_progress') AND title LIKE '%Ember%'").get().c
+  if (pending === 0) runPipelineByName('Ember Dev Daily')
 })
 
-// Opportunity Scan — Monday 9am (handled by ember-dev-daily schedule checking day)
-registerHeartbeat('opportunity-scan-weekly', 7 * 24 * 60 * 60 * 1000, () => {
+// Trading Session — every 4 hours (markets have hours but analysis doesn't)
+registerHeartbeat('trading-continuous', 4 * 60 * 60 * 1000, () => {
+  const pending = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo','in_progress') AND title LIKE '%Trading%'").get().c
+  if (pending === 0) runPipelineByName('Trading Session')
+})
+
+// AgentForge Build — every 4 hours
+registerHeartbeat('agentforge-continuous', 4 * 60 * 60 * 1000, () => {
+  const pending = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo','in_progress') AND title LIKE '%AgentForge%'").get().c
+  if (pending === 0) runPipelineByName('AgentForge Build')
+})
+
+// Opportunity Scan — every 2 days
+registerHeartbeat('opportunity-scan', 2 * 24 * 60 * 60 * 1000, () => {
   runPipelineByName('Opportunity Scan')
 })
 
-// Weekly Sprint — Sunday 6pm
-registerHeartbeat('weekly-sprint', 7 * 24 * 60 * 60 * 1000, () => {
+// Weekly Sprint — every 3 days
+registerHeartbeat('weekly-sprint', 3 * 24 * 60 * 60 * 1000, () => {
   runPipelineByName('Weekly Sprint')
 })
 
