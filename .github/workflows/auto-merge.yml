@@ -18,6 +18,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and merge PR
+        id: merge
         uses: actions/github-script@v7
         with:
           script: |
@@ -33,6 +34,7 @@ jobs:
 
             if (comparison.ahead_by === 0) {
               console.log('Branch is already up-to-date with main. Nothing to merge.');
+              core.setOutput('merged', 'false');
               return;
             }
 
@@ -71,3 +73,16 @@ jobs:
             });
 
             console.log(`Merged PR #${pr.number}`);
+            core.setOutput('merged', 'true');
+
+      - name: Trigger deploy
+        if: steps.merge.outputs.merged == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              event_type: 'deploy'
+            });
+            console.log('Triggered deploy via repository_dispatch');

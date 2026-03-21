@@ -3,16 +3,12 @@ name: Deploy to Lightsail
 on:
   push:
     branches: [main]
-  workflow_run:
-    workflows: ["Auto-merge Claude branches"]
-    types: [completed]
+  repository_dispatch:
+    types: [deploy]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    if: >
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
