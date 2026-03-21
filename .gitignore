@@ -1,8 +1,6 @@
 node_modules/
-# dist/ — temporarily included for VM deployment
 *.db
 .env
 .DS_Store
 hive.db-shm
 hive.db-wal
-dist/
