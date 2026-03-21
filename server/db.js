@@ -601,6 +601,52 @@ try { db.exec(`ALTER TABLE tasks ADD COLUMN goal TEXT DEFAULT ''`) } catch (e) {
 try { db.exec(`ALTER TABLE tasks ADD COLUMN parent_goal TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
 try { db.exec(`ALTER TABLE tasks ADD COLUMN company_mission TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
 
+// Migration: fix tasks CHECK constraint to include 'paused' status
+// SQLite can't ALTER CHECK constraints, so we recreate the table
+try {
+  const tableInfo = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'").get();
+  if (tableInfo && tableInfo.sql && !tableInfo.sql.includes("'paused'")) {
+    db.exec(`
+      CREATE TABLE tasks_new (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        status TEXT DEFAULT 'backlog' CHECK(status IN ('backlog','todo','in_progress','in_review','done','failed','awaiting_approval','paused')),
+        priority TEXT DEFAULT 'medium' CHECK(priority IN ('low','medium','high','critical')),
+        agent_id TEXT,
+        output TEXT DEFAULT '',
+        error TEXT DEFAULT '',
+        retries INTEGER DEFAULT 0,
+        tokens_used INTEGER DEFAULT 0,
+        estimated_cost REAL DEFAULT 0,
+        token_budget INTEGER DEFAULT 0,
+        requires_approval INTEGER DEFAULT 0,
+        pipeline_id TEXT,
+        pipeline_step INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        started_at TEXT,
+        completed_at TEXT,
+        nexus_score INTEGER,
+        spawned_by TEXT DEFAULT '',
+        evidence TEXT DEFAULT '{}',
+        project_id TEXT DEFAULT '',
+        milestone_id TEXT DEFAULT '',
+        goal TEXT DEFAULT '',
+        parent_goal TEXT DEFAULT '',
+        company_mission TEXT DEFAULT ''
+      );
+      INSERT INTO tasks_new SELECT id, title, description, status, priority, agent_id, output, error, retries,
+        tokens_used, estimated_cost, token_budget, requires_approval, pipeline_id, pipeline_step,
+        created_at, updated_at, started_at, completed_at, nexus_score, spawned_by, evidence,
+        project_id, milestone_id, goal, parent_goal, company_mission FROM tasks;
+      DROP TABLE tasks;
+      ALTER TABLE tasks_new RENAME TO tasks;
+    `);
+    console.log('[migration] Rebuilt tasks table with updated CHECK constraint (added paused)');
+  }
+} catch (e) { console.error('[migration] tasks CHECK constraint fix failed:', e.message); }
+
 // Knowledge graph relationships
 db.exec(`
   CREATE TABLE IF NOT EXISTS memory_relationships (
