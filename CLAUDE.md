@@ -44,10 +44,14 @@
 ## Lessons Learned (DO NOT REPEAT)
 
 ### Deployment
+- **Deploy is fully automated.** Push to `claude/*` branch → auto-merge workflow merges to main → deploy workflow SSHs into VM and restarts. Zero manual steps.
+- **Claude Code on the web can ONLY push to `claude/*` branches.** Never try to push to main directly — it will 403. The auto-merge workflow handles it.
+- **Don't ask the user to create PRs or touch GitHub.** The auto-merge + auto-deploy pipeline handles everything. Just push to the claude branch and verify the deploy.
+- **ALWAYS verify deploys.** After pushing, wait 20-30s then `curl` the health endpoint and check uptime is low (fresh restart). Don't tell the user it's done until verified.
 - **ALWAYS `git stash` before `git pull` on VM.** The VM ALWAYS has dirty state. Never just `git pull`. This has bitten us 3+ times.
 - **After every deploy, verify on production.** `curl` the changed endpoint or load the UI. The health endpoint auth bug cost us an extra deploy cycle because we didn't verify.
 - **Express middleware `req.path` is relative to mount point.** Auth middleware mounted on `/api` sees `/health`, not `/api/health`. This is a common gotcha.
-- **Build locally, push dist to git, then pull on VM.** The VM runs the app, it doesn't build it.
+- **Build locally, push dist to git, then pull on VM.** The VM runs the app, it doesn't build it. `dist/` is NOT in .gitignore.
 
 ### Agents & Spend
 - **Agents spiral without guardrails.** They invented a fake healthcare business and burned $72. Anti-spiral guardrails now in place.
@@ -60,6 +64,9 @@
 ### Code
 - **Text-only problem was model routing.** Scout (perplexity/sonar-pro) and Forge (deepseek-r1) didn't support native function calling. Switched both to claude-haiku-4-5. Now all agents produce tool calls.
 - **3 business pillars ONLY:** Ember, Hive/AgentForge, Trading. Everything else is off-topic. Agents will try to expand scope — block it.
+- **Agents were faking completion.** toolUsageCounts was incremented BEFORE tool execution, so failed calls counted as "files_created". Fixed: only successful calls count now. Tasks where ALL tools fail get auto-rejected.
+- **Qwen3 forgets required params.** `github_write_file` without `message`, `create_task` without `description`. Auto-fill defaults added instead of failing.
+- **step-- infinite loop.** When all tools failed, step counter decremented giving infinite retries. Now capped at 2 free passes.
 
 ---
 
