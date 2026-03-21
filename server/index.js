@@ -209,6 +209,10 @@ const AGENT_MODELS = {
   oracle:   'deepseek/deepseek-r1-0528',       // was claude-sonnet-4-5 — 85% cheaper, top reasoning model
   nexus:    'anthropic/claude-sonnet-4-5',     // keep — orchestration/scoring needs reliability
   sentinel: 'qwen/qwen3-235b-a22b',           // was claude-haiku-4-5 — monitoring tasks, cheaper
+  architect:'qwen/qwen3-235b-a22b',           // code review — needs to understand code well
+  designer: 'qwen/qwen3-235b-a22b',           // UX research + HTML mockups — good at creative tasks
+  tester:   'qwen/qwen3-235b-a22b',           // test writing — needs code understanding
+  strategist:'anthropic/claude-haiku-4-5',     // strategy needs reliable reasoning + tool calling
 }
 function getAgentModel(agentId) {
   return AGENT_MODELS[agentId] || 'anthropic/claude-sonnet-4-5'
@@ -231,8 +235,8 @@ function getSmartModel(agentId) {
   const agentSpend = db.prepare("SELECT COALESCE(SUM(cost), 0) as total FROM spend_log WHERE agent_id = ? AND date = ?").get(agentId, today)
   // Use per-agent limit if set, otherwise divide global limit by 7 agents
   const perAgentSetting = db.prepare("SELECT value FROM settings WHERE key = ?").get(`${agentId}_daily_usd`)
-  const dailyLimit = parseFloat(db.prepare("SELECT value FROM settings WHERE key = 'daily_limit_usd'").get()?.value || '20')
-  const agentLimit = perAgentSetting ? parseFloat(perAgentSetting.value) : dailyLimit / 7
+  const dailyLimit = parseFloat(db.prepare("SELECT value FROM settings WHERE key = 'daily_limit_usd'").get()?.value || '35')
+  const agentLimit = perAgentSetting ? parseFloat(perAgentSetting.value) : dailyLimit / 11
 
   const spendRatio = agentSpend.total / agentLimit
 
@@ -835,7 +839,7 @@ const TOOL_REGISTRY = [
       body: { type: 'string', required: true, description: 'Email body — include what you found, why it matters, your recommendation, and what you need from the founder. Be concise but thorough.' },
       category: { type: 'string', required: false, description: 'Category: feature_proposal, research_finding, blocker, question, competitor_alert' }
     },
-    agents: ['scout', 'forge', 'quill', 'nexus', 'oracle'],
+    agents: ['scout', 'forge', 'quill', 'nexus', 'oracle', 'architect', 'designer', 'tester', 'strategist'],
     execute: async (args, ctx) => {
       const OWNER_EMAIL = process.env.GMAIL_USER || 'Johnmercurio151@gmail.com'
       try {
@@ -4020,6 +4024,26 @@ ${previousOutput ? `**Your previous output (which was not good enough):**\n${pre
 - You MUST send real emails to real addresses found via web_search
 - You MUST log outreach results
 - Plans to "reach out" without sending = REJECTED.`,
+      architect: `**YOUR REQUIRED DELIVERABLES (Architect):**
+- For PR reviews: you MUST read every changed file, score 1-10 on 5 criteria, and create github_create_issue with feedback
+- For architecture decisions: you MUST save an ADR document using write_file
+- If you find a security issue: use propose_feature to email the founder IMMEDIATELY
+- Reviews without scores and specific file:line references = REJECTED.`,
+      designer: `**YOUR REQUIRED DELIVERABLES (Designer):**
+- You MUST create HTML/Tailwind mockup files using write_file (e.g., mockup-feature-name.html)
+- Every mockup MUST include mobile (375px) and desktop views
+- You MUST create_task for Forge to implement your design
+- Descriptions of designs without HTML mockup files = REJECTED.`,
+      tester: `**YOUR REQUIRED DELIVERABLES (Tester):**
+- You MUST write actual test code and save it using write_file or github_write_file
+- Test files go in __tests__/ directory or as *.test.js files
+- You MUST submit tests as PRs using github_create_pr
+- Describing what tests should be written without writing them = REJECTED.`,
+      strategist: `**YOUR REQUIRED DELIVERABLES (Strategist):**
+- You MUST create sprint tasks using create_task with ultra-specific descriptions
+- You MUST save strategy documents using write_file
+- You MUST email the founder with top recommendations using propose_feature
+- Generic advice without specific tasks and files = REJECTED.`,
     }
     const deliverableReqs = agentDeliverables[agent.id] || ''
 
@@ -4479,6 +4503,26 @@ START WITH TOOL CALLS NOW.`
         if (evidenceObj.trades_placed > 0) return null
         if (outputLen > 1000 && evidenceObj.web_searches > 0) return null // market analysis is OK
         return 'Oracle must place trades (place_order) or produce substantial market analysis with real data.'
+      },
+      architect: () => {
+        if (evidenceObj.issues_created > 0) return null // PR review comments as issues
+        if (evidenceObj.files_created > 0) return null // architecture docs
+        if (outputLen > 2000) return null // substantial code review
+        return 'Architect must create GitHub issues (PR review feedback) or save architecture docs to files.'
+      },
+      designer: () => {
+        if (evidenceObj.files_created > 0) return null // HTML mockups or UX docs
+        if (evidenceObj.prs_created > 0) return null // design PRs
+        return 'Designer must save HTML mockups or UX spec files (write_file). Design without files is rejected.'
+      },
+      tester: () => {
+        if (evidenceObj.files_created > 0 || evidenceObj.prs_created > 0) return null // test files
+        return 'Tester must save test files (write_file/github_write_file) or submit test PRs. No tests written = rejected.'
+      },
+      strategist: () => {
+        if (evidenceObj.tasks_created > 0) return null // sprint tasks
+        if (evidenceObj.files_created > 0) return null // strategy docs
+        return 'Strategist must create sprint tasks (create_task) or save strategy documents to files.'
       },
     }
 
@@ -10162,14 +10206,18 @@ for (const p of masterPipelines) {
 
 // Set per-agent spend limits (only if not already set — don't overwrite user changes)
 const spendDefaults = {
-  daily_limit_usd: '20.00',
-  monthly_limit_usd: '500.00',
+  daily_limit_usd: '35.00',
+  monthly_limit_usd: '800.00',
   scout_daily_usd: '4.00',
   forge_daily_usd: '5.00',
   quill_daily_usd: '3.00',
   dealer_daily_usd: '2.00',
   oracle_daily_usd: '3.00',
   nexus_daily_usd: '3.00',
+  architect_daily_usd: '3.00',
+  designer_daily_usd: '3.00',
+  tester_daily_usd: '3.00',
+  strategist_daily_usd: '2.00',
   auto_tasks_enabled: 'true',
   auto_chain_enabled: 'true',
   digest_last_sent: '',
@@ -10178,7 +10226,7 @@ const spendDefaults = {
 for (const [key, value] of Object.entries(spendDefaults)) {
   db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)").run(key, value)
 }
-console.log('💰 Spend limits updated: $20/day global, per-agent caps set')
+console.log('💰 Spend limits updated: $35/day global, 11 agents, per-agent caps set')
 
 // ── Seed Ember Product Backlog — Development & Research Only ──────────────
 // NO marketing, NO outreach, NO sales. Build the product first.
