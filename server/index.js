@@ -3969,6 +3969,92 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
       }
     }
 
+    // ── Shared Team Context ──────────────────────────────
+    // Every agent sees what the team has been doing recently
+    // This creates collective awareness across all 11 agents
+    let teamContext = ''
+    try {
+      // Recent completed tasks from ALL agents (last 48h)
+      const recentWork = db.prepare(`
+        SELECT agent_id, title, evidence, completed_at
+        FROM tasks WHERE status = 'done' AND completed_at >= datetime('now', '-2 days')
+        ORDER BY completed_at DESC LIMIT 15
+      `).all()
+
+      // Currently in-progress tasks
+      const activeWork = db.prepare(`
+        SELECT agent_id, title FROM tasks WHERE status = 'in_progress'
+      `).all()
+
+      // Queued tasks waiting to be done
+      const queuedWork = db.prepare(`
+        SELECT agent_id, title FROM tasks WHERE status = 'todo'
+        ORDER BY priority = 'critical' DESC, priority = 'high' DESC, created_at ASC LIMIT 10
+      `).all()
+
+      // Research files saved by other agents (check workspace)
+      const researchFiles = db.prepare(`
+        SELECT agent_id, title, output FROM tasks
+        WHERE status = 'done' AND output LIKE '%write_file%'
+        AND completed_at >= datetime('now', '-7 days')
+        ORDER BY completed_at DESC LIMIT 5
+      `).all()
+      const savedFiles = researchFiles.map(t => {
+        const fileMatch = t.output?.match(/(?:path|file|filename)['":\s]*([^\s'",}]+\.(?:md|html|json))/i)
+        return fileMatch ? `${t.agent_id}: ${fileMatch[1]}` : null
+      }).filter(Boolean)
+
+      if (recentWork.length > 0 || activeWork.length > 0) {
+        teamContext = '\n## Team Activity (what other agents are doing)\n'
+
+        if (activeWork.length > 0) {
+          teamContext += '**Currently working:**\n' + activeWork
+            .filter(t => t.agent_id !== agent.id)
+            .map(t => `- ${t.agent_id}: "${t.title}"`)
+            .join('\n') + '\n'
+        }
+
+        if (recentWork.length > 0) {
+          teamContext += '**Recently completed (last 48h):**\n' + recentWork
+            .filter(t => t.agent_id !== agent.id)
+            .slice(0, 8)
+            .map(t => {
+              let artifacts = ''
+              try {
+                const ev = JSON.parse(t.evidence || '{}')
+                const parts = []
+                if (ev.prs_created > 0) parts.push(`${ev.prs_created} PR`)
+                if (ev.issues_created > 0) parts.push(`${ev.issues_created} issues`)
+                if (ev.files_created > 0) parts.push(`${ev.files_created} files`)
+                if (ev.trades_placed > 0) parts.push(`${ev.trades_placed} trades`)
+                if (ev.tasks_created > 0) parts.push(`${ev.tasks_created} tasks`)
+                artifacts = parts.length > 0 ? ` → ${parts.join(', ')}` : ''
+              } catch {}
+              return `- ${t.agent_id}: "${t.title}"${artifacts}`
+            })
+            .join('\n') + '\n'
+        }
+
+        if (queuedWork.length > 0) {
+          teamContext += '**Queued next:**\n' + queuedWork
+            .filter(t => t.agent_id !== agent.id)
+            .slice(0, 5)
+            .map(t => `- ${t.agent_id}: "${t.title}"`)
+            .join('\n') + '\n'
+        }
+
+        if (savedFiles.length > 0) {
+          teamContext += '**Research files available (read with read_file):**\n' + savedFiles
+            .map(f => `- ${f}`)
+            .join('\n') + '\n'
+        }
+
+        teamContext += '\nUse this context: don\'t duplicate work already done. Build on other agents\' findings. If another agent saved research files, read them with read_file before starting your own research.\n'
+      }
+    } catch (e) {
+      log('error', 'team_context_failed', { error: e.message })
+    }
+
     // ── Self-Correction Context ──────────────────────────
     // If this task was rejected by proof-of-work and is retrying,
     // inject WHY it failed so the agent tries a different approach
@@ -4051,7 +4137,7 @@ ${previousOutput ? `**Your previous output (which was not good enough):**\n${pre
 
 Details: ${task.description || 'No additional details.'}
 
-${selfCorrectionContext}${parentContext}${agentMemory ? `## Your Memory (learnings from past tasks):\n${agentMemory.slice(-2000)}\n` : ''}
+${selfCorrectionContext}${parentContext}${teamContext}${agentMemory ? `## Your Memory (learnings from past tasks):\n${agentMemory.slice(-2000)}\n` : ''}
 
 ${deliverableReqs}
 
