@@ -229,12 +229,14 @@ function getSmartModel(agentId) {
 
   const today = new Date().toISOString().slice(0, 10)
   const agentSpend = db.prepare("SELECT COALESCE(SUM(cost), 0) as total FROM spend_log WHERE agent_id = ? AND date = ?").get(agentId, today)
-  const dailyLimit = parseFloat(db.prepare("SELECT value FROM settings WHERE key = 'daily_limit_usd'").get()?.value || '5')
-  const agentLimit = dailyLimit / 6
+  // Use per-agent limit if set, otherwise divide global limit by 7 agents
+  const perAgentSetting = db.prepare("SELECT value FROM settings WHERE key = ?").get(`${agentId}_daily_usd`)
+  const dailyLimit = parseFloat(db.prepare("SELECT value FROM settings WHERE key = 'daily_limit_usd'").get()?.value || '20')
+  const agentLimit = perAgentSetting ? parseFloat(perAgentSetting.value) : dailyLimit / 7
 
   const spendRatio = agentSpend.total / agentLimit
 
-  if (spendRatio > 0.8 && MODEL_FALLBACKS[baseModel] !== baseModel) {
+  if (spendRatio > 0.9 && MODEL_FALLBACKS[baseModel] !== baseModel) {
     log('info', 'model_downgraded', { agentId, from: baseModel, to: MODEL_FALLBACKS[baseModel], spendRatio: Math.round(spendRatio * 100) })
     return MODEL_FALLBACKS[baseModel]
   }
@@ -2876,9 +2878,9 @@ async function checkAutoChain(completedTask, output) {
     // Max chain depth: 1 level (a chain cannot trigger another chain)
     if (completedTask.spawned_by) return
 
-    // Max 5 auto-tasks per day total
+    // Max 15 auto-tasks per day total (raised from 5 — cheaper models allow more throughput)
     const todayAutoCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE spawned_by IS NOT NULL AND spawned_by != '' AND created_at >= datetime('now', 'start of day')").get().c
-    if (todayAutoCount >= 5) return
+    if (todayAutoCount >= 15) return
 
     // ALLOWED chains with specific patterns
     let followAgent = null
@@ -2906,9 +2908,9 @@ async function checkAutoChain(completedTask, output) {
 
     if (!followAgent) return
 
-    // Don't chain if 3+ tasks already queued for target agent
+    // Don't chain if 8+ tasks already queued for target agent (raised from 3)
     const pendingCount = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status IN ('backlog','todo')").get(followAgent).c
-    if (pendingCount >= 3) return
+    if (pendingCount >= 8) return
 
     // Deduplication: check if similar task exists in last 24 hours
     const recentSimilar = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND title LIKE ? AND created_at >= datetime('now', '-1 day')").get(followAgent, `${prefix}%`).c
@@ -3730,7 +3732,7 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
   // ── ReAct Loop (with tool execution) ─────────────
   try {
     const agentMemory = readAgentMemory(agent.id)
-    const MAX_STEPS = parseInt(db.prepare("SELECT value FROM settings WHERE key = 'max_react_steps'").get()?.value || '8')
+    const MAX_STEPS = parseInt(db.prepare("SELECT value FROM settings WHERE key = 'max_react_steps'").get()?.value || '15')
     const STEP_TIMEOUT = parseInt(db.prepare("SELECT value FROM settings WHERE key = 'step_timeout_ms'").get()?.value || '300000')
     const MAX_TOOLS_PER_STEP = 5
     let messages = []
@@ -9789,14 +9791,14 @@ for (const p of masterPipelines) {
 
 // Set per-agent spend limits (only if not already set — don't overwrite user changes)
 const spendDefaults = {
-  daily_limit_usd: '8.00',
-  monthly_limit_usd: '200.00',
-  scout_daily_usd: '1.50',
-  forge_daily_usd: '2.00',
-  quill_daily_usd: '1.00',
-  dealer_daily_usd: '0.75',
-  oracle_daily_usd: '0.75',
-  nexus_daily_usd: '1.00',
+  daily_limit_usd: '20.00',
+  monthly_limit_usd: '500.00',
+  scout_daily_usd: '4.00',
+  forge_daily_usd: '5.00',
+  quill_daily_usd: '3.00',
+  dealer_daily_usd: '2.00',
+  oracle_daily_usd: '3.00',
+  nexus_daily_usd: '3.00',
   auto_tasks_enabled: 'true',
   auto_chain_enabled: 'true',
   digest_last_sent: '',
