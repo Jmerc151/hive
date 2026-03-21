@@ -3890,6 +3890,120 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
     return res.status(429).json({ error: limitErr.message })
   }
 
+  // ── Pre-Flight Validation ──────────────────────────
+  // Check if the task CAN succeed before spending API tokens
+  // Catches problems that would waste entire runs (empty repos, duplicate work, vague descriptions)
+  try {
+    const preflightErrors = []
+    const title = task.title || ''
+    const desc = task.description || ''
+    const titleLower = title.toLowerCase()
+    const descLower = desc.toLowerCase()
+
+    // 1. Task description quality check — reject vague tasks
+    if (desc.length < 50 && !title.startsWith('Fix issues:') && !title.startsWith('[Pipeline')) {
+      preflightErrors.push('Task description is too vague (< 50 chars). Tasks need specific instructions to produce deliverables.')
+    }
+
+    // 2. Deliverable keyword check — task should mention what to produce
+    const hasDeliverable = /DELIVERABLE|PR URL|github_create|write_file|save.*file|create.*issue|place_order|send_email|create_task|publish/i.test(desc)
+    if (desc.length > 100 && !hasDeliverable && !title.startsWith('[Pipeline')) {
+      preflightErrors.push('Task description has no DELIVERABLE specified. Add what the agent should produce (PR, file, issue, email, etc.).')
+    }
+
+    // 3. Duplicate check — has this exact task been done recently?
+    const recentDuplicate = db.prepare(
+      "SELECT id, status, completed_at FROM tasks WHERE agent_id = ? AND title = ? AND id != ? AND created_at >= datetime('now', '-3 days') AND status IN ('done', 'in_progress') LIMIT 1"
+    ).get(task.agent_id, title, task.id)
+    if (recentDuplicate) {
+      preflightErrors.push(`Duplicate: "${title}" was already ${recentDuplicate.status} (${recentDuplicate.completed_at || 'running'}). Skipping to avoid wasting tokens.`)
+    }
+
+    // 4. GitHub pre-flight for Forge "fix issue" tasks
+    if (task.agent_id === 'forge' && /fix.*issue|fix.*bug|fix.*open/i.test(titleLower)) {
+      // Check if there ARE open issues before starting
+      const hasGithubToken = !!process.env.GITHUB_TOKEN
+      if (hasGithubToken) {
+        try {
+          const { Octokit } = await import('@octokit/rest').catch(() => ({ Octokit: null }))
+          if (Octokit) {
+            const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN })
+            const repos = ['sous-frontend', 'sous-backend']
+            let totalIssues = 0
+            for (const repo of repos) {
+              try {
+                const { data } = await octokit.issues.listForRepo({ owner: 'Jmerc151', repo, state: 'open', per_page: 1 })
+                totalIssues += data.filter(i => !i.pull_request).length
+              } catch {}
+            }
+            if (totalIssues === 0) {
+              preflightErrors.push('Pre-flight: No open GitHub issues found in sous-frontend or sous-backend. Forge would call github_get_issues 8 times and get empty results. Task rewritten to find issues independently.')
+              // Rewrite the task to be useful instead of failing
+              db.prepare("UPDATE tasks SET description = ?, updated_at = datetime('now') WHERE id = ?")
+                .run(`No open GitHub issues exist. Instead, READ the actual codebase and find problems yourself:\n1. github_list_files on Jmerc151/sous-frontend\n2. github_read_file on key files (App.jsx, pages, components)\n3. Look for: missing error handling, broken mobile layouts, incomplete features, missing loading states\n4. Create github_create_issue for each problem found (minimum 3)\n5. Pick the most critical issue and fix it — create branch, write code, submit PR\n\nDELIVERABLE: 3 GitHub issues created + 1 PR fixing the worst one.`, task.id)
+              // Refresh the task object
+              Object.assign(task, db.prepare('SELECT * FROM tasks WHERE id = ?').get(task.id))
+              log('info', 'preflight_task_rewritten', { taskId: task.id, reason: 'no open GitHub issues' })
+              preflightErrors.length = 0 // Clear errors since we fixed the task
+            }
+          }
+        } catch (e) {
+          // Octokit not available — skip this check, no big deal
+        }
+      }
+    }
+
+    // 5. Trading pre-flight for Oracle
+    if (task.agent_id === 'oracle' && /trade|trading session/i.test(titleLower)) {
+      // Check market hours before running trading task
+      const now = new Date()
+      const estHour = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' })).getHours()
+      const day = now.getDay()
+      if (day === 0 || day === 6 || estHour < 9 || estHour >= 16) {
+        preflightErrors.push('Pre-flight: Market is closed (outside 9:30am-4pm ET weekdays). Trading task will waste tokens trying to trade. Rescheduling.')
+        db.prepare("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ?").run(task.id)
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+          .run(task.id, agent.id, 'Pre-flight: market closed, task rescheduled', 'info')
+        return res.json({ ok: true, message: 'Market closed — task rescheduled for next open' })
+      }
+    }
+
+    // 6. Agent workload check — don't pile up if agent has failed 3+ tasks today
+    const todayFailures = db.prepare(
+      "SELECT COUNT(*) as c FROM tasks WHERE agent_id = ? AND status = 'failed' AND updated_at >= datetime('now', 'start of day')"
+    ).get(task.agent_id).c
+    if (todayFailures >= 3) {
+      preflightErrors.push(`Pre-flight: ${task.agent_id} has failed ${todayFailures} tasks today. Possible systemic issue — pausing to avoid wasting more tokens. Check task logs.`)
+    }
+
+    // Act on pre-flight errors
+    if (preflightErrors.length > 0) {
+      const reason = preflightErrors.join('\n')
+      log('warn', 'preflight_failed', { taskId: task.id, agentId: agent.id, errors: preflightErrors })
+      db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+        .run(task.id, agent.id, `Pre-flight check failed:\n${reason}`, 'warning')
+
+      // For duplicates and vague tasks: mark as failed, don't retry
+      if (recentDuplicate || todayFailures >= 3) {
+        db.prepare("UPDATE tasks SET status = 'failed', error = ?, updated_at = datetime('now') WHERE id = ?")
+          .run(`Pre-flight: ${reason.slice(0, 300)}`, task.id)
+        return res.status(400).json({ error: `Pre-flight failed: ${reason}` })
+      }
+
+      // For vague descriptions: requeue as backlog with a note
+      if (desc.length < 50 || (!hasDeliverable && desc.length > 100)) {
+        db.prepare("UPDATE tasks SET status = 'backlog', error = ?, updated_at = datetime('now') WHERE id = ?")
+          .run(`Pre-flight: ${reason.slice(0, 300)}`, task.id)
+        db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+          .run('system', '🛑 Pre-Flight', '🛑', '#f59e0b', `Blocked "${title}" — ${preflightErrors[0].slice(0, 100)}`)
+        return res.status(400).json({ error: `Pre-flight failed: ${reason}` })
+      }
+    }
+  } catch (preflightErr) {
+    // Pre-flight should never block execution if it errors — just log and continue
+    log('error', 'preflight_error', { taskId: task.id, error: preflightErr.message })
+  }
+
   // ── Approval Gates ──────────────────────────────
   // Agents are autonomous — only gate real-money actions (live trading, real capital deployment)
   // Auto-fix tasks, research, building, writing, analysis all run without approval
