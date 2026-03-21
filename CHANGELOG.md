@@ -609,3 +609,4 @@
 - `/api/spend` returns spend tracking data with limits
 - Database creates all tables: tasks, task_logs, messages, settings, spend_log
 - Default settings populated on first boot
+# Auto-merge test — Sat Mar 21 23:17:53 UTC 2026
