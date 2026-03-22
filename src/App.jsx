@@ -30,6 +30,7 @@ import CommandBar from './components/CommandBar'
 import SkillRegistryV2 from './components/SkillRegistryV2'
 import DeliverablesPanel from './components/DeliverablesPanel'
 import DeliverablesFeed from './components/DeliverablesFeed'
+import ReviewInbox from './components/ReviewInbox'
 import ProjectRoadmap from './components/ProjectRoadmap'
 import EvalHarness from './components/EvalHarness'
 import KnowledgeBase from './components/KnowledgeBase'
@@ -55,7 +56,7 @@ export default function App() {
   const [sseConnected, setSseConnected] = useState(false)
 
   // Main view state — replaces 25+ individual show* states
-  const [activeView, setActiveView] = useState('deliverables')
+  const [activeView, setActiveView] = useState('review')
 
   // True overlay modals — stack on top of any view
   const [showCreate, setShowCreate] = useState(false)
@@ -234,6 +235,15 @@ export default function App() {
   // Render the active view inline (no modal overlay)
   const renderActiveView = () => {
     switch (activeView) {
+      case 'review':
+        return (
+          <ReviewInbox
+            tasks={tasks}
+            agents={agents}
+            onSelectTask={setSelectedTask}
+            onNav={(key) => setActiveView(key)}
+          />
+        )
       case 'deliverables':
         return (
           <DeliverablesFeed
