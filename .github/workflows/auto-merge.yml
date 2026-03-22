@@ -7,7 +7,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  actions: write
 
 jobs:
   auto-merge:
@@ -19,7 +18,6 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and merge PR
-        id: merge
         uses: actions/github-script@v7
         with:
           script: |
@@ -34,7 +32,6 @@ jobs:
 
             if (comparison.ahead_by === 0) {
               console.log('Branch is already up-to-date with main. Nothing to merge.');
-              core.setOutput('merged', 'false');
               return;
             }
 
@@ -71,25 +68,3 @@ jobs:
             });
 
             console.log(`Merged PR #${pr.number}`);
-            core.setOutput('merged', 'true');
-
-  deploy:
-    needs: auto-merge
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.LIGHTSAIL_HOST }}
-          username: ${{ secrets.VM_USER }}
-          key: ${{ secrets.VM_SSH_KEY }}
-          port: 22
-          script_stop: true
-          command_timeout: 60s
-          script: |
-            cd ~/hive
-            git stash || true
-            git pull origin main
-            pm2 restart hive --update-env
-            sleep 3
-            curl -sf http://localhost:3002/api/health | head -c 200
