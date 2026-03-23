@@ -17,53 +17,10 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create and merge PR
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const branch = context.ref.replace('refs/heads/', '');
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-
-            // Check for existing open PR from this branch
-            const { data: existing } = await github.rest.pulls.list({
-              owner, repo,
-              head: `${owner}:${branch}`,
-              base: 'main',
-              state: 'open'
-            });
-
-            let pr;
-            if (existing.length > 0) {
-              pr = existing[0];
-              console.log(`Found existing PR #${pr.number}`);
-            } else {
-              // Create new PR
-              const { data: created } = await github.rest.pulls.create({
-                owner, repo,
-                title: `Auto-merge: ${branch}`,
-                head: branch,
-                base: 'main',
-                body: 'Auto-merged from Claude Code session.'
-              });
-              pr = created;
-              console.log(`Created PR #${pr.number}`);
-            }
-
-            // Merge it
-            try {
-              await github.rest.pulls.merge({
-                owner, repo,
-                pull_number: pr.number,
-                merge_method: 'squash'
-              });
-              console.log(`Merged PR #${pr.number}`);
-            } catch (e) {
-              console.log(`Merge failed: ${e.message}`);
-              // If merge fails due to conflicts, leave PR open for manual review
-              if (e.status === 405) {
-                console.log('Merge conflict detected — PR left open for manual review');
-              } else {
-                throw e;
-              }
-            }
+      - name: Merge to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git merge --no-ff origin/${{ github.ref_name }} -m "Auto-merge: ${{ github.ref_name }}"
+          git push origin main
