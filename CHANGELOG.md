@@ -1,5 +1,13 @@
 # Hive Changelog
 
+## 2026-03-23 — Ruflo-Inspired Intelligence Upgrades (Phase 1)
+
+- **Task complexity routing** — classifies tasks as simple/medium/complex, routes simple tasks to cheaper models (e.g. qwen-2.5-72b instead of qwen3-235b), saving ~40% on routine lookups
+- **Auto-failover on API errors** — when OpenRouter returns 429/502/503/504 or connection errors, automatically retries with fallback model instead of failing the task
+- **Cross-agent memory sharing** — when an agent stores a memory, it auto-shares to other agents whose interests match (e.g. Scout's market research auto-flows to Oracle and Dealer)
+- **Agent interest mapping** — each agent has defined topic interests for intelligent knowledge routing
+- **Failover logging** — all model switches logged with `model_failover` and `complexity_routing` events for observability
+
 ## 2026-03-21 — Chinese Model Integration + Unleashed Agent Throughput
 
 - **Agent model swap** — Scout, Forge, Quill, Sentinel switched from claude-haiku-4-5 to qwen/qwen3-235b-a22b (~55% cost reduction)
