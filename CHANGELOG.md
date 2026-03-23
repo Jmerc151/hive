@@ -1,5 +1,15 @@
 # Hive Changelog
 
+## 2026-03-23 — Ruflo-Inspired Swarm Intelligence + Smart Routing
+
+- **Swarm coordination** — Multi-agent consensus system. Multiple agents independently analyze the same task, then a coordinator synthesizes the best output. Supports hierarchical/mesh/ring topologies and majority/weighted/unanimous consensus methods.
+- **Intelligent task routing** — Auto-classifies tasks by complexity (simple/medium/complex/swarm). Simple tasks get fast-tracked with fewer steps, complex tasks get upgraded models, swarm-level tasks trigger multi-agent collaboration.
+- **Agent-to-agent streaming** — Enhanced pipeline system preserves full context between steps (16K chars vs old 4K truncation). Cumulative context from all prior steps flows forward instead of just the last step's output.
+- **Complexity auto-classification** — Every task gets a complexity score during pre-flight. Scoring considers task length, domain keywords, and multi-agent relevance.
+- **Swarm Panel UI** — New dashboard view for creating/monitoring swarms, viewing per-agent votes and consensus outputs, and classifying task complexity.
+- **New DB tables** — swarm_tasks (coordination metadata), swarm_votes (per-agent outputs and scores)
+- **New API endpoints** — POST/GET /api/swarms, POST /api/tasks/:id/smart-route, POST /api/tasks/classify, POST /api/pipelines/:id/run-streaming
+
 ## 2026-03-21 — Chinese Model Integration + Unleashed Agent Throughput
 
 - **Agent model swap** — Scout, Forge, Quill, Sentinel switched from claude-haiku-4-5 to qwen/qwen3-235b-a22b (~55% cost reduction)

@@ -592,6 +592,41 @@ db.exec(`
   );
 `)
 
+// Swarm coordination — multi-agent consensus (Ruflo-inspired)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS swarm_tasks (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    topology TEXT DEFAULT 'hierarchical' CHECK(topology IN ('hierarchical','mesh','ring')),
+    coordinator_agent TEXT,
+    participant_agents TEXT NOT NULL DEFAULT '[]',
+    consensus_method TEXT DEFAULT 'majority' CHECK(consensus_method IN ('majority','weighted','unanimous')),
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending','voting','consensus_reached','failed','cancelled')),
+    final_output TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_swarm_task ON swarm_tasks(task_id);
+
+  CREATE TABLE IF NOT EXISTS swarm_votes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    swarm_id TEXT NOT NULL REFERENCES swarm_tasks(id) ON DELETE CASCADE,
+    agent_id TEXT NOT NULL,
+    output TEXT DEFAULT '',
+    score REAL DEFAULT 0,
+    vote TEXT CHECK(vote IN ('approve','reject','abstain')),
+    reasoning TEXT DEFAULT '',
+    tokens_used INTEGER DEFAULT 0,
+    cost REAL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_swarm_votes_swarm ON swarm_votes(swarm_id);
+`)
+
+// Task complexity routing column
+try { db.exec(`ALTER TABLE tasks ADD COLUMN complexity TEXT DEFAULT '' CHECK(complexity IN ('','simple','medium','complex','swarm'))`) } catch (e) { /* already exists */ }
+try { db.exec(`ALTER TABLE tasks ADD COLUMN swarm_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
+
 // Migration: add project_id to tasks
 try { db.exec(`ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
 try { db.exec(`ALTER TABLE tasks ADD COLUMN milestone_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }

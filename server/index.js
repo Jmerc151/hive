@@ -4015,6 +4015,15 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
     log('error', 'preflight_error', { taskId: task.id, error: preflightErr.message })
   }
 
+  // ── Auto-classify task complexity ──────────────
+  if (!task.complexity) {
+    try {
+      const complexity = scoreTaskComplexity(task.title, task.description || '')
+      db.prepare("UPDATE tasks SET complexity = ? WHERE id = ?").run(complexity, task.id)
+      task.complexity = complexity
+    } catch {}
+  }
+
   // ── Approval Gates ──────────────────────────────
   // Agents are autonomous — only gate real-money actions (live trading, real capital deployment)
   // Auto-fix tasks, research, building, writing, analysis all run without approval
@@ -4858,15 +4867,40 @@ START WITH TOOL CALLS NOW.`
           const nextStep = steps.find(s => s.position === task.pipeline_step + 1)
           if (nextStep) {
             const nextId = uuid()
-            const nextPrompt = nextStep.prompt_template.replace('{{previous_output}}', fullOutput.slice(0, 4000))
+
+            // Check if this is a streaming pipeline — pass full context instead of truncating
+            const streamMeta = db.prepare("SELECT value FROM settings WHERE key = ?").get(`_pipeline_stream_${pipeline.id}`)
+            const isStreaming = !!streamMeta
+            const contextLimit = isStreaming ? 16000 : 4000
+
+            // Build cumulative context: gather all previous step outputs in this pipeline
+            let cumulativeContext = fullOutput.slice(0, contextLimit)
+            if (isStreaming) {
+              const prevSteps = db.prepare(
+                "SELECT pipeline_step, output FROM tasks WHERE pipeline_id = ? AND status = 'done' ORDER BY pipeline_step ASC"
+              ).all(pipeline.id)
+              if (prevSteps.length > 0) {
+                cumulativeContext = prevSteps.map(s => `--- Step ${s.pipeline_step} Output ---\n${s.output}`).join('\n\n').slice(0, contextLimit)
+              }
+            }
+
+            const nextPrompt = nextStep.prompt_template
+              .replace('{{previous_output}}', cumulativeContext)
+              .replace('{{all_outputs}}', cumulativeContext)
+
+            // Add stream metadata if streaming
+            const streamTag = isStreaming ? `\n\n[STREAM_STEP:${nextStep.position}][STREAM_TOTAL:${steps.length}]` : ''
+
             db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status, pipeline_id, pipeline_step) VALUES (?, ?, ?, 'high', ?, 'todo', ?, ?)`)
-              .run(nextId, `[Pipeline: ${pipeline.name}] Step ${nextStep.position}`, nextPrompt, nextStep.agent_id, pipeline.id, nextStep.position)
+              .run(nextId, `[Pipeline: ${pipeline.name}] Step ${nextStep.position}`, nextPrompt + streamTag, nextStep.agent_id, pipeline.id, nextStep.position)
             db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
-              .run(task.id, agent.id, `Pipeline continues → Step ${nextStep.position} (${nextStep.agent_id})`, 'info')
+              .run(task.id, agent.id, `Pipeline continues → Step ${nextStep.position} (${nextStep.agent_id})${isStreaming ? ' [streaming: full context]' : ''}`, 'info')
             setTimeout(() => processAgentQueue(nextStep.agent_id), 2000)
           } else {
             db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
               .run('system', '🔗 Pipeline', '🔗', '#8b5cf6', `Pipeline "${pipeline.name}" completed all ${steps.length} steps!`)
+            // Clean up stream metadata
+            db.prepare("DELETE FROM settings WHERE key = ?").run(`_pipeline_stream_${pipeline.id}`)
           }
         }
       } catch (e) { console.error('Pipeline continuation error:', e.message) }
@@ -11083,6 +11117,366 @@ const server = app.listen(PORT, '0.0.0.0', () => {
       log('error', 'skill_seed_failed', { error: e.message })
     }
   }, 3000)
+})
+
+// ══════════════════════════════════════════════════════
+// ██ SWARM COORDINATION — Multi-agent consensus       ██
+// ══════════════════════════════════════════════════════
+
+// Complexity scoring — routes tasks to appropriate execution path
+function scoreTaskComplexity(title, description) {
+  const text = `${title} ${description}`.toLowerCase()
+  let score = 0
+
+  // Length signals
+  if (text.length > 500) score += 2
+  if (text.length > 1000) score += 1
+
+  // Multi-domain keywords boost complexity
+  const complexKeywords = ['architect', 'design system', 'refactor', 'migration', 'security audit', 'performance', 'integrate', 'multi-', 'cross-', 'end-to-end', 'full stack', 'strategy', 'evaluate', 'compare']
+  const mediumKeywords = ['build', 'create', 'implement', 'analyze', 'research', 'write', 'develop', 'fix bug', 'optimize']
+  const simpleKeywords = ['check', 'list', 'get', 'status', 'lookup', 'fetch', 'read', 'monitor', 'log', 'update field']
+
+  for (const kw of complexKeywords) if (text.includes(kw)) score += 3
+  for (const kw of mediumKeywords) if (text.includes(kw)) score += 1
+  for (const kw of simpleKeywords) if (text.includes(kw)) score -= 1
+
+  // Multiple agents mentioned
+  const agentMentions = ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus', 'sentinel'].filter(a => text.includes(a))
+  if (agentMentions.length >= 2) score += 3
+
+  if (score <= 1) return 'simple'
+  if (score <= 5) return 'medium'
+  if (score <= 8) return 'complex'
+  return 'swarm'
+}
+
+// Agent weight for weighted voting (coordinator gets 3x, specialists get domain bonuses)
+function getAgentWeight(agentId, taskText) {
+  const weights = { nexus: 3, oracle: 2, architect: 2, strategist: 2 }
+  let base = weights[agentId] || 1
+
+  // Domain bonuses
+  const text = taskText.toLowerCase()
+  if (agentId === 'scout' && /research|find|discover|market/.test(text)) base += 1
+  if (agentId === 'forge' && /build|code|implement|fix|pr/.test(text)) base += 1
+  if (agentId === 'oracle' && /trade|market|price|stock|strategy/.test(text)) base += 1
+  if (agentId === 'quill' && /write|content|blog|email|copy/.test(text)) base += 1
+  if (agentId === 'dealer' && /sell|outreach|lead|customer/.test(text)) base += 1
+
+  return base
+}
+
+// Create a swarm task — multiple agents work on the same problem
+async function createSwarmTask(taskId, participantIds, options = {}) {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId)
+  if (!task) throw new Error('Task not found')
+
+  const {
+    topology = 'hierarchical',
+    coordinatorAgent = 'nexus',
+    consensusMethod = 'weighted'
+  } = options
+
+  const swarmId = uuid()
+  db.prepare(`INSERT INTO swarm_tasks (id, task_id, topology, coordinator_agent, participant_agents, consensus_method, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')`)
+    .run(swarmId, taskId, topology, coordinatorAgent, JSON.stringify(participantIds), consensusMethod)
+
+  db.prepare("UPDATE tasks SET swarm_id = ?, complexity = 'swarm', updated_at = datetime('now') WHERE id = ?")
+    .run(swarmId, taskId)
+
+  db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+    .run(taskId, 'system', `Swarm created: ${participantIds.length} agents (${participantIds.join(', ')}) using ${consensusMethod} consensus`, 'info')
+
+  log('info', 'swarm_created', { swarmId, taskId, participants: participantIds, topology, consensus: consensusMethod })
+  return swarmId
+}
+
+// Run swarm — each participant agent produces an output, then coordinator synthesizes
+async function runSwarm(swarmId) {
+  const swarm = db.prepare('SELECT * FROM swarm_tasks WHERE id = ?').get(swarmId)
+  if (!swarm) throw new Error('Swarm not found')
+
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(swarm.task_id)
+  if (!task) throw new Error('Task not found')
+
+  const participants = JSON.parse(swarm.participant_agents)
+
+  db.prepare("UPDATE swarm_tasks SET status = 'voting' WHERE id = ?").run(swarmId)
+  db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+    .run('system', '🐝 Swarm', '🐝', '#f59e0b', `Swarm started: ${participants.length} agents analyzing "${task.title}"`)
+
+  // Each participant produces their analysis independently
+  const votePromises = participants.map(async (agentId) => {
+    const agent = agents.find(a => a.id === agentId)
+    if (!agent) return null
+
+    try {
+      const memory = readAgentMemory(agentId)
+      const model = getSmartModel(agentId)
+
+      const startTime = Date.now()
+      const response = await callClaude({
+        model,
+        messages: [
+          {
+            role: 'system',
+            content: `${agent.system_prompt}\n\nYou are participating in a SWARM ANALYSIS. Multiple agents are independently analyzing the same task. Provide your unique perspective based on your expertise. Be specific and actionable.\n\nYour accumulated knowledge:\n${(memory || '').slice(-1500)}`
+          },
+          {
+            role: 'user',
+            content: `SWARM TASK: ${task.title}\n\n${task.description}\n\nProvide your expert analysis and recommended approach. Be specific about what YOU would do and why. Include concrete steps, potential risks, and your confidence level (1-10).`
+          }
+        ],
+        max_tokens: 2048
+      })
+
+      const output = response.choices?.[0]?.message?.content || ''
+      const tokensUsed = (response.usage?.prompt_tokens || 0) + (response.usage?.completion_tokens || 0)
+      const cost = (response.usage?.prompt_tokens || 0) * 0.000001 + (response.usage?.completion_tokens || 0) * 0.000002
+
+      // Record spend
+      const today = new Date().toISOString().slice(0, 10)
+      db.prepare('INSERT INTO spend_log (date, agent_id, tokens_in, tokens_out, cost, task_id) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(today, agentId, response.usage?.prompt_tokens || 0, response.usage?.completion_tokens || 0, cost, task.id)
+
+      db.prepare('INSERT INTO swarm_votes (swarm_id, agent_id, output, score, vote, reasoning, tokens_used, cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(swarmId, agentId, output, 0, 'approve', '', tokensUsed, cost)
+
+      log('info', 'swarm_vote_cast', { swarmId, agentId, outputLen: output.length, duration: Date.now() - startTime })
+      return { agentId, output, cost }
+    } catch (e) {
+      log('error', 'swarm_vote_failed', { swarmId, agentId, error: e.message })
+      db.prepare('INSERT INTO swarm_votes (swarm_id, agent_id, output, vote, reasoning) VALUES (?, ?, ?, ?, ?)')
+        .run(swarmId, agentId, '', 'abstain', e.message)
+      return null
+    }
+  })
+
+  const results = (await Promise.allSettled(votePromises)).map(r => r.status === 'fulfilled' ? r.value : null).filter(Boolean)
+
+  if (results.length === 0) {
+    db.prepare("UPDATE swarm_tasks SET status = 'failed' WHERE id = ?").run(swarmId)
+    return { error: 'All swarm participants failed' }
+  }
+
+  // Coordinator synthesizes all outputs
+  const taskText = `${task.title} ${task.description}`
+  const weightedInputs = results.map(r => {
+    const weight = getAgentWeight(r.agentId, taskText)
+    return `### ${r.agentId.toUpperCase()} (weight: ${weight}x)\n${r.output}`
+  }).join('\n\n---\n\n')
+
+  const coordinatorAgent = agents.find(a => a.id === swarm.coordinator_agent) || agents.find(a => a.id === 'nexus')
+  const synthesis = await callClaude({
+    model: getSmartModel(swarm.coordinator_agent || 'nexus'),
+    messages: [
+      {
+        role: 'system',
+        content: `You are the SWARM COORDINATOR. ${results.length} agents have independently analyzed a task. Your job is to:\n1. Synthesize the best ideas from each agent\n2. Resolve conflicts between recommendations\n3. Produce a unified, actionable plan\n4. Note which agent(s) had the strongest contribution\n\nConsensus method: ${swarm.consensus_method}. Higher-weighted agents' opinions carry more influence.`
+      },
+      {
+        role: 'user',
+        content: `ORIGINAL TASK: ${task.title}\n${task.description}\n\nAGENT ANALYSES:\n\n${weightedInputs}\n\nSynthesize these into a single, unified output. Combine the best insights, resolve any conflicts, and produce the definitive answer.`
+      }
+    ],
+    max_tokens: 4096
+  })
+
+  const finalOutput = synthesis.choices?.[0]?.message?.content || ''
+
+  // Record coordinator spend
+  const today = new Date().toISOString().slice(0, 10)
+  const synthCost = (synthesis.usage?.prompt_tokens || 0) * 0.000003 + (synthesis.usage?.completion_tokens || 0) * 0.000015
+  db.prepare('INSERT INTO spend_log (date, agent_id, tokens_in, tokens_out, cost, task_id) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(today, swarm.coordinator_agent || 'nexus', synthesis.usage?.prompt_tokens || 0, synthesis.usage?.completion_tokens || 0, synthCost, task.id)
+
+  // Update swarm with final output
+  db.prepare("UPDATE swarm_tasks SET status = 'consensus_reached', final_output = ?, completed_at = datetime('now') WHERE id = ?")
+    .run(finalOutput, swarmId)
+
+  // Update the original task with the swarm output
+  db.prepare("UPDATE tasks SET output = ?, status = 'done', completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
+    .run(finalOutput, task.id)
+
+  const totalCost = results.reduce((sum, r) => sum + (r?.cost || 0), 0) + synthCost
+  db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+    .run('system', '🐝 Swarm', '🐝', '#f59e0b', `Swarm consensus reached for "${task.title}" — ${results.length} agents, $${totalCost.toFixed(4)} total cost`)
+
+  log('info', 'swarm_completed', { swarmId, taskId: task.id, participants: results.length, totalCost })
+
+  // Trigger post-completion hooks (memory, QA, follow-ups)
+  const agent = coordinatorAgent || agents[0]
+  updateAgentMemory(agent, task, finalOutput).catch(() => {})
+
+  return { swarmId, finalOutput, participants: results.length, totalCost }
+}
+
+// ── Swarm API Endpoints ──────────────────────────────
+
+// Create & launch a swarm for a task
+app.post('/api/swarms', authenticateRequest, async (req, res) => {
+  try {
+    const { task_id, participant_agents, topology, coordinator_agent, consensus_method } = req.body
+    if (!task_id) return res.status(400).json({ error: 'task_id required' })
+
+    const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(task_id)
+    if (!task) return res.status(404).json({ error: 'Task not found' })
+
+    // Auto-select participants if not provided
+    let participants = participant_agents
+    if (!participants || participants.length === 0) {
+      // Pick top 3 agents by relevance
+      const text = `${task.title} ${task.description}`.toLowerCase()
+      const scored = agents.map(a => ({ id: a.id, weight: getAgentWeight(a.id, text) }))
+        .sort((a, b) => b.weight - a.weight)
+        .slice(0, 3)
+      participants = scored.map(s => s.id)
+    }
+
+    const swarmId = await createSwarmTask(task_id, participants, { topology, coordinator_agent, consensus_method })
+
+    // Run the swarm async
+    runSwarm(swarmId).catch(e => {
+      log('error', 'swarm_run_error', { swarmId, error: e.message })
+      db.prepare("UPDATE swarm_tasks SET status = 'failed' WHERE id = ?").run(swarmId)
+    })
+
+    res.status(201).json({ swarm_id: swarmId, task_id, participants, status: 'pending' })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Get swarm status & votes
+app.get('/api/swarms/:id', authenticateRequest, (req, res) => {
+  const swarm = db.prepare('SELECT * FROM swarm_tasks WHERE id = ?').get(req.params.id)
+  if (!swarm) return res.status(404).json({ error: 'Swarm not found' })
+
+  const votes = db.prepare('SELECT * FROM swarm_votes WHERE swarm_id = ? ORDER BY created_at ASC').all(req.params.id)
+  res.json({ ...swarm, participant_agents: JSON.parse(swarm.participant_agents), votes })
+})
+
+// List all swarms
+app.get('/api/swarms', authenticateRequest, (req, res) => {
+  const swarms = db.prepare('SELECT st.*, t.title as task_title, t.agent_id FROM swarm_tasks st JOIN tasks t ON st.task_id = t.id ORDER BY st.created_at DESC LIMIT 50').all()
+  res.json(swarms.map(s => ({ ...s, participant_agents: JSON.parse(s.participant_agents) })))
+})
+
+// Cancel a running swarm
+app.post('/api/swarms/:id/cancel', authenticateRequest, (req, res) => {
+  db.prepare("UPDATE swarm_tasks SET status = 'cancelled' WHERE id = ? AND status IN ('pending', 'voting')").run(req.params.id)
+  res.json({ ok: true })
+})
+
+// ══════════════════════════════════════════════════════
+// ██ INTELLIGENT TASK ROUTING — Complexity-based      ██
+// ══════════════════════════════════════════════════════
+
+// Auto-route endpoint — classifies task complexity and routes appropriately
+app.post('/api/tasks/:id/smart-route', authenticateRequest, async (req, res) => {
+  try {
+    const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
+    if (!task) return res.status(404).json({ error: 'Task not found' })
+
+    const complexity = scoreTaskComplexity(task.title, task.description)
+    db.prepare("UPDATE tasks SET complexity = ?, updated_at = datetime('now') WHERE id = ?").run(complexity, task.id)
+
+    let action = 'standard'
+    let details = {}
+
+    switch (complexity) {
+      case 'simple': {
+        // Simple tasks — use cheaper model, single agent
+        action = 'fast_track'
+        details = { model: MODEL_FALLBACKS[AGENT_MODELS[task.agent_id]] || AGENT_MODELS[task.agent_id], max_steps: 3 }
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+          .run(task.id, 'system', `Smart-routed as SIMPLE — fast track with ${details.max_steps} max steps`, 'info')
+        break
+      }
+      case 'medium': {
+        // Medium — standard execution
+        action = 'standard'
+        details = { model: AGENT_MODELS[task.agent_id], max_steps: 6 }
+        break
+      }
+      case 'complex': {
+        // Complex — use best model, more steps
+        action = 'deep_analysis'
+        details = { model: 'anthropic/claude-sonnet-4-5', max_steps: 15 }
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+          .run(task.id, 'system', `Smart-routed as COMPLEX — deep analysis with up to ${details.max_steps} steps`, 'info')
+        break
+      }
+      case 'swarm': {
+        // Swarm — multi-agent consensus
+        action = 'swarm'
+        const text = `${task.title} ${task.description}`.toLowerCase()
+        const topAgents = agents.map(a => ({ id: a.id, w: getAgentWeight(a.id, text) }))
+          .sort((a, b) => b.w - a.w).slice(0, 4).map(a => a.id)
+        details = { participants: topAgents, consensus: 'weighted' }
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+          .run(task.id, 'system', `Smart-routed as SWARM — ${topAgents.length} agents will collaborate: ${topAgents.join(', ')}`, 'info')
+        break
+      }
+    }
+
+    res.json({ task_id: task.id, complexity, action, details })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Complexity classification endpoint (read-only)
+app.post('/api/tasks/classify', authenticateRequest, (req, res) => {
+  const { title, description } = req.body
+  if (!title) return res.status(400).json({ error: 'title required' })
+  const complexity = scoreTaskComplexity(title, description || '')
+  const text = `${title} ${description || ''}`.toLowerCase()
+
+  // Suggest participants for swarm
+  let suggestedParticipants = []
+  if (complexity === 'swarm' || complexity === 'complex') {
+    suggestedParticipants = agents.map(a => ({ id: a.id, weight: getAgentWeight(a.id, text), name: a.name }))
+      .sort((a, b) => b.weight - a.weight).slice(0, 4)
+  }
+
+  res.json({ complexity, suggestedParticipants })
+})
+
+// ══════════════════════════════════════════════════════
+// ██ PIPELINE STREAMING — Agent-to-agent output pipe  ██
+// ══════════════════════════════════════════════════════
+
+// Enhanced pipeline execution with full context streaming between steps
+// Instead of truncating previous output to 4000 chars, stream full context
+app.post('/api/pipelines/:id/run-streaming', authenticateRequest, async (req, res) => {
+  const pipeline = db.prepare('SELECT * FROM pipelines WHERE id = ?').get(req.params.id)
+  if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' })
+
+  const steps = JSON.parse(pipeline.steps)
+  if (steps.length === 0) return res.status(400).json({ error: 'Pipeline has no steps' })
+
+  // Tag this pipeline run with a stream ID so steps can find each other's full output
+  const streamId = uuid()
+  const firstStep = steps.find(s => s.position === 1) || steps[0]
+  const taskId = uuid()
+
+  // Store stream context in the task description
+  const enhancedDescription = `${firstStep.prompt_template}\n\n[STREAM_ID:${streamId}][STREAM_STEP:1][STREAM_TOTAL:${steps.length}]`
+
+  db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status, pipeline_id, pipeline_step) VALUES (?, ?, ?, 'high', ?, 'todo', ?, ?)`)
+    .run(taskId, `[Pipeline: ${pipeline.name}] Step 1`, enhancedDescription, firstStep.agent_id, pipeline.id, 1)
+
+  db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+    .run('system', '⚡ Pipeline Stream', '⚡', '#3b82f6', `Started streaming pipeline "${pipeline.name}" (${steps.length} steps, full context preserved)`)
+
+  // Store pipeline stream metadata for context chaining
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+    .run(`_pipeline_stream_${pipeline.id}`, JSON.stringify({ streamId, startedAt: new Date().toISOString(), totalSteps: steps.length }))
+
+  setTimeout(() => processAgentQueue(firstStep.agent_id), 2000)
+  res.status(201).json({ taskId, streamId, pipeline: pipeline.name, totalSteps: steps.length, mode: 'streaming' })
 })
 
 // ── Graceful Shutdown ────────────────────────────────
