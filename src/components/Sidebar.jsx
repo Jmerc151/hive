@@ -33,6 +33,7 @@ const NAV_GROUPS = [
       { key: 'trading',   icon: '\u25AA', label: 'Trading' },
       { key: 'intel',     icon: '\u25C9', label: 'Intel Feed' },
       { key: 'guardrails', icon: '\u25A8', label: 'Guardrails' },
+      { key: 'swarm',      icon: '\u2B21', label: 'Swarm' },
     ]
   },
   {

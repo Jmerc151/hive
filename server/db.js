@@ -482,6 +482,24 @@ db.exec(`
   );
 `)
 
+// Scored memory facts (DeerFlow-inspired confidence scoring)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS memory_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    fact TEXT NOT NULL,
+    confidence REAL DEFAULT 0.5,
+    category TEXT DEFAULT 'general' CHECK(category IN ('strategy','pattern','gotcha','contact','revenue','technical','general')),
+    source_task_id TEXT,
+    access_count INTEGER DEFAULT 0,
+    last_accessed TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_facts_agent ON memory_facts(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_facts_agent_conf ON memory_facts(agent_id, confidence DESC);
+`)
+
 // Semantic memory embeddings
 db.exec(`
   CREATE TABLE IF NOT EXISTS memory_embeddings (
@@ -496,6 +514,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_memory_agent ON memory_embeddings(agent_id);
   CREATE INDEX IF NOT EXISTS idx_memory_agent_created ON memory_embeddings(agent_id, created_at DESC);
 `)
+
+// Skills: relevance_keywords for progressive skill loading
+try { db.exec(`ALTER TABLE skills ADD COLUMN relevance_keywords TEXT DEFAULT '[]'`) } catch (e) { /* already exists */ }
 
 // OTLP trace columns
 try { db.exec(`ALTER TABLE task_traces ADD COLUMN trace_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
@@ -591,6 +612,41 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
 `)
+
+// Swarm coordination — multi-agent consensus (Ruflo-inspired)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS swarm_tasks (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    topology TEXT DEFAULT 'hierarchical' CHECK(topology IN ('hierarchical','mesh','ring')),
+    coordinator_agent TEXT,
+    participant_agents TEXT NOT NULL DEFAULT '[]',
+    consensus_method TEXT DEFAULT 'majority' CHECK(consensus_method IN ('majority','weighted','unanimous')),
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending','voting','consensus_reached','failed','cancelled')),
+    final_output TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_swarm_task ON swarm_tasks(task_id);
+
+  CREATE TABLE IF NOT EXISTS swarm_votes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    swarm_id TEXT NOT NULL REFERENCES swarm_tasks(id) ON DELETE CASCADE,
+    agent_id TEXT NOT NULL,
+    output TEXT DEFAULT '',
+    score REAL DEFAULT 0,
+    vote TEXT CHECK(vote IN ('approve','reject','abstain')),
+    reasoning TEXT DEFAULT '',
+    tokens_used INTEGER DEFAULT 0,
+    cost REAL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_swarm_votes_swarm ON swarm_votes(swarm_id);
+`)
+
+// Task complexity routing column
+try { db.exec(`ALTER TABLE tasks ADD COLUMN complexity TEXT DEFAULT '' CHECK(complexity IN ('','simple','medium','complex','swarm'))`) } catch (e) { /* already exists */ }
+try { db.exec(`ALTER TABLE tasks ADD COLUMN swarm_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
 
 // Migration: add project_id to tasks
 try { db.exec(`ALTER TABLE tasks ADD COLUMN project_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }

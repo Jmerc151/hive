@@ -206,7 +206,7 @@ const AGENT_MODELS = {
   forge:    'qwen/qwen3-235b-a22b',           // was claude-haiku-4-5 — strong at coding + agent tasks
   quill:    'qwen/qwen3-235b-a22b',           // was claude-haiku-4-5 — good writing quality
   dealer:   'anthropic/claude-haiku-4-5',      // keep — sales outreach needs reliable function calling
-  oracle:   'deepseek/deepseek-r1-0528',       // was claude-sonnet-4-5 — 85% cheaper, top reasoning model
+  oracle:   'qwen/qwen3-235b-a22b',           // was deepseek-r1-0528 — R1 narrates instead of calling tools, qwen3 reliable
   nexus:    'anthropic/claude-sonnet-4-5',     // keep — orchestration/scoring needs reliability
   sentinel: 'qwen/qwen3-235b-a22b',           // was claude-haiku-4-5 — monitoring tasks, cheaper
   architect:'qwen/qwen3-235b-a22b',           // code review — needs to understand code well
@@ -619,6 +619,16 @@ const TOOL_REGISTRY = [
     params: { symbol: { type: 'string', required: true, description: 'Stock ticker' } },
     agents: ['oracle'],
     execute: async (args) => await analysis.evaluateEnsemble(args.symbol)
+  },
+  {
+    name: 'scan_ensemble',
+    description: 'Run 8 indicator strategies (RSI, MACD, Bollinger, SMA, Stochastic, EMA, Williams%R, CCI) on all watchlist symbols. Returns weighted voting signals with BUY/SELL/HOLD recommendations. Use this instead of manually calling get_indicators on each symbol.',
+    params: { symbol: { type: 'string', required: false, description: 'Single symbol to scan (omit to scan full watchlist)' } },
+    agents: ['oracle', 'scout', 'nexus'],
+    execute: async (args) => {
+      if (args.symbol) return await analysis.generateEnsembleSignals(args.symbol)
+      return await analysis.scanWatchlist()
+    }
   },
   {
     name: 'list_strategies',
@@ -2682,21 +2692,25 @@ async function updateAgentMemory(agent, task, output) {
     const response = await callClaude({
       model: getSmartModel(agent.id),
       max_tokens: 1024,
-      system: `You are a memory curator for ${agent.name} (${agent.role}). Extract the most important learnings, decisions, and context from completed work that would help this agent perform better on future tasks.
+      system: `You are a memory curator for ${agent.name} (${agent.role}). Extract the most important learnings from completed work as structured facts.
 
 Rules:
-- Be concise — bullet points, not paragraphs
-- Focus on: patterns discovered, decisions made, gotchas found, strategies that worked, income opportunities identified
-- Skip generic knowledge — only save project-specific insights
+- Extract 1-5 discrete facts (not paragraphs)
+- Each fact should be a single actionable insight
+- Skip generic knowledge — only project-specific insights
 - If nothing new was learned, respond with just "NOTHING_NEW"
 
-Respond with ONLY the memory entry content (markdown bullets).`,
+Respond with a JSON array of facts. Each fact: {"fact": "concise insight", "confidence": 0.0-1.0, "category": "strategy|pattern|gotcha|contact|revenue|technical|general"}
+
+Confidence guide: 0.9+ = proven by results, 0.7-0.9 = strong evidence, 0.5-0.7 = reasonable inference, <0.5 = speculative
+
+Example: [{"fact": "RSI mean reversion works best on AAPL with 14-day window", "confidence": 0.85, "category": "strategy"}]`,
       messages: [{
         role: 'user',
         content: `Task completed: "${task.title}"
 Output (first 2000 chars): ${output.slice(0, 2000)}
 
-Current memory (for context — avoid duplicates):
+Existing facts (avoid duplicates):
 ${currentMemory.slice(-2000) || '(empty)'}`
       }]
     }, agent.id, task.id)
@@ -2704,13 +2718,118 @@ ${currentMemory.slice(-2000) || '(empty)'}`
     const text = response.content.map(b => b.type === 'text' ? b.text : '').join('')
     if (text.includes('NOTHING_NEW')) return
 
-    appendAgentMemory(agent.id, { title: task.title, content: text.slice(0, 1000) })
+    // Try to parse structured facts
+    const jsonMatch = text.match(/\[[\s\S]*\]/)
+    if (jsonMatch) {
+      try {
+        const facts = JSON.parse(jsonMatch[0])
+        if (Array.isArray(facts)) {
+          const insertFact = db.prepare(
+            'INSERT INTO memory_facts (agent_id, fact, confidence, category, source_task_id) VALUES (?, ?, ?, ?, ?)'
+          )
+          const findDuplicate = db.prepare(
+            'SELECT id, confidence, access_count FROM memory_facts WHERE agent_id = ? AND fact = ?'
+          )
+          for (const f of facts.slice(0, 5)) {
+            if (!f.fact || typeof f.fact !== 'string') continue
+            const conf = Math.max(0, Math.min(1, f.confidence || 0.5))
+            const cat = ['strategy','pattern','gotcha','contact','revenue','technical','general'].includes(f.category) ? f.category : 'general'
+
+            // Check for exact duplicate — boost confidence instead of re-inserting
+            const existing = findDuplicate.get(agent.id, f.fact)
+            if (existing) {
+              const boosted = Math.min(1, existing.confidence + 0.1)
+              db.prepare('UPDATE memory_facts SET confidence = ?, access_count = access_count + 1, updated_at = datetime(\'now\') WHERE id = ?')
+                .run(boosted, existing.id)
+            } else {
+              insertFact.run(agent.id, f.fact.slice(0, 500), conf, cat, task.id)
+            }
+          }
+          log('info', 'memory_facts_stored', { agentId: agent.id, count: facts.length })
+        }
+      } catch (parseErr) {
+        log('warn', 'memory_facts_parse_failed', { agentId: agent.id, error: parseErr.message })
+      }
+    }
+
+    // Still append to .md file for backward compatibility
+    const bulletText = jsonMatch
+      ? JSON.parse(jsonMatch[0]).map(f => `- [${(f.confidence || 0.5).toFixed(1)}] ${f.category || 'general'}: ${f.fact}`).join('\n')
+      : text.slice(0, 1000)
+    appendAgentMemory(agent.id, { title: task.title, content: bulletText })
     console.log(`🧠 Memory updated for ${agent.name}`)
   } catch (err) {
     console.error(`Memory update failed for ${agent.name}:`, err.message)
   }
 }
 
+// Load top-N scored facts for agent (used during prompt injection)
+function getTopFacts(agentId, limit = 15) {
+  try {
+    const facts = db.prepare(
+      'SELECT id, fact, confidence, category FROM memory_facts WHERE agent_id = ? AND confidence > 0.2 ORDER BY confidence DESC, updated_at DESC LIMIT ?'
+    ).all(agentId, limit)
+
+    // Bump access_count and last_accessed for injected facts
+    if (facts.length > 0) {
+      const updateAccess = db.prepare('UPDATE memory_facts SET access_count = access_count + 1, last_accessed = datetime(\'now\') WHERE id = ?')
+      for (const f of facts) updateAccess.run(f.id)
+    }
+
+    return facts
+  } catch (e) {
+    return []
+  }
+}
+
+
+// ══════════════════════════════════════════════════════
+// ██ PROGRESSIVE SKILL LOADING — relevance scoring    ██
+// ══════════════════════════════════════════════════════
+
+function selectRelevantSkills(agentId, taskTitle, taskDescription) {
+  const allSkills = db.prepare(
+    'SELECT s.id, s.name, s.skill_md, s.tags, s.relevance_keywords, asv.priority FROM agent_skills_v2 asv JOIN skills s ON s.id = asv.skill_id WHERE asv.agent_id = ? AND asv.enabled = 1 ORDER BY asv.priority'
+  ).all(agentId)
+
+  if (allSkills.length <= 3) return allSkills // No filtering needed for small sets
+
+  const taskText = `${taskTitle} ${taskDescription || ''}`.toLowerCase()
+  const taskWords = taskText.split(/\W+/).filter(w => w.length > 2)
+
+  const scored = allSkills.map(skill => {
+    // Always include high-priority skills (priority < 3)
+    if (skill.priority < 3) return { ...skill, relevanceScore: 100 }
+
+    // Build keyword set from tags + relevance_keywords + skill name
+    let keywords = []
+    try { keywords = keywords.concat(JSON.parse(skill.tags || '[]')) } catch (e) {}
+    try { keywords = keywords.concat(JSON.parse(skill.relevance_keywords || '[]')) } catch (e) {}
+    keywords = keywords.concat(skill.name.toLowerCase().split(/\W+/))
+    keywords = keywords.map(k => k.toLowerCase()).filter(k => k.length > 2)
+
+    // Score: count keyword matches in task text
+    let score = 0
+    for (const kw of keywords) {
+      if (taskText.includes(kw)) score += 1
+    }
+    // Bonus for word-level matches
+    for (const tw of taskWords) {
+      if (keywords.includes(tw)) score += 0.5
+    }
+
+    return { ...skill, relevanceScore: score }
+  })
+
+  // Sort by relevance, take top 3 + any always-on (priority < 3)
+  scored.sort((a, b) => b.relevanceScore - a.relevanceScore)
+  const selected = scored.filter(s => s.relevanceScore > 0).slice(0, 3)
+
+  // Fallback: if no matches, return all (preserve current behavior)
+  if (selected.length === 0) return allSkills
+
+  return selected
+}
 
 // ══════════════════════════════════════════════════════
 // ██ TASK QUEUE — Per-agent serial queue              ██
@@ -3371,8 +3490,23 @@ registerHeartbeat('auto-unstick', 10 * 60 * 1000, () => {
   }
 })
 
-// Memory compaction — every 7 days (compact memories >10KB)
+// Memory compaction — every 7 days (compact memories >10KB + decay stale facts)
 registerHeartbeat('memory-compaction', 7 * 24 * 60 * 60 * 1000, async () => {
+  // Decay stale facts: facts not accessed in 30+ days lose 0.1 confidence
+  try {
+    const decayed = db.prepare(
+      `UPDATE memory_facts SET confidence = MAX(0, confidence - 0.1), updated_at = datetime('now')
+       WHERE (last_accessed IS NULL AND created_at < datetime('now', '-30 days'))
+          OR (last_accessed < datetime('now', '-30 days'))`
+    ).run()
+    if (decayed.changes > 0) console.log(`🧹 Decayed ${decayed.changes} stale memory facts`)
+
+    // Prune facts with confidence <= 0
+    const pruned = db.prepare('DELETE FROM memory_facts WHERE confidence <= 0').run()
+    if (pruned.changes > 0) console.log(`🗑️ Pruned ${pruned.changes} zero-confidence facts`)
+  } catch (e) { console.error('Memory fact decay error:', e.message) }
+
+  // Original .md file compaction
   for (const agent of agents) {
     const memory = readAgentMemory(agent.id)
     if (memory.length > 10000) {
@@ -3636,6 +3770,32 @@ app.get('/api/agents/:id/memory', (req, res) => {
 app.delete('/api/agents/:id/memory', (req, res) => {
   writeAgentMemory(req.params.id, '')
   res.json({ ok: true, message: 'Memory cleared' })
+})
+
+// ── Memory Facts API (scored facts) ─────────────────
+app.get('/api/agents/:id/facts', (req, res) => {
+  const { category, min_confidence } = req.query
+  let query = 'SELECT * FROM memory_facts WHERE agent_id = ?'
+  const params = [req.params.id]
+  if (category) { query += ' AND category = ?'; params.push(category) }
+  if (min_confidence) { query += ' AND confidence >= ?'; params.push(parseFloat(min_confidence)) }
+  query += ' ORDER BY confidence DESC, updated_at DESC LIMIT 100'
+  const facts = db.prepare(query).all(...params)
+  res.json({ agent_id: req.params.id, facts, count: facts.length })
+})
+
+app.delete('/api/memory/facts/:id', (req, res) => {
+  db.prepare('DELETE FROM memory_facts WHERE id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+app.patch('/api/memory/facts/:id', (req, res) => {
+  const { confidence } = req.body
+  if (confidence !== undefined) {
+    db.prepare('UPDATE memory_facts SET confidence = ?, updated_at = datetime(\'now\') WHERE id = ?')
+      .run(Math.max(0, Math.min(1, confidence)), req.params.id)
+  }
+  res.json({ ok: true })
 })
 
 // ── Agent System Prompt API (for Nexus self-improvement) ──
@@ -4015,6 +4175,15 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
     log('error', 'preflight_error', { taskId: task.id, error: preflightErr.message })
   }
 
+  // ── Auto-classify task complexity ──────────────
+  if (!task.complexity) {
+    try {
+      const complexity = scoreTaskComplexity(task.title, task.description || '')
+      db.prepare("UPDATE tasks SET complexity = ? WHERE id = ?").run(complexity, task.id)
+      task.complexity = complexity
+    } catch {}
+  }
+
   // ── Approval Gates ──────────────────────────────
   // Agents are autonomous — only gate real-money actions (live trading, real capital deployment)
   // Auto-fix tasks, research, building, writing, analysis all run without approval
@@ -4047,7 +4216,11 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
 
   // ── ReAct Loop (with tool execution) ─────────────
   try {
-    const agentMemory = readAgentMemory(agent.id)
+    // Load scored facts (DeerFlow-style) with fallback to raw memory
+    const scoredFacts = getTopFacts(agent.id, 15)
+    const agentMemory = scoredFacts.length > 0
+      ? scoredFacts.map(f => `- [${f.confidence.toFixed(1)}] ${f.category}: ${f.fact}`).join('\n')
+      : readAgentMemory(agent.id)?.slice(-2000) || ''
     const MAX_STEPS = parseInt(db.prepare("SELECT value FROM settings WHERE key = 'max_react_steps'").get()?.value || '15')
     const STEP_TIMEOUT = parseInt(db.prepare("SELECT value FROM settings WHERE key = 'step_timeout_ms'").get()?.value || '300000')
     const MAX_TOOLS_PER_STEP = 5
@@ -4305,13 +4478,14 @@ START WITH TOOL CALLS NOW.`
         }
       }
 
-      // Inject V2 skills
-      const skillsV2 = db.prepare(
-        'SELECT s.name, s.skill_md FROM agent_skills_v2 asv JOIN skills s ON s.id = asv.skill_id WHERE asv.agent_id = ? AND asv.enabled = 1 ORDER BY asv.priority'
-      ).all(agent.id)
+      // Inject V2 skills — progressive loading (only relevant skills)
+      const skillsV2 = selectRelevantSkills(agent.id, task.title, task.description || '')
       const skillsContext = skillsV2.length > 0
         ? '\n\n## Skills\n' + skillsV2.map(s => s.skill_md).join('\n\n---\n\n')
         : ''
+      if (step === startStep && skillsV2.length > 0) {
+        log('info', 'skills_loaded', { taskId: task.id, agentId: agent.id, skills: skillsV2.map(s => s.name), total: skillsV2.length })
+      }
 
       // Inject goal ancestry if task has it
       let goalContext = ''
@@ -4858,15 +5032,40 @@ START WITH TOOL CALLS NOW.`
           const nextStep = steps.find(s => s.position === task.pipeline_step + 1)
           if (nextStep) {
             const nextId = uuid()
-            const nextPrompt = nextStep.prompt_template.replace('{{previous_output}}', fullOutput.slice(0, 4000))
+
+            // Check if this is a streaming pipeline — pass full context instead of truncating
+            const streamMeta = db.prepare("SELECT value FROM settings WHERE key = ?").get(`_pipeline_stream_${pipeline.id}`)
+            const isStreaming = !!streamMeta
+            const contextLimit = isStreaming ? 16000 : 4000
+
+            // Build cumulative context: gather all previous step outputs in this pipeline
+            let cumulativeContext = fullOutput.slice(0, contextLimit)
+            if (isStreaming) {
+              const prevSteps = db.prepare(
+                "SELECT pipeline_step, output FROM tasks WHERE pipeline_id = ? AND status = 'done' ORDER BY pipeline_step ASC"
+              ).all(pipeline.id)
+              if (prevSteps.length > 0) {
+                cumulativeContext = prevSteps.map(s => `--- Step ${s.pipeline_step} Output ---\n${s.output}`).join('\n\n').slice(0, contextLimit)
+              }
+            }
+
+            const nextPrompt = nextStep.prompt_template
+              .replace('{{previous_output}}', cumulativeContext)
+              .replace('{{all_outputs}}', cumulativeContext)
+
+            // Add stream metadata if streaming
+            const streamTag = isStreaming ? `\n\n[STREAM_STEP:${nextStep.position}][STREAM_TOTAL:${steps.length}]` : ''
+
             db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status, pipeline_id, pipeline_step) VALUES (?, ?, ?, 'high', ?, 'todo', ?, ?)`)
-              .run(nextId, `[Pipeline: ${pipeline.name}] Step ${nextStep.position}`, nextPrompt, nextStep.agent_id, pipeline.id, nextStep.position)
+              .run(nextId, `[Pipeline: ${pipeline.name}] Step ${nextStep.position}`, nextPrompt + streamTag, nextStep.agent_id, pipeline.id, nextStep.position)
             db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
-              .run(task.id, agent.id, `Pipeline continues → Step ${nextStep.position} (${nextStep.agent_id})`, 'info')
+              .run(task.id, agent.id, `Pipeline continues → Step ${nextStep.position} (${nextStep.agent_id})${isStreaming ? ' [streaming: full context]' : ''}`, 'info')
             setTimeout(() => processAgentQueue(nextStep.agent_id), 2000)
           } else {
             db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
               .run('system', '🔗 Pipeline', '🔗', '#8b5cf6', `Pipeline "${pipeline.name}" completed all ${steps.length} steps!`)
+            // Clean up stream metadata
+            db.prepare("DELETE FROM settings WHERE key = ?").run(`_pipeline_stream_${pipeline.id}`)
           }
         }
       } catch (e) { console.error('Pipeline continuation error:', e.message) }
@@ -5876,6 +6075,21 @@ app.post('/api/trading/watchlist', (req, res) => {
 app.delete('/api/trading/watchlist/:id', (req, res) => {
   db.prepare('DELETE FROM watchlist WHERE id = ?').run(req.params.id)
   res.json({ ok: true })
+})
+
+// ── Ensemble Signal Scanner ──────────────────────
+app.get('/api/trading/ensemble/:symbol', async (req, res) => {
+  try {
+    const result = await analysis.generateEnsembleSignals(req.params.symbol.toUpperCase())
+    res.json(result)
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.get('/api/trading/ensemble', async (req, res) => {
+  try {
+    const result = await analysis.scanWatchlist()
+    res.json(result)
+  } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
 app.get('/api/trading/portfolio-history', (req, res) => {
@@ -10404,7 +10618,7 @@ const masterPipelines = [
     name: 'Trading Session',
     description: 'Oracle checks indicators and executes trades. Runs 9:31am weekdays.',
     steps: [
-      { position: 1, agent_id: 'oracle', prompt_template: 'Check is_market_open. If open: check get_positions for current holdings. Run get_indicators on SPY, QQQ, AAPL, NVDA, MSFT, TSLA, AMZN. Execute any RSI signals found (RSI<32 buy, RSI>72 sell existing position). Log all decisions to memory. Report: positions checked, signals found, trades executed.' }
+      { position: 1, agent_id: 'oracle', prompt_template: 'Check is_market_open. If open: check get_positions for current holdings. Run scan_ensemble (no symbol = scans full watchlist). This runs 8 indicator strategies (RSI, MACD, Bollinger, SMA crossover, Stochastic, EMA trend, Williams %R, CCI) and returns weighted voting signals. Execute trades ONLY for symbols with STRONG BUY or STRONG SELL composite action AND confidence > 60%. For BUY signals: place_order buy. For SELL signals on existing positions: close_position. Log all decisions to memory. Report: positions checked, signals found, trades executed, ensemble breakdown.' }
     ]
   },
   {
@@ -11083,6 +11297,366 @@ const server = app.listen(PORT, '0.0.0.0', () => {
       log('error', 'skill_seed_failed', { error: e.message })
     }
   }, 3000)
+})
+
+// ══════════════════════════════════════════════════════
+// ██ SWARM COORDINATION — Multi-agent consensus       ██
+// ══════════════════════════════════════════════════════
+
+// Complexity scoring — routes tasks to appropriate execution path
+function scoreTaskComplexity(title, description) {
+  const text = `${title} ${description}`.toLowerCase()
+  let score = 0
+
+  // Length signals
+  if (text.length > 500) score += 2
+  if (text.length > 1000) score += 1
+
+  // Multi-domain keywords boost complexity
+  const complexKeywords = ['architect', 'design system', 'refactor', 'migration', 'security audit', 'performance', 'integrate', 'multi-', 'cross-', 'end-to-end', 'full stack', 'strategy', 'evaluate', 'compare']
+  const mediumKeywords = ['build', 'create', 'implement', 'analyze', 'research', 'write', 'develop', 'fix bug', 'optimize']
+  const simpleKeywords = ['check', 'list', 'get', 'status', 'lookup', 'fetch', 'read', 'monitor', 'log', 'update field']
+
+  for (const kw of complexKeywords) if (text.includes(kw)) score += 3
+  for (const kw of mediumKeywords) if (text.includes(kw)) score += 1
+  for (const kw of simpleKeywords) if (text.includes(kw)) score -= 1
+
+  // Multiple agents mentioned
+  const agentMentions = ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus', 'sentinel'].filter(a => text.includes(a))
+  if (agentMentions.length >= 2) score += 3
+
+  if (score <= 1) return 'simple'
+  if (score <= 5) return 'medium'
+  if (score <= 8) return 'complex'
+  return 'swarm'
+}
+
+// Agent weight for weighted voting (coordinator gets 3x, specialists get domain bonuses)
+function getAgentWeight(agentId, taskText) {
+  const weights = { nexus: 3, oracle: 2, architect: 2, strategist: 2 }
+  let base = weights[agentId] || 1
+
+  // Domain bonuses
+  const text = taskText.toLowerCase()
+  if (agentId === 'scout' && /research|find|discover|market/.test(text)) base += 1
+  if (agentId === 'forge' && /build|code|implement|fix|pr/.test(text)) base += 1
+  if (agentId === 'oracle' && /trade|market|price|stock|strategy/.test(text)) base += 1
+  if (agentId === 'quill' && /write|content|blog|email|copy/.test(text)) base += 1
+  if (agentId === 'dealer' && /sell|outreach|lead|customer/.test(text)) base += 1
+
+  return base
+}
+
+// Create a swarm task — multiple agents work on the same problem
+async function createSwarmTask(taskId, participantIds, options = {}) {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId)
+  if (!task) throw new Error('Task not found')
+
+  const {
+    topology = 'hierarchical',
+    coordinatorAgent = 'nexus',
+    consensusMethod = 'weighted'
+  } = options
+
+  const swarmId = uuid()
+  db.prepare(`INSERT INTO swarm_tasks (id, task_id, topology, coordinator_agent, participant_agents, consensus_method, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')`)
+    .run(swarmId, taskId, topology, coordinatorAgent, JSON.stringify(participantIds), consensusMethod)
+
+  db.prepare("UPDATE tasks SET swarm_id = ?, complexity = 'swarm', updated_at = datetime('now') WHERE id = ?")
+    .run(swarmId, taskId)
+
+  db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+    .run(taskId, 'system', `Swarm created: ${participantIds.length} agents (${participantIds.join(', ')}) using ${consensusMethod} consensus`, 'info')
+
+  log('info', 'swarm_created', { swarmId, taskId, participants: participantIds, topology, consensus: consensusMethod })
+  return swarmId
+}
+
+// Run swarm — each participant agent produces an output, then coordinator synthesizes
+async function runSwarm(swarmId) {
+  const swarm = db.prepare('SELECT * FROM swarm_tasks WHERE id = ?').get(swarmId)
+  if (!swarm) throw new Error('Swarm not found')
+
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(swarm.task_id)
+  if (!task) throw new Error('Task not found')
+
+  const participants = JSON.parse(swarm.participant_agents)
+
+  db.prepare("UPDATE swarm_tasks SET status = 'voting' WHERE id = ?").run(swarmId)
+  db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+    .run('system', '🐝 Swarm', '🐝', '#f59e0b', `Swarm started: ${participants.length} agents analyzing "${task.title}"`)
+
+  // Each participant produces their analysis independently
+  const votePromises = participants.map(async (agentId) => {
+    const agent = agents.find(a => a.id === agentId)
+    if (!agent) return null
+
+    try {
+      const memory = readAgentMemory(agentId)
+      const model = getSmartModel(agentId)
+
+      const startTime = Date.now()
+      const response = await callClaude({
+        model,
+        messages: [
+          {
+            role: 'system',
+            content: `${agent.system_prompt}\n\nYou are participating in a SWARM ANALYSIS. Multiple agents are independently analyzing the same task. Provide your unique perspective based on your expertise. Be specific and actionable.\n\nYour accumulated knowledge:\n${(memory || '').slice(-1500)}`
+          },
+          {
+            role: 'user',
+            content: `SWARM TASK: ${task.title}\n\n${task.description}\n\nProvide your expert analysis and recommended approach. Be specific about what YOU would do and why. Include concrete steps, potential risks, and your confidence level (1-10).`
+          }
+        ],
+        max_tokens: 2048
+      })
+
+      const output = response.choices?.[0]?.message?.content || ''
+      const tokensUsed = (response.usage?.prompt_tokens || 0) + (response.usage?.completion_tokens || 0)
+      const cost = (response.usage?.prompt_tokens || 0) * 0.000001 + (response.usage?.completion_tokens || 0) * 0.000002
+
+      // Record spend
+      const today = new Date().toISOString().slice(0, 10)
+      db.prepare('INSERT INTO spend_log (date, agent_id, tokens_in, tokens_out, cost, task_id) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(today, agentId, response.usage?.prompt_tokens || 0, response.usage?.completion_tokens || 0, cost, task.id)
+
+      db.prepare('INSERT INTO swarm_votes (swarm_id, agent_id, output, score, vote, reasoning, tokens_used, cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(swarmId, agentId, output, 0, 'approve', '', tokensUsed, cost)
+
+      log('info', 'swarm_vote_cast', { swarmId, agentId, outputLen: output.length, duration: Date.now() - startTime })
+      return { agentId, output, cost }
+    } catch (e) {
+      log('error', 'swarm_vote_failed', { swarmId, agentId, error: e.message })
+      db.prepare('INSERT INTO swarm_votes (swarm_id, agent_id, output, vote, reasoning) VALUES (?, ?, ?, ?, ?)')
+        .run(swarmId, agentId, '', 'abstain', e.message)
+      return null
+    }
+  })
+
+  const results = (await Promise.allSettled(votePromises)).map(r => r.status === 'fulfilled' ? r.value : null).filter(Boolean)
+
+  if (results.length === 0) {
+    db.prepare("UPDATE swarm_tasks SET status = 'failed' WHERE id = ?").run(swarmId)
+    return { error: 'All swarm participants failed' }
+  }
+
+  // Coordinator synthesizes all outputs
+  const taskText = `${task.title} ${task.description}`
+  const weightedInputs = results.map(r => {
+    const weight = getAgentWeight(r.agentId, taskText)
+    return `### ${r.agentId.toUpperCase()} (weight: ${weight}x)\n${r.output}`
+  }).join('\n\n---\n\n')
+
+  const coordinatorAgent = agents.find(a => a.id === swarm.coordinator_agent) || agents.find(a => a.id === 'nexus')
+  const synthesis = await callClaude({
+    model: getSmartModel(swarm.coordinator_agent || 'nexus'),
+    messages: [
+      {
+        role: 'system',
+        content: `You are the SWARM COORDINATOR. ${results.length} agents have independently analyzed a task. Your job is to:\n1. Synthesize the best ideas from each agent\n2. Resolve conflicts between recommendations\n3. Produce a unified, actionable plan\n4. Note which agent(s) had the strongest contribution\n\nConsensus method: ${swarm.consensus_method}. Higher-weighted agents' opinions carry more influence.`
+      },
+      {
+        role: 'user',
+        content: `ORIGINAL TASK: ${task.title}\n${task.description}\n\nAGENT ANALYSES:\n\n${weightedInputs}\n\nSynthesize these into a single, unified output. Combine the best insights, resolve any conflicts, and produce the definitive answer.`
+      }
+    ],
+    max_tokens: 4096
+  })
+
+  const finalOutput = synthesis.choices?.[0]?.message?.content || ''
+
+  // Record coordinator spend
+  const today = new Date().toISOString().slice(0, 10)
+  const synthCost = (synthesis.usage?.prompt_tokens || 0) * 0.000003 + (synthesis.usage?.completion_tokens || 0) * 0.000015
+  db.prepare('INSERT INTO spend_log (date, agent_id, tokens_in, tokens_out, cost, task_id) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(today, swarm.coordinator_agent || 'nexus', synthesis.usage?.prompt_tokens || 0, synthesis.usage?.completion_tokens || 0, synthCost, task.id)
+
+  // Update swarm with final output
+  db.prepare("UPDATE swarm_tasks SET status = 'consensus_reached', final_output = ?, completed_at = datetime('now') WHERE id = ?")
+    .run(finalOutput, swarmId)
+
+  // Update the original task with the swarm output
+  db.prepare("UPDATE tasks SET output = ?, status = 'done', completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
+    .run(finalOutput, task.id)
+
+  const totalCost = results.reduce((sum, r) => sum + (r?.cost || 0), 0) + synthCost
+  db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+    .run('system', '🐝 Swarm', '🐝', '#f59e0b', `Swarm consensus reached for "${task.title}" — ${results.length} agents, $${totalCost.toFixed(4)} total cost`)
+
+  log('info', 'swarm_completed', { swarmId, taskId: task.id, participants: results.length, totalCost })
+
+  // Trigger post-completion hooks (memory, QA, follow-ups)
+  const agent = coordinatorAgent || agents[0]
+  updateAgentMemory(agent, task, finalOutput).catch(() => {})
+
+  return { swarmId, finalOutput, participants: results.length, totalCost }
+}
+
+// ── Swarm API Endpoints ──────────────────────────────
+
+// Create & launch a swarm for a task
+app.post('/api/swarms', authenticateRequest, async (req, res) => {
+  try {
+    const { task_id, participant_agents, topology, coordinator_agent, consensus_method } = req.body
+    if (!task_id) return res.status(400).json({ error: 'task_id required' })
+
+    const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(task_id)
+    if (!task) return res.status(404).json({ error: 'Task not found' })
+
+    // Auto-select participants if not provided
+    let participants = participant_agents
+    if (!participants || participants.length === 0) {
+      // Pick top 3 agents by relevance
+      const text = `${task.title} ${task.description}`.toLowerCase()
+      const scored = agents.map(a => ({ id: a.id, weight: getAgentWeight(a.id, text) }))
+        .sort((a, b) => b.weight - a.weight)
+        .slice(0, 3)
+      participants = scored.map(s => s.id)
+    }
+
+    const swarmId = await createSwarmTask(task_id, participants, { topology, coordinator_agent, consensus_method })
+
+    // Run the swarm async
+    runSwarm(swarmId).catch(e => {
+      log('error', 'swarm_run_error', { swarmId, error: e.message })
+      db.prepare("UPDATE swarm_tasks SET status = 'failed' WHERE id = ?").run(swarmId)
+    })
+
+    res.status(201).json({ swarm_id: swarmId, task_id, participants, status: 'pending' })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Get swarm status & votes
+app.get('/api/swarms/:id', authenticateRequest, (req, res) => {
+  const swarm = db.prepare('SELECT * FROM swarm_tasks WHERE id = ?').get(req.params.id)
+  if (!swarm) return res.status(404).json({ error: 'Swarm not found' })
+
+  const votes = db.prepare('SELECT * FROM swarm_votes WHERE swarm_id = ? ORDER BY created_at ASC').all(req.params.id)
+  res.json({ ...swarm, participant_agents: JSON.parse(swarm.participant_agents), votes })
+})
+
+// List all swarms
+app.get('/api/swarms', authenticateRequest, (req, res) => {
+  const swarms = db.prepare('SELECT st.*, t.title as task_title, t.agent_id FROM swarm_tasks st JOIN tasks t ON st.task_id = t.id ORDER BY st.created_at DESC LIMIT 50').all()
+  res.json(swarms.map(s => ({ ...s, participant_agents: JSON.parse(s.participant_agents) })))
+})
+
+// Cancel a running swarm
+app.post('/api/swarms/:id/cancel', authenticateRequest, (req, res) => {
+  db.prepare("UPDATE swarm_tasks SET status = 'cancelled' WHERE id = ? AND status IN ('pending', 'voting')").run(req.params.id)
+  res.json({ ok: true })
+})
+
+// ══════════════════════════════════════════════════════
+// ██ INTELLIGENT TASK ROUTING — Complexity-based      ██
+// ══════════════════════════════════════════════════════
+
+// Auto-route endpoint — classifies task complexity and routes appropriately
+app.post('/api/tasks/:id/smart-route', authenticateRequest, async (req, res) => {
+  try {
+    const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id)
+    if (!task) return res.status(404).json({ error: 'Task not found' })
+
+    const complexity = scoreTaskComplexity(task.title, task.description)
+    db.prepare("UPDATE tasks SET complexity = ?, updated_at = datetime('now') WHERE id = ?").run(complexity, task.id)
+
+    let action = 'standard'
+    let details = {}
+
+    switch (complexity) {
+      case 'simple': {
+        // Simple tasks — use cheaper model, single agent
+        action = 'fast_track'
+        details = { model: MODEL_FALLBACKS[AGENT_MODELS[task.agent_id]] || AGENT_MODELS[task.agent_id], max_steps: 3 }
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+          .run(task.id, 'system', `Smart-routed as SIMPLE — fast track with ${details.max_steps} max steps`, 'info')
+        break
+      }
+      case 'medium': {
+        // Medium — standard execution
+        action = 'standard'
+        details = { model: AGENT_MODELS[task.agent_id], max_steps: 6 }
+        break
+      }
+      case 'complex': {
+        // Complex — use best model, more steps
+        action = 'deep_analysis'
+        details = { model: 'anthropic/claude-sonnet-4-5', max_steps: 15 }
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+          .run(task.id, 'system', `Smart-routed as COMPLEX — deep analysis with up to ${details.max_steps} steps`, 'info')
+        break
+      }
+      case 'swarm': {
+        // Swarm — multi-agent consensus
+        action = 'swarm'
+        const text = `${task.title} ${task.description}`.toLowerCase()
+        const topAgents = agents.map(a => ({ id: a.id, w: getAgentWeight(a.id, text) }))
+          .sort((a, b) => b.w - a.w).slice(0, 4).map(a => a.id)
+        details = { participants: topAgents, consensus: 'weighted' }
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+          .run(task.id, 'system', `Smart-routed as SWARM — ${topAgents.length} agents will collaborate: ${topAgents.join(', ')}`, 'info')
+        break
+      }
+    }
+
+    res.json({ task_id: task.id, complexity, action, details })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Complexity classification endpoint (read-only)
+app.post('/api/tasks/classify', authenticateRequest, (req, res) => {
+  const { title, description } = req.body
+  if (!title) return res.status(400).json({ error: 'title required' })
+  const complexity = scoreTaskComplexity(title, description || '')
+  const text = `${title} ${description || ''}`.toLowerCase()
+
+  // Suggest participants for swarm
+  let suggestedParticipants = []
+  if (complexity === 'swarm' || complexity === 'complex') {
+    suggestedParticipants = agents.map(a => ({ id: a.id, weight: getAgentWeight(a.id, text), name: a.name }))
+      .sort((a, b) => b.weight - a.weight).slice(0, 4)
+  }
+
+  res.json({ complexity, suggestedParticipants })
+})
+
+// ══════════════════════════════════════════════════════
+// ██ PIPELINE STREAMING — Agent-to-agent output pipe  ██
+// ══════════════════════════════════════════════════════
+
+// Enhanced pipeline execution with full context streaming between steps
+// Instead of truncating previous output to 4000 chars, stream full context
+app.post('/api/pipelines/:id/run-streaming', authenticateRequest, async (req, res) => {
+  const pipeline = db.prepare('SELECT * FROM pipelines WHERE id = ?').get(req.params.id)
+  if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' })
+
+  const steps = JSON.parse(pipeline.steps)
+  if (steps.length === 0) return res.status(400).json({ error: 'Pipeline has no steps' })
+
+  // Tag this pipeline run with a stream ID so steps can find each other's full output
+  const streamId = uuid()
+  const firstStep = steps.find(s => s.position === 1) || steps[0]
+  const taskId = uuid()
+
+  // Store stream context in the task description
+  const enhancedDescription = `${firstStep.prompt_template}\n\n[STREAM_ID:${streamId}][STREAM_STEP:1][STREAM_TOTAL:${steps.length}]`
+
+  db.prepare(`INSERT INTO tasks (id, title, description, priority, agent_id, status, pipeline_id, pipeline_step) VALUES (?, ?, ?, 'high', ?, 'todo', ?, ?)`)
+    .run(taskId, `[Pipeline: ${pipeline.name}] Step 1`, enhancedDescription, firstStep.agent_id, pipeline.id, 1)
+
+  db.prepare('INSERT INTO messages (sender_id, sender_name, sender_avatar, sender_color, text) VALUES (?, ?, ?, ?, ?)')
+    .run('system', '⚡ Pipeline Stream', '⚡', '#3b82f6', `Started streaming pipeline "${pipeline.name}" (${steps.length} steps, full context preserved)`)
+
+  // Store pipeline stream metadata for context chaining
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+    .run(`_pipeline_stream_${pipeline.id}`, JSON.stringify({ streamId, startedAt: new Date().toISOString(), totalSteps: steps.length }))
+
+  setTimeout(() => processAgentQueue(firstStep.agent_id), 2000)
+  res.status(201).json({ taskId, streamId, pipeline: pipeline.name, totalSteps: steps.length, mode: 'streaming' })
 })
 
 // ── Graceful Shutdown ────────────────────────────────

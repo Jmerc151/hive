@@ -42,6 +42,7 @@ import MissionControl from './components/MissionControl'
 import MCPServers from './components/MCPServers'
 import GuardrailMonitor from './components/GuardrailMonitor'
 import SmokeTestPanel from './components/SmokeTestPanel'
+import SwarmPanel from './components/SwarmPanel'
 import ErrorBoundary from './components/ErrorBoundary'
 
 export default function App() {
@@ -295,6 +296,8 @@ export default function App() {
         return <GuardrailMonitor inline onClose={goBack} />
       case 'smokeTests':
         return <SmokeTestPanel inline onClose={goBack} />
+      case 'swarm':
+        return <SwarmPanel inline agents={agents} onClose={goBack} />
       case 'deliverablesFull':
         return <DeliverablesPanel inline agents={agents} onClose={goBack} />
       default:

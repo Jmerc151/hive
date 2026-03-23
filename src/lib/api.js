@@ -379,4 +379,17 @@ export const api = {
   createUser: (data) => request('/users', { method: 'POST', body: data }),
   updateUser: (id, data) => request(`/users/${id}`, { method: 'PATCH', body: data }),
   deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),
+
+  // Swarm Coordination
+  getSwarms: () => request('/swarms'),
+  getSwarm: (id) => request(`/swarms/${id}`),
+  createSwarm: (data) => request('/swarms', { method: 'POST', body: data }),
+  cancelSwarm: (id) => request(`/swarms/${id}/cancel`, { method: 'POST' }),
+
+  // Intelligent Task Routing
+  classifyTask: (title, description) => request('/tasks/classify', { method: 'POST', body: { title, description } }),
+  smartRoute: (taskId) => request(`/tasks/${taskId}/smart-route`, { method: 'POST' }),
+
+  // Streaming Pipelines
+  runPipelineStreaming: (id) => request(`/pipelines/${id}/run-streaming`, { method: 'POST' }),
 }
