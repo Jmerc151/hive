@@ -1,4 +1,5 @@
 import { getQuote, getIndicators, getHistory } from './marketData.js'
+import { RSI, MACD, SMA, EMA, BollingerBands, Stochastic, ATR, ADX, CCI, WilliamsR, MFI } from 'technicalindicators'
 import db from '../db.js'
 
 // ── Analyst Personas ─────────────────────────────
@@ -477,4 +478,315 @@ function evalCondition(condition, bar) {
   }
 }
 
-export { PERSONAS }
+// ══════════════════════════════════════════════════════
+// ██ ENSEMBLE SIGNAL ENGINE (AmpyFin/Abu-inspired)   ██
+// ══════════════════════════════════════════════════════
+
+// Built-in indicator strategies — no DB setup needed
+const BUILTIN_STRATEGIES = [
+  {
+    id: 'rsi_mean_reversion',
+    name: 'RSI Mean Reversion',
+    category: 'mean_reversion',
+    generate(data) {
+      const { rsi14, price } = data
+      if (rsi14 == null) return { signal: 'hold', confidence: 0 }
+      if (rsi14 < 30) return { signal: 'buy', confidence: Math.min(100, (30 - rsi14) * 5) }
+      if (rsi14 > 70) return { signal: 'sell', confidence: Math.min(100, (rsi14 - 70) * 5) }
+      return { signal: 'hold', confidence: 20 }
+    }
+  },
+  {
+    id: 'macd_crossover',
+    name: 'MACD Crossover',
+    category: 'momentum',
+    generate(data) {
+      const { macd, prevMacd } = data
+      if (!macd || !prevMacd) return { signal: 'hold', confidence: 0 }
+      const hist = macd.histogram, prevHist = prevMacd.histogram
+      if (hist == null || prevHist == null) return { signal: 'hold', confidence: 0 }
+      // Crossover: histogram flips positive
+      if (hist > 0 && prevHist <= 0) return { signal: 'buy', confidence: 70 }
+      // Crossunder: histogram flips negative
+      if (hist < 0 && prevHist >= 0) return { signal: 'sell', confidence: 70 }
+      // Trending
+      if (hist > 0) return { signal: 'buy', confidence: 30 }
+      if (hist < 0) return { signal: 'sell', confidence: 30 }
+      return { signal: 'hold', confidence: 10 }
+    }
+  },
+  {
+    id: 'bollinger_bounce',
+    name: 'Bollinger Band Bounce',
+    category: 'mean_reversion',
+    generate(data) {
+      const { price, bollinger } = data
+      if (!bollinger) return { signal: 'hold', confidence: 0 }
+      const { upper, lower, middle } = bollinger
+      const bandWidth = upper - lower
+      if (bandWidth === 0) return { signal: 'hold', confidence: 0 }
+      // Price at/below lower band = buy
+      if (price <= lower) return { signal: 'buy', confidence: 75 }
+      if (price < lower + bandWidth * 0.1) return { signal: 'buy', confidence: 50 }
+      // Price at/above upper band = sell
+      if (price >= upper) return { signal: 'sell', confidence: 75 }
+      if (price > upper - bandWidth * 0.1) return { signal: 'sell', confidence: 50 }
+      return { signal: 'hold', confidence: 15 }
+    }
+  },
+  {
+    id: 'sma_crossover',
+    name: 'SMA 20/50 Crossover',
+    category: 'trend',
+    generate(data) {
+      const { sma20, sma50, prevSma20, prevSma50 } = data
+      if (!sma20 || !sma50) return { signal: 'hold', confidence: 0 }
+      // Golden cross
+      if (sma20 > sma50 && prevSma20 && prevSma50 && prevSma20 <= prevSma50)
+        return { signal: 'buy', confidence: 80 }
+      // Death cross
+      if (sma20 < sma50 && prevSma20 && prevSma50 && prevSma20 >= prevSma50)
+        return { signal: 'sell', confidence: 80 }
+      // Trending
+      if (sma20 > sma50) return { signal: 'buy', confidence: 35 }
+      if (sma20 < sma50) return { signal: 'sell', confidence: 35 }
+      return { signal: 'hold', confidence: 10 }
+    }
+  },
+  {
+    id: 'stochastic_oscillator',
+    name: 'Stochastic Oscillator',
+    category: 'momentum',
+    generate(data) {
+      const { stochK, stochD } = data
+      if (stochK == null || stochD == null) return { signal: 'hold', confidence: 0 }
+      // Oversold + K crosses above D
+      if (stochK < 20 && stochK > stochD) return { signal: 'buy', confidence: 75 }
+      if (stochK < 20) return { signal: 'buy', confidence: 45 }
+      // Overbought + K crosses below D
+      if (stochK > 80 && stochK < stochD) return { signal: 'sell', confidence: 75 }
+      if (stochK > 80) return { signal: 'sell', confidence: 45 }
+      return { signal: 'hold', confidence: 15 }
+    }
+  },
+  {
+    id: 'ema_trend',
+    name: 'EMA 12/26 Trend',
+    category: 'trend',
+    generate(data) {
+      const { ema12, ema26, price } = data
+      if (!ema12 || !ema26) return { signal: 'hold', confidence: 0 }
+      const spread = (ema12 - ema26) / ema26 * 100
+      // Strong bullish: price above both, EMA12 > EMA26
+      if (price > ema12 && ema12 > ema26) return { signal: 'buy', confidence: Math.min(70, 30 + Math.abs(spread) * 10) }
+      // Strong bearish
+      if (price < ema12 && ema12 < ema26) return { signal: 'sell', confidence: Math.min(70, 30 + Math.abs(spread) * 10) }
+      return { signal: 'hold', confidence: 20 }
+    }
+  },
+  {
+    id: 'williams_r',
+    name: 'Williams %R',
+    category: 'mean_reversion',
+    generate(data) {
+      const { williamsR } = data
+      if (williamsR == null) return { signal: 'hold', confidence: 0 }
+      if (williamsR < -80) return { signal: 'buy', confidence: 65 }
+      if (williamsR > -20) return { signal: 'sell', confidence: 65 }
+      return { signal: 'hold', confidence: 15 }
+    }
+  },
+  {
+    id: 'cci_momentum',
+    name: 'CCI Momentum',
+    category: 'momentum',
+    generate(data) {
+      const { cci } = data
+      if (cci == null) return { signal: 'hold', confidence: 0 }
+      if (cci < -100) return { signal: 'buy', confidence: 60 }
+      if (cci > 100) return { signal: 'sell', confidence: 60 }
+      if (cci > 0) return { signal: 'buy', confidence: 25 }
+      return { signal: 'sell', confidence: 25 }
+    }
+  }
+]
+
+// Strategy performance weights (loaded from DB, updated after trades)
+const DEFAULT_WEIGHT = 1.0
+
+function getStrategyWeight(strategyId) {
+  try {
+    const row = db.prepare('SELECT avg_sharpe, avg_win_rate, pass_count, fail_count FROM strategy_meta WHERE indicator_combo = ?').get(strategyId)
+    if (!row || (row.pass_count + row.fail_count) < 3) return DEFAULT_WEIGHT
+    const winRate = row.pass_count / (row.pass_count + row.fail_count)
+    return Math.max(0.1, (row.avg_sharpe || 0.5) * winRate * 2)
+  } catch (e) {
+    return DEFAULT_WEIGHT
+  }
+}
+
+// Compute extended indicators for a symbol
+async function computeExtendedIndicators(symbol) {
+  const bars = await getHistory(symbol, '6mo', '1d')
+  if (bars.length < 50) return null
+
+  const closes = bars.map(b => b.close)
+  const highs = bars.map(b => b.high)
+  const lows = bars.map(b => b.low)
+  const volumes = bars.map(b => b.volume)
+  const len = closes.length
+
+  const rsi14 = RSI.calculate({ values: closes, period: 14 })
+  const macdData = MACD.calculate({ values: closes, fastPeriod: 12, slowPeriod: 26, signalPeriod: 9 })
+  const sma20 = SMA.calculate({ values: closes, period: 20 })
+  const sma50 = SMA.calculate({ values: closes, period: 50 })
+  const ema12 = EMA.calculate({ values: closes, period: 12 })
+  const ema26 = EMA.calculate({ values: closes, period: 26 })
+  const bollinger = BollingerBands.calculate({ values: closes, period: 20, stdDev: 2 })
+  const stoch = Stochastic.calculate({ high: highs, low: lows, close: closes, period: 14, signalPeriod: 3 })
+  const williamsRData = WilliamsR.calculate({ high: highs, low: lows, close: closes, period: 14 })
+  const cciData = CCI.calculate({ high: highs, low: lows, close: closes, period: 20 })
+
+  const latest = (arr) => arr.length > 0 ? arr[arr.length - 1] : null
+  const prev = (arr) => arr.length > 1 ? arr[arr.length - 2] : null
+
+  return {
+    symbol,
+    price: closes[len - 1],
+    rsi14: latest(rsi14),
+    macd: latest(macdData),
+    prevMacd: prev(macdData),
+    sma20: latest(sma20),
+    sma50: latest(sma50),
+    prevSma20: prev(sma20),
+    prevSma50: prev(sma50),
+    ema12: latest(ema12),
+    ema26: latest(ema26),
+    bollinger: latest(bollinger),
+    stochK: latest(stoch)?.k,
+    stochD: latest(stoch)?.d,
+    williamsR: latest(williamsRData),
+    cci: latest(cciData),
+    bars
+  }
+}
+
+// Generate signals from all built-in strategies for one symbol
+export async function generateEnsembleSignals(symbol) {
+  const data = await computeExtendedIndicators(symbol)
+  if (!data) return { symbol, error: 'Not enough data', signals: [], composite: null }
+
+  const signals = BUILTIN_STRATEGIES.map(strat => {
+    const result = strat.generate(data)
+    const weight = getStrategyWeight(strat.id)
+    return {
+      strategy_id: strat.id,
+      strategy_name: strat.name,
+      category: strat.category,
+      signal: result.signal,
+      confidence: result.confidence,
+      weight: Math.round(weight * 100) / 100
+    }
+  })
+
+  // AmpyFin-style weighted majority voting
+  let buyScore = 0, sellScore = 0, holdScore = 0
+  let totalWeight = 0
+
+  for (const sig of signals) {
+    const w = sig.weight * (sig.confidence / 100)
+    totalWeight += sig.weight
+    if (sig.signal === 'buy') buyScore += w
+    else if (sig.signal === 'sell') sellScore += w
+    else holdScore += w
+  }
+
+  // Normalize
+  const total = buyScore + sellScore + holdScore || 1
+  const buyPct = Math.round(buyScore / total * 100)
+  const sellPct = Math.round(sellScore / total * 100)
+  const holdPct = Math.round(holdScore / total * 100)
+
+  // Determine action with confidence margin (AmpyFin pattern)
+  const margin = buyScore - (sellScore + holdScore * 0.5)
+  let action = 'HOLD'
+  let confidence = holdPct
+
+  if (buyPct > sellPct && buyPct > holdPct && buyScore > sellScore * 1.3) {
+    action = buyPct > 60 ? 'STRONG BUY' : 'BUY'
+    confidence = buyPct
+  } else if (sellPct > buyPct && sellPct > holdPct && sellScore > buyScore * 1.3) {
+    action = sellPct > 60 ? 'STRONG SELL' : 'SELL'
+    confidence = sellPct
+  }
+
+  return {
+    symbol,
+    price: data.price,
+    signals,
+    composite: {
+      action,
+      buyPct,
+      sellPct,
+      holdPct,
+      confidence,
+      margin: Math.round(margin * 100) / 100,
+      strategiesVoting: signals.length,
+      buyCount: signals.filter(s => s.signal === 'buy').length,
+      sellCount: signals.filter(s => s.signal === 'sell').length,
+      holdCount: signals.filter(s => s.signal === 'hold').length
+    },
+    indicators: {
+      rsi14: data.rsi14,
+      macd_histogram: data.macd?.histogram,
+      stochK: data.stochK,
+      williamsR: data.williamsR,
+      cci: data.cci,
+      sma20: data.sma20,
+      sma50: data.sma50
+    },
+    evaluatedAt: new Date().toISOString()
+  }
+}
+
+// Scan all watchlist symbols at once
+export async function scanWatchlist() {
+  const watchlist = db.prepare('SELECT symbol FROM watchlist ORDER BY symbol').all()
+  const defaultSymbols = ['SPY', 'QQQ', 'AAPL', 'NVDA', 'MSFT', 'TSLA', 'AMZN']
+  const symbols = watchlist.length > 0 ? watchlist.map(w => w.symbol) : defaultSymbols
+
+  const results = await Promise.allSettled(
+    symbols.map(sym => generateEnsembleSignals(sym))
+  )
+
+  const scans = results
+    .filter(r => r.status === 'fulfilled' && r.value.composite)
+    .map(r => r.value)
+    .sort((a, b) => Math.abs(b.composite.margin) - Math.abs(a.composite.margin))
+
+  return {
+    scannedAt: new Date().toISOString(),
+    symbolCount: symbols.length,
+    scans,
+    actionable: scans.filter(s => s.composite.action !== 'HOLD')
+  }
+}
+
+// Record trade outcome to update strategy weights
+export function recordTradeOutcome(strategyId, won) {
+  try {
+    const existing = db.prepare('SELECT * FROM strategy_meta WHERE indicator_combo = ?').get(strategyId)
+    if (existing) {
+      if (won) {
+        db.prepare('UPDATE strategy_meta SET pass_count = pass_count + 1, updated_at = datetime(\'now\') WHERE indicator_combo = ?').run(strategyId)
+      } else {
+        db.prepare('UPDATE strategy_meta SET fail_count = fail_count + 1, updated_at = datetime(\'now\') WHERE indicator_combo = ?').run(strategyId)
+      }
+    } else {
+      db.prepare('INSERT INTO strategy_meta (indicator_combo, strategy_type, pass_count, fail_count) VALUES (?, ?, ?, ?)')
+        .run(strategyId, 'builtin', won ? 1 : 0, won ? 0 : 1)
+    }
+  } catch (e) { /* ignore */ }
+}
+
+export { PERSONAS, BUILTIN_STRATEGIES }

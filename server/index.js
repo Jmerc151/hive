@@ -621,6 +621,16 @@ const TOOL_REGISTRY = [
     execute: async (args) => await analysis.evaluateEnsemble(args.symbol)
   },
   {
+    name: 'scan_ensemble',
+    description: 'Run 8 indicator strategies (RSI, MACD, Bollinger, SMA, Stochastic, EMA, Williams%R, CCI) on all watchlist symbols. Returns weighted voting signals with BUY/SELL/HOLD recommendations. Use this instead of manually calling get_indicators on each symbol.',
+    params: { symbol: { type: 'string', required: false, description: 'Single symbol to scan (omit to scan full watchlist)' } },
+    agents: ['oracle', 'scout', 'nexus'],
+    execute: async (args) => {
+      if (args.symbol) return await analysis.generateEnsembleSignals(args.symbol)
+      return await analysis.scanWatchlist()
+    }
+  },
+  {
     name: 'list_strategies',
     description: 'List trading strategies filtered by status',
     params: { status: { type: 'string', required: false, description: 'Filter: discovered, backtesting, paper_testing, approved, deployed, retired (default: all)' } },
@@ -6067,6 +6077,21 @@ app.delete('/api/trading/watchlist/:id', (req, res) => {
   res.json({ ok: true })
 })
 
+// ── Ensemble Signal Scanner ──────────────────────
+app.get('/api/trading/ensemble/:symbol', async (req, res) => {
+  try {
+    const result = await analysis.generateEnsembleSignals(req.params.symbol.toUpperCase())
+    res.json(result)
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.get('/api/trading/ensemble', async (req, res) => {
+  try {
+    const result = await analysis.scanWatchlist()
+    res.json(result)
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
 app.get('/api/trading/portfolio-history', (req, res) => {
   const snapshots = db.prepare('SELECT * FROM portfolio_snapshots ORDER BY created_at DESC LIMIT 500').all()
   res.json(snapshots)
@@ -10593,7 +10618,7 @@ const masterPipelines = [
     name: 'Trading Session',
     description: 'Oracle checks indicators and executes trades. Runs 9:31am weekdays.',
     steps: [
-      { position: 1, agent_id: 'oracle', prompt_template: 'Check is_market_open. If open: check get_positions for current holdings. Run get_indicators on SPY, QQQ, AAPL, NVDA, MSFT, TSLA, AMZN. Execute any RSI signals found (RSI<32 buy, RSI>72 sell existing position). Log all decisions to memory. Report: positions checked, signals found, trades executed.' }
+      { position: 1, agent_id: 'oracle', prompt_template: 'Check is_market_open. If open: check get_positions for current holdings. Run scan_ensemble (no symbol = scans full watchlist). This runs 8 indicator strategies (RSI, MACD, Bollinger, SMA crossover, Stochastic, EMA trend, Williams %R, CCI) and returns weighted voting signals. Execute trades ONLY for symbols with STRONG BUY or STRONG SELL composite action AND confidence > 60%. For BUY signals: place_order buy. For SELL signals on existing positions: close_position. Log all decisions to memory. Report: positions checked, signals found, trades executed, ensemble breakdown.' }
     ]
   },
   {
