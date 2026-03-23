@@ -218,6 +218,53 @@ function getAgentModel(agentId) {
   return AGENT_MODELS[agentId] || 'anthropic/claude-sonnet-4-5'
 }
 
+// ── Task Complexity Routing (Ruflo-inspired) ────────────────────────
+// Classify task complexity → route to appropriate model tier
+// Simple tasks don't need expensive models. Complex tasks get the best.
+const COMPLEXITY_TIERS = {
+  simple: {  // lookups, status checks, simple queries
+    'qwen/qwen3-235b-a22b': 'qwen/qwen-2.5-72b-instruct',
+    'deepseek/deepseek-r1-0528': 'deepseek/deepseek-r1',
+    'anthropic/claude-sonnet-4-5': 'anthropic/claude-haiku-4-5',
+    'anthropic/claude-haiku-4-5': 'anthropic/claude-haiku-4-5',
+  },
+  medium: {}, // use default agent model (no override)
+  complex: {  // multi-step reasoning, architecture, critical decisions
+    'qwen/qwen-2.5-72b-instruct': 'qwen/qwen3-235b-a22b',
+    'deepseek/deepseek-r1': 'deepseek/deepseek-r1-0528',
+  },
+}
+
+const SIMPLE_PATTERNS = [
+  /\b(check|status|list|show|get|fetch|read|look up|verify|confirm)\b/i,
+  /\b(what is|how many|current|latest)\b/i,
+  /\b(summary|digest|report)\b.*\b(daily|weekly|today)\b/i,
+]
+const COMPLEX_PATTERNS = [
+  /\b(build|create|develop|implement|architect|design|refactor)\b/i,
+  /\b(strategy|plan|analyze|research|deep dive|comprehensive)\b/i,
+  /\b(trade|invest|backtest|optimize|deploy|launch|migrate)\b/i,
+  /\b(debug|fix|diagnose|investigate|root cause)\b/i,
+  /\b(write|draft|compose)\b.*\b(proposal|pitch|copy|content)\b/i,
+]
+
+function classifyTaskComplexity(title, description) {
+  const text = `${title || ''} ${description || ''}`.toLowerCase()
+  const wordCount = text.split(/\s+/).length
+
+  let simpleScore = 0
+  let complexScore = 0
+
+  for (const p of SIMPLE_PATTERNS) { if (p.test(text)) simpleScore++ }
+  for (const p of COMPLEX_PATTERNS) { if (p.test(text)) complexScore++ }
+
+  // Short tasks with simple keywords → simple
+  if (simpleScore > complexScore && wordCount < 20) return 'simple'
+  // Long descriptions or complex keywords → complex
+  if (complexScore > simpleScore || wordCount > 50) return 'complex'
+  return 'medium'
+}
+
 // Cost-aware model routing — downgrades expensive models when agent approaches budget
 const MODEL_FALLBACKS = {
   'anthropic/claude-sonnet-4-5': 'anthropic/claude-haiku-4-5',
@@ -228,24 +275,36 @@ const MODEL_FALLBACKS = {
   'deepseek/deepseek-r1-0528': 'deepseek/deepseek-r1',       // fallback to older R1
 }
 
-function getSmartModel(agentId) {
+function getSmartModel(agentId, task) {
   const baseModel = AGENT_MODELS[agentId] || 'anthropic/claude-haiku-4-5'
 
+  // Step 1: Complexity-based routing (if task provided)
+  let model = baseModel
+  let complexity = 'medium'
+  if (task) {
+    complexity = classifyTaskComplexity(task.title, task.description)
+    const tierOverride = COMPLEXITY_TIERS[complexity]?.[baseModel]
+    if (tierOverride) {
+      model = tierOverride
+      log('info', 'complexity_routing', { agentId, complexity, from: baseModel, to: model, task: task.title?.slice(0, 60) })
+    }
+  }
+
+  // Step 2: Spend-aware downgrade (overrides complexity if budget is tight)
   const today = new Date().toISOString().slice(0, 10)
   const agentSpend = db.prepare("SELECT COALESCE(SUM(cost), 0) as total FROM spend_log WHERE agent_id = ? AND date = ?").get(agentId, today)
-  // Use per-agent limit if set, otherwise divide global limit by 7 agents
   const perAgentSetting = db.prepare("SELECT value FROM settings WHERE key = ?").get(`${agentId}_daily_usd`)
   const dailyLimit = parseFloat(db.prepare("SELECT value FROM settings WHERE key = 'daily_limit_usd'").get()?.value || '35')
   const agentLimit = perAgentSetting ? parseFloat(perAgentSetting.value) : dailyLimit / 11
 
   const spendRatio = agentSpend.total / agentLimit
 
-  if (spendRatio > 0.9 && MODEL_FALLBACKS[baseModel] !== baseModel) {
-    log('info', 'model_downgraded', { agentId, from: baseModel, to: MODEL_FALLBACKS[baseModel], spendRatio: Math.round(spendRatio * 100) })
-    return MODEL_FALLBACKS[baseModel]
+  if (spendRatio > 0.9 && MODEL_FALLBACKS[model] && MODEL_FALLBACKS[model] !== model) {
+    log('info', 'model_downgraded', { agentId, from: model, to: MODEL_FALLBACKS[model], spendRatio: Math.round(spendRatio * 100) })
+    return MODEL_FALLBACKS[model]
   }
 
-  return baseModel
+  return model
 }
 
 // Models that support native function calling via OpenRouter
@@ -336,77 +395,101 @@ function flattenContent(content) {
 }
 
 // Wrapped LLM call that tracks spend (OpenRouter via OpenAI SDK)
+// Auto-failover: if primary model fails with a retryable error, automatically try fallback model
 async function callClaude(opts, agentId, taskId, externalSignal) {
   checkSpendLimit(agentId)
 
-  // 5-minute timeout via AbortController
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 300000)
+  const attemptCall = async (model) => {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 300000)
 
-  // If caller provided an external signal, abort our controller when it fires
-  if (externalSignal) {
-    if (externalSignal.aborted) { clearTimeout(timeout); controller.abort(); }
-    else externalSignal.addEventListener('abort', () => controller.abort(), { once: true })
+    if (externalSignal) {
+      if (externalSignal.aborted) { clearTimeout(timeout); controller.abort(); }
+      else externalSignal.addEventListener('abort', () => controller.abort(), { once: true })
+    }
+
+    try {
+      const messages = []
+      if (opts.system) {
+        messages.push({ role: 'system', content: flattenContent(opts.system) })
+      }
+      for (const msg of (opts.messages || [])) {
+        messages.push({ role: msg.role, content: flattenContent(msg.content) })
+      }
+
+      const createOpts = {
+        model,
+        messages,
+        max_tokens: opts.max_tokens,
+      }
+
+      if (opts.tools && opts.tools.length > 0 && SUPPORTS_FUNCTION_CALLING[model]) {
+        createOpts.tools = opts.tools
+        createOpts.tool_choice = 'auto'
+      }
+
+      const response = await breakers.openrouter.call(() => openai.chat.completions.create(createOpts, { signal: controller.signal }))
+
+      const tokensIn = response.usage?.prompt_tokens || 0
+      const tokensOut = response.usage?.completion_tokens || 0
+      const pricing = MODEL_COSTS[model] || DEFAULT_COST
+      const cost = (tokensIn * pricing.input) + (tokensOut * pricing.output)
+
+      logSpend(agentId, tokensIn, tokensOut, cost, taskId)
+
+      if (taskId) {
+        db.prepare('UPDATE tasks SET tokens_used = tokens_used + ?, estimated_cost = estimated_cost + ? WHERE id = ?')
+          .run(tokensIn + tokensOut, cost, taskId)
+      }
+
+      const msg = response.choices?.[0]?.message || {}
+
+      const nativeToolCalls = (msg.tool_calls || []).map(tc => ({
+        name: tc.function?.name,
+        args: (() => { try { return JSON.parse(tc.function?.arguments || '{}') } catch { return {} } })(),
+        raw: `${tc.function?.name}(${tc.function?.arguments || '{}'})`,
+        native: true,
+      })).filter(tc => tc.name)
+
+      return {
+        content: [{ type: 'text', text: msg.content || '' }],
+        usage: { input_tokens: tokensIn, output_tokens: tokensOut },
+        nativeToolCalls,
+        model, // track which model actually served this
+      }
+    } catch (err) {
+      if (err.name === 'AbortError' || err.message?.includes('aborted')) {
+        throw new Error(`LLM_TIMEOUT: ${model} call for ${agentId} timed out after 5 minutes`)
+      }
+      throw err
+    } finally {
+      clearTimeout(timeout)
+    }
   }
 
+  // Try primary model, auto-failover to fallback on retryable errors
   try {
-    // Convert Anthropic message format → OpenAI messages array
-    const messages = []
-    if (opts.system) {
-      messages.push({ role: 'system', content: flattenContent(opts.system) })
+    return await attemptCall(opts.model)
+  } catch (primaryErr) {
+    const isRetryable = primaryErr.status === 429 || primaryErr.status === 502 ||
+      primaryErr.status === 503 || primaryErr.status === 504 ||
+      primaryErr.message?.includes('ECONNRESET') || primaryErr.message?.includes('ETIMEDOUT') ||
+      primaryErr.message?.includes('rate_limit') || primaryErr.message?.includes('overloaded')
+
+    const fallbackModel = MODEL_FALLBACKS[opts.model]
+    if (isRetryable && fallbackModel && fallbackModel !== opts.model) {
+      log('warn', 'model_failover', {
+        agentId, taskId, primary: opts.model, fallback: fallbackModel,
+        error: primaryErr.message?.slice(0, 200), status: primaryErr.status
+      })
+      try {
+        return await attemptCall(fallbackModel)
+      } catch (fallbackErr) {
+        log('error', 'failover_also_failed', { agentId, primary: opts.model, fallback: fallbackModel, error: fallbackErr.message?.slice(0, 200) })
+        throw primaryErr // throw original error if fallback also fails
+      }
     }
-    for (const msg of (opts.messages || [])) {
-      messages.push({ role: msg.role, content: flattenContent(msg.content) })
-    }
-
-    const createOpts = {
-      model: opts.model,
-      messages,
-      max_tokens: opts.max_tokens,
-    }
-
-    // Native function calling for supported models
-    if (opts.tools && opts.tools.length > 0 && SUPPORTS_FUNCTION_CALLING[opts.model]) {
-      createOpts.tools = opts.tools
-      createOpts.tool_choice = 'auto'
-    }
-
-    const response = await breakers.openrouter.call(() => openai.chat.completions.create(createOpts, { signal: controller.signal }))
-
-    const tokensIn = response.usage?.prompt_tokens || 0
-    const tokensOut = response.usage?.completion_tokens || 0
-    const pricing = MODEL_COSTS[opts.model] || DEFAULT_COST
-    const cost = (tokensIn * pricing.input) + (tokensOut * pricing.output)
-
-    logSpend(agentId, tokensIn, tokensOut, cost, taskId)
-
-    if (taskId) {
-      db.prepare('UPDATE tasks SET tokens_used = tokens_used + ?, estimated_cost = estimated_cost + ? WHERE id = ?')
-        .run(tokensIn + tokensOut, cost, taskId)
-    }
-
-    const msg = response.choices?.[0]?.message || {}
-
-    // Parse native tool_calls if present
-    const nativeToolCalls = (msg.tool_calls || []).map(tc => ({
-      name: tc.function?.name,
-      args: (() => { try { return JSON.parse(tc.function?.arguments || '{}') } catch { return {} } })(),
-      raw: `${tc.function?.name}(${tc.function?.arguments || '{}'})`,
-      native: true,
-    })).filter(tc => tc.name)
-
-    return {
-      content: [{ type: 'text', text: msg.content || '' }],
-      usage: { input_tokens: tokensIn, output_tokens: tokensOut },
-      nativeToolCalls,
-    }
-  } catch (err) {
-    if (err.name === 'AbortError' || err.message?.includes('aborted')) {
-      throw new Error(`LLM_TIMEOUT: ${opts.model} call for ${agentId} timed out after 5 minutes`)
-    }
-    throw err
-  } finally {
-    clearTimeout(timeout)
+    throw primaryErr
   }
 }
 
@@ -4057,7 +4140,7 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
     const toolUsageCounts = {}
 
     const toolsPrompt = buildToolsPrompt(agent.id)
-    const agentModel = getSmartModel(agent.id)
+    const agentModel = getSmartModel(agent.id, task)
     const toolsSchema = SUPPORTS_FUNCTION_CALLING[agentModel] ? buildToolsSchema(agent.id) : null
 
     // ── Checkpoint restore: resume from last saved state if available ──
@@ -8297,7 +8380,54 @@ async function storeMemoryEmbedding(agentId, content, taskId, tags) {
   if (!embedding) return null
   db.prepare('INSERT INTO memory_embeddings (agent_id, content, embedding, tags, source_task_id) VALUES (?, ?, ?, ?, ?)')
     .run(agentId, content.slice(0, 5000), JSON.stringify(embedding), JSON.stringify(tags || []), taskId || '')
+
+  // Cross-agent memory sharing (Ruflo-inspired knowledge transfer)
+  // When an agent stores something tagged with topics relevant to other agents, auto-share it
+  crossAgentMemoryShare(agentId, content, embedding, tags).catch(e =>
+    console.error('Cross-agent memory share failed:', e.message)
+  )
+
   return true
+}
+
+// ── Cross-Agent Memory Sharing ──────────────────────────
+// Maps topics to agents who care about them
+const AGENT_INTERESTS = {
+  scout:    ['market', 'competitor', 'opportunity', 'research', 'trend', 'ember', 'agentforge', 'restaurant'],
+  forge:    ['code', 'bug', 'architecture', 'deploy', 'api', 'ember', 'agentforge', 'technical'],
+  quill:    ['content', 'copy', 'marketing', 'email', 'pitch', 'brand', 'ember'],
+  dealer:   ['lead', 'sales', 'customer', 'restaurant', 'outreach', 'pricing', 'ember'],
+  oracle:   ['trade', 'market', 'stock', 'rsi', 'strategy', 'price', 'backtest', 'polymarket'],
+  nexus:    ['revenue', 'milestone', 'sprint', 'pipeline', 'performance', 'strategy'],
+  sentinel: ['security', 'error', 'monitor', 'alert', 'guardrail', 'spend'],
+}
+
+async function crossAgentMemoryShare(sourceAgentId, content, embedding, tags) {
+  const tagList = (tags || []).map(t => String(t).toLowerCase())
+  const contentLower = content.toLowerCase()
+
+  for (const [targetAgent, interests] of Object.entries(AGENT_INTERESTS)) {
+    if (targetAgent === sourceAgentId) continue
+
+    // Check if any of this agent's interests match the tags or content
+    const matched = interests.some(interest =>
+      tagList.some(t => t.includes(interest)) || contentLower.includes(interest)
+    )
+    if (!matched) continue
+
+    // Check we haven't already shared very similar content to this agent (dedupe)
+    const existing = db.prepare(
+      "SELECT id FROM memory_embeddings WHERE agent_id = ? AND content = ? LIMIT 1"
+    ).get(targetAgent, content.slice(0, 5000))
+    if (existing) continue
+
+    // Store a copy tagged as shared knowledge
+    db.prepare('INSERT INTO memory_embeddings (agent_id, content, embedding, tags, source_task_id) VALUES (?, ?, ?, ?, ?)')
+      .run(targetAgent, content.slice(0, 5000), JSON.stringify(embedding),
+        JSON.stringify([...tagList, `shared_from:${sourceAgentId}`]), '')
+
+    log('info', 'memory_shared', { from: sourceAgentId, to: targetAgent, contentPreview: content.slice(0, 80) })
+  }
 }
 
 async function searchMemoryEmbeddings(agentId, query, topK = 5) {
