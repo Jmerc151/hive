@@ -482,6 +482,24 @@ db.exec(`
   );
 `)
 
+// Scored memory facts (DeerFlow-inspired confidence scoring)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS memory_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    fact TEXT NOT NULL,
+    confidence REAL DEFAULT 0.5,
+    category TEXT DEFAULT 'general' CHECK(category IN ('strategy','pattern','gotcha','contact','revenue','technical','general')),
+    source_task_id TEXT,
+    access_count INTEGER DEFAULT 0,
+    last_accessed TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_facts_agent ON memory_facts(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_facts_agent_conf ON memory_facts(agent_id, confidence DESC);
+`)
+
 // Semantic memory embeddings
 db.exec(`
   CREATE TABLE IF NOT EXISTS memory_embeddings (
@@ -496,6 +514,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_memory_agent ON memory_embeddings(agent_id);
   CREATE INDEX IF NOT EXISTS idx_memory_agent_created ON memory_embeddings(agent_id, created_at DESC);
 `)
+
+// Skills: relevance_keywords for progressive skill loading
+try { db.exec(`ALTER TABLE skills ADD COLUMN relevance_keywords TEXT DEFAULT '[]'`) } catch (e) { /* already exists */ }
 
 // OTLP trace columns
 try { db.exec(`ALTER TABLE task_traces ADD COLUMN trace_id TEXT DEFAULT ''`) } catch (e) { /* already exists */ }

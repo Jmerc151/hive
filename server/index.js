@@ -2682,21 +2682,25 @@ async function updateAgentMemory(agent, task, output) {
     const response = await callClaude({
       model: getSmartModel(agent.id),
       max_tokens: 1024,
-      system: `You are a memory curator for ${agent.name} (${agent.role}). Extract the most important learnings, decisions, and context from completed work that would help this agent perform better on future tasks.
+      system: `You are a memory curator for ${agent.name} (${agent.role}). Extract the most important learnings from completed work as structured facts.
 
 Rules:
-- Be concise — bullet points, not paragraphs
-- Focus on: patterns discovered, decisions made, gotchas found, strategies that worked, income opportunities identified
-- Skip generic knowledge — only save project-specific insights
+- Extract 1-5 discrete facts (not paragraphs)
+- Each fact should be a single actionable insight
+- Skip generic knowledge — only project-specific insights
 - If nothing new was learned, respond with just "NOTHING_NEW"
 
-Respond with ONLY the memory entry content (markdown bullets).`,
+Respond with a JSON array of facts. Each fact: {"fact": "concise insight", "confidence": 0.0-1.0, "category": "strategy|pattern|gotcha|contact|revenue|technical|general"}
+
+Confidence guide: 0.9+ = proven by results, 0.7-0.9 = strong evidence, 0.5-0.7 = reasonable inference, <0.5 = speculative
+
+Example: [{"fact": "RSI mean reversion works best on AAPL with 14-day window", "confidence": 0.85, "category": "strategy"}]`,
       messages: [{
         role: 'user',
         content: `Task completed: "${task.title}"
 Output (first 2000 chars): ${output.slice(0, 2000)}
 
-Current memory (for context — avoid duplicates):
+Existing facts (avoid duplicates):
 ${currentMemory.slice(-2000) || '(empty)'}`
       }]
     }, agent.id, task.id)
@@ -2704,13 +2708,118 @@ ${currentMemory.slice(-2000) || '(empty)'}`
     const text = response.content.map(b => b.type === 'text' ? b.text : '').join('')
     if (text.includes('NOTHING_NEW')) return
 
-    appendAgentMemory(agent.id, { title: task.title, content: text.slice(0, 1000) })
+    // Try to parse structured facts
+    const jsonMatch = text.match(/\[[\s\S]*\]/)
+    if (jsonMatch) {
+      try {
+        const facts = JSON.parse(jsonMatch[0])
+        if (Array.isArray(facts)) {
+          const insertFact = db.prepare(
+            'INSERT INTO memory_facts (agent_id, fact, confidence, category, source_task_id) VALUES (?, ?, ?, ?, ?)'
+          )
+          const findDuplicate = db.prepare(
+            'SELECT id, confidence, access_count FROM memory_facts WHERE agent_id = ? AND fact = ?'
+          )
+          for (const f of facts.slice(0, 5)) {
+            if (!f.fact || typeof f.fact !== 'string') continue
+            const conf = Math.max(0, Math.min(1, f.confidence || 0.5))
+            const cat = ['strategy','pattern','gotcha','contact','revenue','technical','general'].includes(f.category) ? f.category : 'general'
+
+            // Check for exact duplicate — boost confidence instead of re-inserting
+            const existing = findDuplicate.get(agent.id, f.fact)
+            if (existing) {
+              const boosted = Math.min(1, existing.confidence + 0.1)
+              db.prepare('UPDATE memory_facts SET confidence = ?, access_count = access_count + 1, updated_at = datetime(\'now\') WHERE id = ?')
+                .run(boosted, existing.id)
+            } else {
+              insertFact.run(agent.id, f.fact.slice(0, 500), conf, cat, task.id)
+            }
+          }
+          log('info', 'memory_facts_stored', { agentId: agent.id, count: facts.length })
+        }
+      } catch (parseErr) {
+        log('warn', 'memory_facts_parse_failed', { agentId: agent.id, error: parseErr.message })
+      }
+    }
+
+    // Still append to .md file for backward compatibility
+    const bulletText = jsonMatch
+      ? JSON.parse(jsonMatch[0]).map(f => `- [${(f.confidence || 0.5).toFixed(1)}] ${f.category || 'general'}: ${f.fact}`).join('\n')
+      : text.slice(0, 1000)
+    appendAgentMemory(agent.id, { title: task.title, content: bulletText })
     console.log(`🧠 Memory updated for ${agent.name}`)
   } catch (err) {
     console.error(`Memory update failed for ${agent.name}:`, err.message)
   }
 }
 
+// Load top-N scored facts for agent (used during prompt injection)
+function getTopFacts(agentId, limit = 15) {
+  try {
+    const facts = db.prepare(
+      'SELECT id, fact, confidence, category FROM memory_facts WHERE agent_id = ? AND confidence > 0.2 ORDER BY confidence DESC, updated_at DESC LIMIT ?'
+    ).all(agentId, limit)
+
+    // Bump access_count and last_accessed for injected facts
+    if (facts.length > 0) {
+      const updateAccess = db.prepare('UPDATE memory_facts SET access_count = access_count + 1, last_accessed = datetime(\'now\') WHERE id = ?')
+      for (const f of facts) updateAccess.run(f.id)
+    }
+
+    return facts
+  } catch (e) {
+    return []
+  }
+}
+
+
+// ══════════════════════════════════════════════════════
+// ██ PROGRESSIVE SKILL LOADING — relevance scoring    ██
+// ══════════════════════════════════════════════════════
+
+function selectRelevantSkills(agentId, taskTitle, taskDescription) {
+  const allSkills = db.prepare(
+    'SELECT s.id, s.name, s.skill_md, s.tags, s.relevance_keywords, asv.priority FROM agent_skills_v2 asv JOIN skills s ON s.id = asv.skill_id WHERE asv.agent_id = ? AND asv.enabled = 1 ORDER BY asv.priority'
+  ).all(agentId)
+
+  if (allSkills.length <= 3) return allSkills // No filtering needed for small sets
+
+  const taskText = `${taskTitle} ${taskDescription || ''}`.toLowerCase()
+  const taskWords = taskText.split(/\W+/).filter(w => w.length > 2)
+
+  const scored = allSkills.map(skill => {
+    // Always include high-priority skills (priority < 3)
+    if (skill.priority < 3) return { ...skill, relevanceScore: 100 }
+
+    // Build keyword set from tags + relevance_keywords + skill name
+    let keywords = []
+    try { keywords = keywords.concat(JSON.parse(skill.tags || '[]')) } catch (e) {}
+    try { keywords = keywords.concat(JSON.parse(skill.relevance_keywords || '[]')) } catch (e) {}
+    keywords = keywords.concat(skill.name.toLowerCase().split(/\W+/))
+    keywords = keywords.map(k => k.toLowerCase()).filter(k => k.length > 2)
+
+    // Score: count keyword matches in task text
+    let score = 0
+    for (const kw of keywords) {
+      if (taskText.includes(kw)) score += 1
+    }
+    // Bonus for word-level matches
+    for (const tw of taskWords) {
+      if (keywords.includes(tw)) score += 0.5
+    }
+
+    return { ...skill, relevanceScore: score }
+  })
+
+  // Sort by relevance, take top 3 + any always-on (priority < 3)
+  scored.sort((a, b) => b.relevanceScore - a.relevanceScore)
+  const selected = scored.filter(s => s.relevanceScore > 0).slice(0, 3)
+
+  // Fallback: if no matches, return all (preserve current behavior)
+  if (selected.length === 0) return allSkills
+
+  return selected
+}
 
 // ══════════════════════════════════════════════════════
 // ██ TASK QUEUE — Per-agent serial queue              ██
@@ -3371,8 +3480,23 @@ registerHeartbeat('auto-unstick', 10 * 60 * 1000, () => {
   }
 })
 
-// Memory compaction — every 7 days (compact memories >10KB)
+// Memory compaction — every 7 days (compact memories >10KB + decay stale facts)
 registerHeartbeat('memory-compaction', 7 * 24 * 60 * 60 * 1000, async () => {
+  // Decay stale facts: facts not accessed in 30+ days lose 0.1 confidence
+  try {
+    const decayed = db.prepare(
+      `UPDATE memory_facts SET confidence = MAX(0, confidence - 0.1), updated_at = datetime('now')
+       WHERE (last_accessed IS NULL AND created_at < datetime('now', '-30 days'))
+          OR (last_accessed < datetime('now', '-30 days'))`
+    ).run()
+    if (decayed.changes > 0) console.log(`🧹 Decayed ${decayed.changes} stale memory facts`)
+
+    // Prune facts with confidence <= 0
+    const pruned = db.prepare('DELETE FROM memory_facts WHERE confidence <= 0').run()
+    if (pruned.changes > 0) console.log(`🗑️ Pruned ${pruned.changes} zero-confidence facts`)
+  } catch (e) { console.error('Memory fact decay error:', e.message) }
+
+  // Original .md file compaction
   for (const agent of agents) {
     const memory = readAgentMemory(agent.id)
     if (memory.length > 10000) {
@@ -3636,6 +3760,32 @@ app.get('/api/agents/:id/memory', (req, res) => {
 app.delete('/api/agents/:id/memory', (req, res) => {
   writeAgentMemory(req.params.id, '')
   res.json({ ok: true, message: 'Memory cleared' })
+})
+
+// ── Memory Facts API (scored facts) ─────────────────
+app.get('/api/agents/:id/facts', (req, res) => {
+  const { category, min_confidence } = req.query
+  let query = 'SELECT * FROM memory_facts WHERE agent_id = ?'
+  const params = [req.params.id]
+  if (category) { query += ' AND category = ?'; params.push(category) }
+  if (min_confidence) { query += ' AND confidence >= ?'; params.push(parseFloat(min_confidence)) }
+  query += ' ORDER BY confidence DESC, updated_at DESC LIMIT 100'
+  const facts = db.prepare(query).all(...params)
+  res.json({ agent_id: req.params.id, facts, count: facts.length })
+})
+
+app.delete('/api/memory/facts/:id', (req, res) => {
+  db.prepare('DELETE FROM memory_facts WHERE id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+app.patch('/api/memory/facts/:id', (req, res) => {
+  const { confidence } = req.body
+  if (confidence !== undefined) {
+    db.prepare('UPDATE memory_facts SET confidence = ?, updated_at = datetime(\'now\') WHERE id = ?')
+      .run(Math.max(0, Math.min(1, confidence)), req.params.id)
+  }
+  res.json({ ok: true })
 })
 
 // ── Agent System Prompt API (for Nexus self-improvement) ──
@@ -4056,7 +4206,11 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
 
   // ── ReAct Loop (with tool execution) ─────────────
   try {
-    const agentMemory = readAgentMemory(agent.id)
+    // Load scored facts (DeerFlow-style) with fallback to raw memory
+    const scoredFacts = getTopFacts(agent.id, 15)
+    const agentMemory = scoredFacts.length > 0
+      ? scoredFacts.map(f => `- [${f.confidence.toFixed(1)}] ${f.category}: ${f.fact}`).join('\n')
+      : readAgentMemory(agent.id)?.slice(-2000) || ''
     const MAX_STEPS = parseInt(db.prepare("SELECT value FROM settings WHERE key = 'max_react_steps'").get()?.value || '15')
     const STEP_TIMEOUT = parseInt(db.prepare("SELECT value FROM settings WHERE key = 'step_timeout_ms'").get()?.value || '300000')
     const MAX_TOOLS_PER_STEP = 5
@@ -4314,13 +4468,14 @@ START WITH TOOL CALLS NOW.`
         }
       }
 
-      // Inject V2 skills
-      const skillsV2 = db.prepare(
-        'SELECT s.name, s.skill_md FROM agent_skills_v2 asv JOIN skills s ON s.id = asv.skill_id WHERE asv.agent_id = ? AND asv.enabled = 1 ORDER BY asv.priority'
-      ).all(agent.id)
+      // Inject V2 skills — progressive loading (only relevant skills)
+      const skillsV2 = selectRelevantSkills(agent.id, task.title, task.description || '')
       const skillsContext = skillsV2.length > 0
         ? '\n\n## Skills\n' + skillsV2.map(s => s.skill_md).join('\n\n---\n\n')
         : ''
+      if (step === startStep && skillsV2.length > 0) {
+        log('info', 'skills_loaded', { taskId: task.id, agentId: agent.id, skills: skillsV2.map(s => s.name), total: skillsV2.length })
+      }
 
       // Inject goal ancestry if task has it
       let goalContext = ''
