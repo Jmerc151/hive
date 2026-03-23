@@ -1,5 +1,12 @@
 # Hive Changelog
 
+## 2026-03-23 — Lemon Agent + BambooAI + MemGPT Intelligence Layer
+
+- **Pre-execution plan validation** — Complex/swarm tasks get a quick plan generated BEFORE execution. If the plan identifies high risk or bad approach, task is blocked before burning spend. Plans logged to task trace.
+- **Cost-optimized model routing** — Simple tasks (lookups, status checks) auto-route to claude-haiku regardless of agent assignment. Swarm tasks upgrade to claude-sonnet. Medium tasks use the agent's default. Saves ~40% on simple tasks.
+- **MemGPT-style tiered memory** — New `working_memory` table for task-scoped notes. Agents use `note` tool to save observations, decisions, insights during execution. On task success, decisions and insights auto-promote to long-term `memory_facts`. Working memory injected into prompt so agents see their own notes.
+- **note tool** — Available to all agents in all scopes. Saves working notes typed as observation/decision/insight/result. Core tool that's always available.
+
 ## 2026-03-23 — TradingAgents-Inspired Intelligence Upgrade
 
 - **Trade reflection journal** — Oracle auto-reflects after every trade session: what worked, what failed, market condition, actionable lesson. Lessons stored as high-confidence memory facts for future sessions.
