@@ -2379,12 +2379,77 @@ const TOOL_REGISTRY = [
   }
 ]
 
+// ══════════════════════════════════════════════════════
+// ██ SCOPED AGENT CONTEXTS (DeerFlow-inspired)       ██
+// ══════════════════════════════════════════════════════
+
+// Core tools always available to any agent (memory, delegation, communication)
+const CORE_TOOLS = ['consult_agent', 'create_task', 'store_memory', 'recall_memory', 'recall_hive_memory', 'request_approval', 'propose_feature', 'log_revenue', 'search_knowledge']
+
+// Task-type → tool scopes. Each scope lists tool names allowed for that task type.
+const TOOL_SCOPES = {
+  trading: ['get_quote', 'get_history', 'get_indicators', 'search_symbols', 'is_market_open', 'get_account', 'get_positions', 'get_orders', 'place_order', 'close_position', 'close_all_positions', 'analyze_symbol', 'evaluate_ensemble', 'scan_ensemble', 'compute_trade_constraints', 'list_strategies', 'save_strategy', 'run_backtest', 'run_walkforward', 'polymarket_get_markets', 'polymarket_paper_trade'],
+  research: ['web_search', 'scrape_page', 'deep_research', 'http_request', 'find_email', 'search_symbols', 'get_quote', 'get_indicators', 'score_codebase', 'browse_skills_marketplace', 'search_skills'],
+  build: ['github_list_files', 'github_read_file', 'github_write_file', 'github_create_branch', 'github_create_pr', 'github_create_issue', 'github_get_issues', 'github_search_code', 'execute_code', 'read_file', 'write_file', 'delete_file', 'list_workspace', 'netlify_deploy', 'netlify_list_sites', 'score_codebase', 'install_skill', 'generate_image'],
+  outreach: ['send_email', 'find_email', 'twitter_post', 'twitter_thread', 'linkedin_post', 'reddit_post', 'devto_publish', 'devto_list_articles', 'medium_publish', 'beehiiv_create_post', 'beehiiv_get_subscribers', 'scrape_page', 'http_request'],
+  sales: ['send_email', 'find_email', 'gumroad_create_product', 'gumroad_list_products', 'gumroad_get_sales', 'stripe_create_link', 'stripe_get_balance', 'scrape_page', 'http_request', 'twitter_post', 'linkedin_post'],
+  content: ['write_file', 'read_file', 'generate_image', 'devto_publish', 'devto_list_articles', 'medium_publish', 'beehiiv_create_post', 'beehiiv_get_subscribers', 'twitter_post', 'twitter_thread', 'linkedin_post', 'reddit_post', 'scrape_page', 'web_search'],
+  orchestration: ['list_tasks', 'read_memory', 'web_search', 'deep_research', 'http_request', 'evaluate_ensemble', 'score_codebase', 'browse_skills_marketplace', 'search_skills', 'install_skill', 'github_list_files', 'github_read_file', 'github_search_code', 'github_create_issue', 'github_get_issues', 'github_create_pr', 'beehiiv_get_subscribers', 'gumroad_get_sales', 'stripe_get_balance', 'netlify_list_sites', 'devto_list_articles', 'list_strategies']
+}
+
+// Classify task into scope based on title + description keywords
+function classifyTaskScope(title, description = '') {
+  const text = `${title} ${description}`.toLowerCase()
+
+  const scopeKeywords = {
+    trading: ['trade', 'trading', 'stock', 'market', 'rsi', 'macd', 'indicator', 'backtest', 'portfolio', 'position', 'buy', 'sell', 'signal', 'watchlist', 'alpaca', 'polymarket', 'strategy', 'ensemble', 'quote', 'ticker', 'symbol', 'spy', 'qqq', 'aapl', 'nvda', 'msft'],
+    research: ['research', 'find', 'discover', 'investigate', 'analyze', 'scan', 'explore', 'search', 'look into', 'opportunities', 'competitors', 'landscape', 'audit', 'review'],
+    build: ['build', 'code', 'implement', 'deploy', 'fix bug', 'github', 'write code', 'create feature', 'refactor', 'migrate', 'update code', 'pr ', 'pull request', 'commit', 'branch', 'netlify', 'develop'],
+    outreach: ['outreach', 'email', 'contact', 'reach out', 'newsletter', 'social media', 'post on', 'tweet', 'publish', 'content marketing'],
+    sales: ['sell', 'sales', 'pitch', 'pricing', 'invoice', 'gumroad', 'stripe', 'payment', 'customer', 'lead', 'prospect', 'revenue', 'monetize'],
+    content: ['write', 'blog', 'article', 'copy', 'landing page', 'documentation', 'content', 'newsletter', 'marketing', 'social post'],
+    orchestration: ['plan', 'sprint', 'retrospective', 'review all', 'weekly', 'daily digest', 'status', 'coordinate', 'prioritize', 'roadmap']
+  }
+
+  let bestScope = null
+  let bestScore = 0
+
+  for (const [scope, keywords] of Object.entries(scopeKeywords)) {
+    let score = 0
+    for (const kw of keywords) {
+      if (text.includes(kw)) score++
+    }
+    if (score > bestScore) {
+      bestScore = score
+      bestScope = scope
+    }
+  }
+
+  return bestScope // null means no scoping (full access)
+}
+
+// Get scoped tools for an agent + task
+function getScopedTools(agentId, taskTitle, taskDescription) {
+  const allTools = TOOL_REGISTRY.filter(t => t.agents.includes(agentId))
+  const scope = classifyTaskScope(taskTitle, taskDescription)
+
+  if (!scope) return { tools: allTools, scope: null } // No classification → full access
+
+  const allowedNames = new Set([...CORE_TOOLS, ...(TOOL_SCOPES[scope] || [])])
+  const scoped = allTools.filter(t => allowedNames.has(t.name))
+
+  // Safety: if scoping removes too many tools (< 5), fall back to full access
+  if (scoped.length < 5) return { tools: allTools, scope: null }
+
+  return { tools: scoped, scope }
+}
+
 function getAgentTools(agentId) {
   return TOOL_REGISTRY.filter(t => t.agents.includes(agentId))
 }
 
-function buildToolsPrompt(agentId) {
-  const tools = getAgentTools(agentId)
+function buildToolsPrompt(agentId, scopedTools) {
+  const tools = scopedTools || getAgentTools(agentId)
   if (tools.length === 0) return ''
 
   let prompt = `\n\n## Available Tools
@@ -2426,8 +2491,8 @@ Then continue working with that data.
 }
 
 // Build OpenAI-format function calling schema for models that support it
-function buildToolsSchema(agentId) {
-  const tools = getAgentTools(agentId)
+function buildToolsSchema(agentId, scopedTools) {
+  const tools = scopedTools || getAgentTools(agentId)
   return tools.map(tool => {
     const properties = {}
     const required = []
@@ -3789,6 +3854,20 @@ app.delete('/api/memory/facts/:id', (req, res) => {
   res.json({ ok: true })
 })
 
+// ── Tool Scoping API ─────────────────────────────
+app.get('/api/tools/scope', (req, res) => {
+  const { title, description, agent_id } = req.query
+  if (!title) return res.status(400).json({ error: 'title required' })
+  const scope = classifyTaskScope(title, description || '')
+  const result = { scope, scopes: Object.keys(TOOL_SCOPES) }
+  if (agent_id) {
+    const { tools } = getScopedTools(agent_id, title, description || '')
+    result.toolCount = tools.length
+    result.tools = tools.map(t => t.name)
+  }
+  res.json(result)
+})
+
 app.patch('/api/memory/facts/:id', (req, res) => {
   const { confidence } = req.body
   if (confidence !== undefined) {
@@ -4204,6 +4283,12 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
   }
 
   db.prepare("UPDATE tasks SET status = 'in_progress', started_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(task.id)
+
+  // Pre-classify task scope for logging
+  const preScope = classifyTaskScope(task.title, task.description || '')
+  if (preScope) {
+    try { db.prepare("UPDATE tasks SET tool_scope = ? WHERE id = ?").run(preScope, task.id) } catch (e) { /* column may not exist */ }
+  }
   db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)').run(task.id, agent.id, `Agent ${agent.name} started working...`, 'info')
 
   const abortController = new AbortController()
@@ -4229,9 +4314,14 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
     let totalToolCalls = 0
     const toolUsageCounts = {}
 
-    const toolsPrompt = buildToolsPrompt(agent.id)
+    // DeerFlow-inspired: scope tools to task type (trading tasks get trading tools, etc.)
+    const { tools: scopedTools, scope: taskScope } = getScopedTools(agent.id, task.title, task.description || '')
+    const toolsPrompt = buildToolsPrompt(agent.id, scopedTools)
     const agentModel = getSmartModel(agent.id)
-    const toolsSchema = SUPPORTS_FUNCTION_CALLING[agentModel] ? buildToolsSchema(agent.id) : null
+    const toolsSchema = SUPPORTS_FUNCTION_CALLING[agentModel] ? buildToolsSchema(agent.id, scopedTools) : null
+    if (taskScope) {
+      log('info', 'tool_scope_applied', { taskId: task.id, agentId: agent.id, scope: taskScope, toolCount: scopedTools.length })
+    }
 
     // ── Checkpoint restore: resume from last saved state if available ──
     let startStep = 0
