@@ -228,12 +228,31 @@ const MODEL_FALLBACKS = {
   'deepseek/deepseek-r1-0528': 'deepseek/deepseek-r1',       // fallback to older R1
 }
 
-function getSmartModel(agentId) {
+// Cost-optimized model routing (BambooAI-inspired): pick cheapest model that can handle the task
+const COMPLEXITY_MODELS = {
+  simple: 'anthropic/claude-haiku-4-5',      // cheapest — lookups, status checks, simple fetches
+  medium: null,                               // null = use agent's default model
+  complex: null,                              // null = use agent's default model
+  swarm: 'anthropic/claude-sonnet-4-5'        // upgrade to sonnet for swarm-level tasks
+}
+
+function getSmartModel(agentId, taskComplexity) {
   const baseModel = AGENT_MODELS[agentId] || 'anthropic/claude-haiku-4-5'
 
+  // Complexity-based routing: simple tasks use haiku regardless of agent assignment
+  if (taskComplexity && COMPLEXITY_MODELS[taskComplexity] !== undefined) {
+    const complexityModel = COMPLEXITY_MODELS[taskComplexity]
+    if (complexityModel && complexityModel !== baseModel) {
+      log('info', 'model_complexity_routed', { agentId, complexity: taskComplexity, from: baseModel, to: complexityModel })
+      // For simple tasks, always downgrade. For swarm, only upgrade if current is cheaper.
+      if (taskComplexity === 'simple') return complexityModel
+      if (taskComplexity === 'swarm' && baseModel !== 'anthropic/claude-sonnet-4-5') return complexityModel
+    }
+  }
+
+  // Spend-based fallback: downgrade when approaching budget limit
   const today = new Date().toISOString().slice(0, 10)
   const agentSpend = db.prepare("SELECT COALESCE(SUM(cost), 0) as total FROM spend_log WHERE agent_id = ? AND date = ?").get(agentId, today)
-  // Use per-agent limit if set, otherwise divide global limit by 7 agents
   const perAgentSetting = db.prepare("SELECT value FROM settings WHERE key = ?").get(`${agentId}_daily_usd`)
   const dailyLimit = parseFloat(db.prepare("SELECT value FROM settings WHERE key = 'daily_limit_usd'").get()?.value || '35')
   const agentLimit = perAgentSetting ? parseFloat(perAgentSetting.value) : dailyLimit / 11
@@ -900,6 +919,20 @@ const TOOL_REGISTRY = [
         email.sendApprovalEmail({ id: ctx.taskId, title: args.action_summary }, { name: ctx?.agentId || 'Agent' }).catch(() => {})
       }
       return { paused: true, message: 'Task paused — waiting for human approval. Execution will resume from checkpoint when approved.' }
+    }
+  },
+  {
+    name: 'note',
+    description: 'Save a working note for this task (observation, decision, or insight). Working notes are task-scoped. Decisions and insights get promoted to long-term memory when the task succeeds.',
+    params: {
+      content: { type: 'string', required: true, description: 'What to remember (be specific)' },
+      type: { type: 'string', required: false, description: 'observation, decision, insight, or result (default: observation)' }
+    },
+    agents: ['scout', 'forge', 'quill', 'dealer', 'oracle', 'nexus', 'sentinel'],
+    execute: async (args, ctx) => {
+      const memType = ['observation', 'decision', 'result', 'insight'].includes(args.type) ? args.type : 'observation'
+      addWorkingMemory(ctx?.agentId || '', ctx?.taskId || '', args.content, memType)
+      return { saved: true, type: memType, message: `Working note saved. ${memType === 'decision' || memType === 'insight' ? 'Will be promoted to long-term memory if task succeeds.' : ''}` }
     }
   },
   {
@@ -2401,7 +2434,7 @@ const TOOL_REGISTRY = [
 // ══════════════════════════════════════════════════════
 
 // Core tools always available to any agent (memory, delegation, communication)
-const CORE_TOOLS = ['consult_agent', 'create_task', 'store_memory', 'recall_memory', 'recall_hive_memory', 'request_approval', 'propose_feature', 'log_revenue', 'search_knowledge']
+const CORE_TOOLS = ['consult_agent', 'create_task', 'store_memory', 'recall_memory', 'recall_hive_memory', 'request_approval', 'propose_feature', 'log_revenue', 'search_knowledge', 'note']
 
 // Task-type → tool scopes. Each scope lists tool names allowed for that task type.
 const TOOL_SCOPES = {
@@ -2864,6 +2897,51 @@ function getTopFacts(agentId, limit = 15) {
   }
 }
 
+
+// ══════════════════════════════════════════════════════
+// ██ MEMGPT-STYLE TIERED MEMORY                      ██
+// ══════════════════════════════════════════════════════
+
+// Working memory: task-scoped scratchpad. Promoted to long-term facts on task success.
+function addWorkingMemory(agentId, taskId, content, type = 'observation') {
+  try {
+    db.prepare('INSERT INTO working_memory (agent_id, task_id, content, memory_type) VALUES (?, ?, ?, ?)')
+      .run(agentId, taskId, content.slice(0, 1000), type)
+  } catch (e) { /* table may not exist yet */ }
+}
+
+function getWorkingMemory(taskId, limit = 10) {
+  try {
+    return db.prepare('SELECT content, memory_type, created_at FROM working_memory WHERE task_id = ? ORDER BY created_at DESC LIMIT ?')
+      .all(taskId, limit)
+  } catch (e) { return [] }
+}
+
+// Promote: on task success, convert working memory insights → long-term memory facts
+function promoteWorkingMemory(agentId, taskId) {
+  try {
+    const items = db.prepare(
+      "SELECT content, memory_type FROM working_memory WHERE agent_id = ? AND task_id = ? AND memory_type IN ('decision', 'insight')"
+    ).all(agentId, taskId)
+
+    if (items.length === 0) return 0
+
+    const insertFact = db.prepare(
+      'INSERT INTO memory_facts (agent_id, fact, confidence, category, source_task_id) VALUES (?, ?, ?, ?, ?)'
+    )
+    let promoted = 0
+    for (const item of items.slice(0, 5)) {
+      const cat = item.memory_type === 'decision' ? 'strategy' : 'pattern'
+      insertFact.run(agentId, item.content, 0.6, cat, taskId)
+      promoted++
+    }
+
+    // Clean up working memory for this task
+    db.prepare('DELETE FROM working_memory WHERE task_id = ?').run(taskId)
+    if (promoted > 0) console.log(`🧠 Promoted ${promoted} working memories to long-term for task ${taskId}`)
+    return promoted
+  } catch (e) { return 0 }
+}
 
 // ══════════════════════════════════════════════════════
 // ██ TRADE REFLECTION JOURNAL (TradingAgents-inspired)██
@@ -4354,6 +4432,38 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
     } catch {}
   }
 
+  // ── Pre-execution Plan Validation (Lemon Agent-inspired) ─────
+  // For complex/expensive tasks, generate a quick plan before executing
+  if (task.complexity === 'complex' || task.complexity === 'swarm') {
+    try {
+      const planResponse = await callClaude({
+        model: 'anthropic/claude-haiku-4-5',
+        max_tokens: 512,
+        system: `You are a task planner. Generate a brief execution plan for this agent task. Respond in JSON only.
+Format: {"steps": ["step1", "step2", ...], "estimated_tools": 3-15, "risk": "low|medium|high", "should_proceed": true|false, "concern": "only if should_proceed is false"}`,
+        messages: [{ role: 'user', content: `Agent: ${agent.name} (${agent.role})\nTask: ${task.title}\nDescription: ${task.description || 'none'}\nComplexity: ${task.complexity}` }]
+      }, agent.id, task.id)
+
+      const planText = planResponse.content.map(b => b.text || '').join('')
+      const planMatch = planText.match(/\{[\s\S]*\}/)
+      if (planMatch) {
+        const plan = JSON.parse(planMatch[0])
+        db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+          .run(task.id, agent.id, `📋 Plan: ${(plan.steps || []).join(' → ')} | Risk: ${plan.risk || 'unknown'}`, 'info')
+
+        if (plan.should_proceed === false) {
+          db.prepare("UPDATE tasks SET status = 'backlog', error = ?, updated_at = datetime('now') WHERE id = ?")
+            .run(`Plan validation blocked: ${plan.concern || 'high risk'}`, task.id)
+          db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+            .run(task.id, agent.id, `🛑 Plan validation blocked: ${plan.concern}`, 'warning')
+          return res.status(400).json({ error: `Plan validation: ${plan.concern}` })
+        }
+      }
+    } catch (e) {
+      log('warn', 'plan_validation_failed', { taskId: task.id, error: e.message })
+    }
+  }
+
   // ── Approval Gates ──────────────────────────────
   // Agents are autonomous — only gate real-money actions (live trading, real capital deployment)
   // Auto-fix tasks, research, building, writing, analysis all run without approval
@@ -4408,7 +4518,7 @@ app.post('/api/tasks/:id/run', requireRole('admin', 'operator'), async (req, res
     // DeerFlow-inspired: scope tools to task type (trading tasks get trading tools, etc.)
     const { tools: scopedTools, scope: taskScope } = getScopedTools(agent.id, task.title, task.description || '')
     const toolsPrompt = buildToolsPrompt(agent.id, scopedTools)
-    const agentModel = getSmartModel(agent.id)
+    const agentModel = getSmartModel(agent.id, task.complexity || undefined)
     const toolsSchema = SUPPORTS_FUNCTION_CALLING[agentModel] ? buildToolsSchema(agent.id, scopedTools) : null
     if (taskScope) {
       log('info', 'tool_scope_applied', { taskId: task.id, agentId: agent.id, scope: taskScope, toolCount: scopedTools.length })
@@ -4616,8 +4726,8 @@ ${previousOutput ? `**Your previous output (which was not good enough):**\n${pre
 
 Details: ${task.description || 'No additional details.'}
 
-${selfCorrectionContext}${parentContext}${teamContext}${agentMemory ? `## Your Memory (learnings from past tasks):\n${agentMemory.slice(-2000)}\n` : ''}
-
+${selfCorrectionContext}${parentContext}${teamContext}${agentMemory ? `## Your Long-Term Memory (learnings from past tasks):\n${agentMemory}\n` : ''}
+${(() => { const wm = getWorkingMemory(task.id, 5); return wm.length > 0 ? `## Working Memory (notes from this task):\n${wm.map(m => `- [${m.memory_type}] ${m.content}`).join('\n')}\n` : '' })()}
 ${deliverableReqs}
 
 ## MANDATORY: Use Tools — Do NOT Just Write Text
@@ -5131,6 +5241,9 @@ START WITH TOOL CALLS NOW.`
       .run(fullOutput.slice(0, 50000), evidence, task.id)
     db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
       .run(task.id, agent.id, 'Task completed successfully', 'success')
+
+    // MemGPT: promote working memory decisions/insights to long-term facts
+    promoteWorkingMemory(agent.id, task.id)
 
     traceBus.emit('task:update', { id: task.id, status: 'done', agent_id: agent.id })
     traceBus.emitTrace({

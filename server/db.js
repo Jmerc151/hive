@@ -515,6 +515,20 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_memory_agent_created ON memory_embeddings(agent_id, created_at DESC);
 `)
 
+// MemGPT-style working memory (task-scoped, promoted to long-term on success)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS working_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    memory_type TEXT DEFAULT 'observation' CHECK(memory_type IN ('observation','decision','result','insight')),
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_working_mem_task ON working_memory(task_id);
+  CREATE INDEX IF NOT EXISTS idx_working_mem_agent ON working_memory(agent_id);
+`)
+
 // Task tool scoping (DeerFlow-inspired bounded contexts)
 try { db.exec(`ALTER TABLE tasks ADD COLUMN tool_scope TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
 
