@@ -206,7 +206,7 @@ const AGENT_MODELS = {
   forge:    'qwen/qwen3-235b-a22b',           // was claude-haiku-4-5 — strong at coding + agent tasks
   quill:    'qwen/qwen3-235b-a22b',           // was claude-haiku-4-5 — good writing quality
   dealer:   'anthropic/claude-haiku-4-5',      // keep — sales outreach needs reliable function calling
-  oracle:   'deepseek/deepseek-r1-0528',       // was claude-sonnet-4-5 — 85% cheaper, top reasoning model
+  oracle:   'qwen/qwen3-235b-a22b',           // was deepseek-r1-0528 — R1 narrates instead of calling tools, qwen3 reliable
   nexus:    'anthropic/claude-sonnet-4-5',     // keep — orchestration/scoring needs reliability
   sentinel: 'qwen/qwen3-235b-a22b',           // was claude-haiku-4-5 — monitoring tasks, cheaper
   architect:'qwen/qwen3-235b-a22b',           // code review — needs to understand code well
