@@ -515,6 +515,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_memory_agent_created ON memory_embeddings(agent_id, created_at DESC);
 `)
 
+// Task tool scoping (DeerFlow-inspired bounded contexts)
+try { db.exec(`ALTER TABLE tasks ADD COLUMN tool_scope TEXT DEFAULT ''`) } catch (e) { /* already exists */ }
+
 // Skills: relevance_keywords for progressive skill loading
 try { db.exec(`ALTER TABLE skills ADD COLUMN relevance_keywords TEXT DEFAULT '[]'`) } catch (e) { /* already exists */ }
 
