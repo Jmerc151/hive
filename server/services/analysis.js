@@ -608,6 +608,64 @@ const BUILTIN_STRATEGIES = [
       if (cci > 0) return { signal: 'buy', confidence: 25 }
       return { signal: 'sell', confidence: 25 }
     }
+  },
+  {
+    id: 'fundamental_value',
+    name: 'Fundamental Value',
+    category: 'fundamental',
+    generate(data) {
+      const { quote } = data
+      if (!quote) return { signal: 'hold', confidence: 0 }
+      const pe = quote.trailingPE || quote.forwardPE
+      const priceTo52wLow = quote.price && quote.fiftyTwoWeekLow ? (quote.price / quote.fiftyTwoWeekLow - 1) * 100 : null
+      const priceTo52wHigh = quote.price && quote.fiftyTwoWeekHigh ? (1 - quote.price / quote.fiftyTwoWeekHigh) * 100 : null
+
+      let score = 0, signals = 0
+      // P/E check: low P/E = undervalued
+      if (pe != null) {
+        signals++
+        if (pe < 15) score += 2
+        else if (pe < 25) score += 1
+        else if (pe > 40) score -= 2
+        else if (pe > 30) score -= 1
+      }
+      // Near 52-week low = potential value buy
+      if (priceTo52wLow != null) {
+        signals++
+        if (priceTo52wLow < 10) score += 2
+        else if (priceTo52wLow < 25) score += 1
+      }
+      // Near 52-week high = caution
+      if (priceTo52wHigh != null) {
+        signals++
+        if (priceTo52wHigh < 5) score -= 1
+      }
+
+      if (signals === 0) return { signal: 'hold', confidence: 0 }
+      const avg = score / signals
+      if (avg > 0.5) return { signal: 'buy', confidence: Math.min(70, 40 + avg * 15) }
+      if (avg < -0.5) return { signal: 'sell', confidence: Math.min(70, 40 + Math.abs(avg) * 15) }
+      return { signal: 'hold', confidence: 20 }
+    }
+  },
+  {
+    id: 'volume_momentum',
+    name: 'Volume Momentum',
+    category: 'momentum',
+    generate(data) {
+      const { quote, avgVolume } = data
+      if (!quote || !avgVolume || avgVolume === 0) return { signal: 'hold', confidence: 0 }
+      const volRatio = quote.volume / avgVolume
+      const priceUp = (quote.change || 0) > 0
+
+      // High volume + price up = bullish confirmation
+      if (volRatio > 1.5 && priceUp) return { signal: 'buy', confidence: Math.min(75, 40 + volRatio * 10) }
+      // High volume + price down = bearish confirmation
+      if (volRatio > 1.5 && !priceUp) return { signal: 'sell', confidence: Math.min(75, 40 + volRatio * 10) }
+      // Low volume = no conviction
+      if (volRatio < 0.5) return { signal: 'hold', confidence: 30 }
+      return { signal: 'hold', confidence: 15 }
+    }
   }
 ]
 
@@ -627,7 +685,10 @@ function getStrategyWeight(strategyId) {
 
 // Compute extended indicators for a symbol
 async function computeExtendedIndicators(symbol) {
-  const bars = await getHistory(symbol, '6mo', '1d')
+  const [bars, quote] = await Promise.all([
+    getHistory(symbol, '6mo', '1d'),
+    getQuote(symbol).catch(() => null)
+  ])
   if (bars.length < 50) return null
 
   const closes = bars.map(b => b.close)
@@ -667,6 +728,8 @@ async function computeExtendedIndicators(symbol) {
     stochD: latest(stoch)?.d,
     williamsR: latest(williamsRData),
     cci: latest(cciData),
+    quote,
+    avgVolume: Math.round(bars.slice(-20).reduce((s, b) => s + b.volume, 0) / 20),
     bars
   }
 }
@@ -787,6 +850,58 @@ export function recordTradeOutcome(strategyId, won) {
         .run(strategyId, 'builtin', won ? 1 : 0, won ? 0 : 1)
     }
   } catch (e) { /* ignore */ }
+}
+
+// ══════════════════════════════════════════════════════
+// ██ BULL/BEAR DEBATE (TradingAgents-inspired)       ██
+// ══════════════════════════════════════════════════════
+
+export async function bullBearDebate(symbol, callClaude, agentId = 'oracle') {
+  const [quote, indicators] = await Promise.all([
+    getQuote(symbol),
+    getIndicators(symbol)
+  ])
+
+  if (indicators.error) throw new Error(`Not enough data for ${symbol}`)
+
+  const marketContext = buildMarketContext(symbol, quote, indicators, await getHistory(symbol, '3mo', '1d'))
+
+  const response = await callClaude({
+    model: 'qwen/qwen3-235b-a22b',
+    max_tokens: 1500,
+    system: `You are a trading debate engine. Given market data, produce a structured bull/bear debate.
+
+The BULL case argues for buying — finds every reason the stock will go up.
+The BEAR case argues for selling — finds every reason the stock will go down.
+The JUDGE synthesizes both arguments and renders a verdict.
+
+RESPOND IN VALID JSON ONLY. No markdown.`,
+    messages: [{
+      role: 'user',
+      content: `Debate ${symbol} using this real market data:
+
+${marketContext}
+
+JSON format:
+{
+  "symbol": "${symbol}",
+  "bull": { "thesis": "2-3 sentences", "key_points": ["point1", "point2", "point3"], "confidence": 0-100 },
+  "bear": { "thesis": "2-3 sentences", "key_points": ["point1", "point2", "point3"], "confidence": 0-100 },
+  "judge": { "verdict": "BUY|SELL|HOLD", "reasoning": "2-3 sentences weighing both sides", "confidence": 0-100, "risk_level": "low|medium|high" }
+}`
+    }]
+  }, agentId)
+
+  const text = response.content[0]?.text || response.content.map(b => b.text || '').join('')
+  try {
+    const cleaned = text.replace(/```json?\n?/g, '').replace(/```\n?/g, '').replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+    const debate = JSON.parse(cleaned)
+    debate.marketData = { price: quote.price, rsi: indicators.rsi14, trend: indicators.trend }
+    debate.debatedAt = new Date().toISOString()
+    return debate
+  } catch (e) {
+    return { symbol, error: 'Failed to parse debate', raw: text.slice(0, 500) }
+  }
 }
 
 export { PERSONAS, BUILTIN_STRATEGIES }

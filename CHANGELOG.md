@@ -1,5 +1,16 @@
 # Hive Changelog
 
+## 2026-03-23 — TradingAgents-Inspired Intelligence Upgrade
+
+- **Trade reflection journal** — Oracle auto-reflects after every trade session: what worked, what failed, market condition, actionable lesson. Lessons stored as high-confidence memory facts for future sessions.
+- **Auto skill extraction** — Tasks scoring 8+ from Nexus QA get analyzed for reusable patterns. Extracted skills become proposals for human review before installation.
+- **Fundamental analysis signal** — New ensemble strategy using P/E ratio and 52-week price position. Value investors rejoice.
+- **Volume momentum signal** — New ensemble strategy: high volume + price direction = signal confirmation. Low volume = no conviction.
+- **Bull/bear debate** — `debate_trade` tool runs adversarial analysis: bull argues for buying, bear argues against, judge renders verdict. Use before high-conviction trades.
+- **Episodic fail-blocking** — Agents can't re-create identical tasks that failed within 48 hours or are in the dead letter queue. Prevents repeat waste.
+- **Scoped agent contexts** — Tasks auto-classified into 7 scopes (trading, research, build, outreach, sales, content, orchestration). Each scope limits visible tools, saving ~2000 tokens per prompt.
+- **New API endpoints** — GET /api/trading/debate/:symbol, GET /api/tools/scope
+
 ## 2026-03-23 — DeerFlow Memory Scoring + Ensemble Trading Engine
 
 - **Memory confidence scoring** — New `memory_facts` table stores discrete facts with confidence scores (0-1) and categories (strategy, pattern, gotcha, contact, revenue, technical, general). Replaces raw text injection with top-15 scored facts. Duplicate facts boost confidence instead of duplicating. Stale facts decay -0.1 every 7 days if unused for 30+ days, auto-pruned at zero.
