@@ -1,5 +1,16 @@
 # Hive Changelog
 
+## 2026-03-23 — DeerFlow Memory Scoring + Ensemble Trading Engine
+
+- **Memory confidence scoring** — New `memory_facts` table stores discrete facts with confidence scores (0-1) and categories (strategy, pattern, gotcha, contact, revenue, technical, general). Replaces raw text injection with top-15 scored facts. Duplicate facts boost confidence instead of duplicating. Stale facts decay -0.1 every 7 days if unused for 30+ days, auto-pruned at zero.
+- **Progressive skill loading** — `selectRelevantSkills()` scores skills against task context using keyword matching. Only loads top 3 relevant skills per task (+ always-on high-priority), saving tokens on irrelevant instructions. Falls back to loading all skills if no matches.
+- **Oracle model fix** — Switched from deepseek-r1-0528 to qwen3-235b-a22b. R1 was narrating tool calls instead of executing them, wasting 3+ steps per trading session.
+- **Ensemble signal engine** — 8 built-in indicator strategies (RSI, MACD, Bollinger, SMA crossover, Stochastic, EMA trend, Williams %R, CCI) with AmpyFin-style weighted majority voting. Strategy weights update based on historical performance via strategy_meta table.
+- **scan_ensemble tool** — Oracle scans full watchlist in one call instead of manually calling get_indicators per symbol. Returns composite BUY/SELL/HOLD with confidence breakdown.
+- **Trading pipeline upgrade** — Switched from RSI-only (RSI<32 buy, RSI>72 sell) to full ensemble voting. Only executes on STRONG BUY/SELL with >60% confidence across 8 strategies.
+- **Auto-merge workflow fix** — Handles existing PRs instead of crashing on duplicate creation.
+- **New API endpoints** — GET /api/trading/ensemble, GET /api/trading/ensemble/:symbol, GET /api/agents/:id/facts, DELETE/PATCH /api/memory/facts/:id
+
 ## 2026-03-23 — Ruflo-Inspired Swarm Intelligence + Smart Routing
 
 - **Swarm coordination** — Multi-agent consensus system. Multiple agents independently analyze the same task, then a coordinator synthesizes the best output. Supports hierarchical/mesh/ring topologies and majority/weighted/unanimous consensus methods.
