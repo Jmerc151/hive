@@ -622,13 +622,20 @@ const TOOL_REGISTRY = [
   },
   {
     name: 'scan_ensemble',
-    description: 'Run 8 indicator strategies (RSI, MACD, Bollinger, SMA, Stochastic, EMA, Williams%R, CCI) on all watchlist symbols. Returns weighted voting signals with BUY/SELL/HOLD recommendations. Use this instead of manually calling get_indicators on each symbol.',
+    description: 'Run 10 indicator strategies (RSI, MACD, Bollinger, SMA, Stochastic, EMA, Williams%R, CCI, Fundamental, Volume) on all watchlist symbols. Returns weighted voting signals with BUY/SELL/HOLD recommendations. Use this instead of manually calling get_indicators on each symbol.',
     params: { symbol: { type: 'string', required: false, description: 'Single symbol to scan (omit to scan full watchlist)' } },
     agents: ['oracle', 'scout', 'nexus'],
     execute: async (args) => {
       if (args.symbol) return await analysis.generateEnsembleSignals(args.symbol)
       return await analysis.scanWatchlist()
     }
+  },
+  {
+    name: 'debate_trade',
+    description: 'Run a bull/bear debate on a symbol before trading. Two AI analysts argue for and against, then a judge renders a verdict. Use this for high-conviction trades to validate your thesis.',
+    params: { symbol: { type: 'string', required: true, description: 'Stock ticker to debate' } },
+    agents: ['oracle', 'nexus'],
+    execute: async (args, ctx) => await analysis.bullBearDebate(args.symbol, callClaude, ctx?.agentId || 'oracle')
   },
   {
     name: 'list_strategies',
@@ -707,6 +714,16 @@ const TOOL_REGISTRY = [
         'chrome web store', 'chrome extension', 'forensic audit', 'credential harvesting', 'production credential']
       const blocked = BLOCKED_TOPICS.find(t => titleLower.includes(t))
       if (blocked) return { error: `Blocked: "${blocked}" is not one of our business pillars (Ember, Hive, Trading). Only create tasks for those 3 areas.` }
+
+      // EPISODIC FAIL-BLOCKING (PentAGI-inspired): prevent re-creating recently failed tasks
+      const recentFail = db.prepare(
+        "SELECT id, title FROM tasks WHERE agent_id = ? AND status = 'failed' AND title = ? AND created_at >= datetime('now', '-48 hours') LIMIT 1"
+      ).get(args.agent_id, args.title)
+      if (recentFail) return { error: `Blocked: identical task "${args.title}" failed within 48h (${recentFail.id}). Try a different approach.` }
+      const deadLetter = db.prepare(
+        "SELECT id FROM dead_letters WHERE agent_id = ? AND error LIKE ? AND created_at >= datetime('now', '-7 days') LIMIT 1"
+      ).get(args.agent_id, `%${args.title.slice(0, 50)}%`)
+      if (deadLetter) return { error: `Blocked: similar task in dead letter queue. This approach doesn't work — try something different.` }
 
       // ANTI-SPIRAL: max 10 agent-created tasks per day
       const todayAgentTasks = db.prepare("SELECT COUNT(*) as c FROM tasks WHERE spawned_by IS NOT NULL AND created_at >= datetime('now', '-24 hours')").get().c
@@ -2847,6 +2864,80 @@ function getTopFacts(agentId, limit = 15) {
   }
 }
 
+
+// ══════════════════════════════════════════════════════
+// ██ TRADE REFLECTION JOURNAL (TradingAgents-inspired)██
+// ══════════════════════════════════════════════════════
+
+async function reflectOnTrade(agent, task, output) {
+  try {
+    const response = await callClaude({
+      model: getSmartModel(agent.id),
+      max_tokens: 512,
+      system: `You are a trading journal analyst. Analyze this completed trade session and extract a structured reflection.
+
+Respond in JSON: {"trades_summary": "1-2 sentences", "what_worked": "...", "what_failed": "...", "market_condition": "bullish|bearish|sideways", "lesson": "1 sentence actionable insight", "confidence_in_approach": 0-100}`,
+      messages: [{
+        role: 'user',
+        content: `Trade session output (first 2000 chars):\n${output.slice(0, 2000)}`
+      }]
+    }, agent.id, task.id)
+
+    const text = response.content.map(b => b.text || '').join('')
+    const jsonMatch = text.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      const reflection = JSON.parse(jsonMatch[0])
+      // Store as high-confidence memory fact
+      if (reflection.lesson) {
+        db.prepare('INSERT INTO memory_facts (agent_id, fact, confidence, category, source_task_id) VALUES (?, ?, ?, ?, ?)')
+          .run(agent.id, reflection.lesson, 0.8, 'strategy', task.id)
+      }
+      // Store full reflection in task output metadata
+      db.prepare('INSERT INTO task_logs (task_id, agent_id, message, type) VALUES (?, ?, ?, ?)')
+        .run(task.id, agent.id, `📓 Trade reflection: ${reflection.trades_summary || ''} | Lesson: ${reflection.lesson || 'none'}`, 'info')
+      console.log(`📓 Trade reflection for "${task.title}": ${reflection.lesson || 'no lesson'}`)
+    }
+  } catch (e) {
+    console.error('Trade reflection failed:', e.message)
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// ██ AUTO SKILL EXTRACTION (Hermes-inspired)          ██
+// ══════════════════════════════════════════════════════
+
+async function extractSkillFromTrace(agent, task, output) {
+  try {
+    const response = await callClaude({
+      model: 'anthropic/claude-haiku-4-5',
+      max_tokens: 1024,
+      system: `You are a skill extraction engine. Given a high-scoring task trace, determine if there's a reusable pattern worth saving as a SKILL.md file.
+
+If yes, respond with JSON: {"extract": true, "name": "skill-name-slug", "title": "Human Title", "description": "What this skill teaches", "skill_md": "Full SKILL.md content with instructions, steps, and best practices"}
+If no reusable pattern, respond: {"extract": false}`,
+      messages: [{
+        role: 'user',
+        content: `Agent: ${agent.name} (${agent.role})\nTask: ${task.title}\nDescription: ${task.description || ''}\nOutput (first 3000 chars):\n${output.slice(0, 3000)}`
+      }]
+    }, agent.id, task.id)
+
+    const text = response.content.map(b => b.text || '').join('')
+    const jsonMatch = text.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      const result = JSON.parse(jsonMatch[0])
+      if (result.extract && result.skill_md && result.name) {
+        // Create as proposal for human review (not auto-installed)
+        db.prepare('INSERT INTO proposals (id, type, title, description, code_diff, proposed_by, source_task_id, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(uuid(), 'prompt', `Auto-Skill: ${result.title}`, result.description || '',
+            JSON.stringify({ skill_md: result.skill_md, slug: result.name, agents: [agent.id] }),
+            agent.id, task.id, 'low')
+        console.log(`🧬 Auto-extracted skill proposal: "${result.title}" from ${agent.name}`)
+      }
+    }
+  } catch (e) {
+    console.error('Skill extraction failed:', e.message)
+  }
+}
 
 // ══════════════════════════════════════════════════════
 // ██ PROGRESSIVE SKILL LOADING — relevance scoring    ██
@@ -5201,6 +5292,19 @@ START WITH TOOL CALLS NOW.`
           } catch (e) { console.error('[skill-discovery] Parse error:', e.message) }
         }
       })
+      .then(() => {
+        // Trade reflection journal (TradingAgents-inspired): Oracle reflects on trade outcomes
+        if (task.agent_id === 'oracle' && (toolUsageCounts.place_order > 0 || toolUsageCounts.close_position > 0)) {
+          reflectOnTrade(agent, task, fullOutput).catch(e => console.error('Trade reflection error:', e.message))
+        }
+      })
+      .then(() => {
+        // Auto skill extraction (Hermes-inspired): high-scoring tasks → propose skill
+        const nexusScore = db.prepare('SELECT nexus_score FROM tasks WHERE id = ?').get(task.id)?.nexus_score
+        if (nexusScore && nexusScore >= 8 && fullOutput.length > 500) {
+          extractSkillFromTrace(agent, task, fullOutput).catch(e => console.error('Skill extraction error:', e.message))
+        }
+      })
       .then(() => { setTimeout(() => processAgentQueue(agent.id), 5000) })
       .catch(() => {})
 
@@ -6178,6 +6282,13 @@ app.get('/api/trading/ensemble/:symbol', async (req, res) => {
 app.get('/api/trading/ensemble', async (req, res) => {
   try {
     const result = await analysis.scanWatchlist()
+    res.json(result)
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.get('/api/trading/debate/:symbol', async (req, res) => {
+  try {
+    const result = await analysis.bullBearDebate(req.params.symbol.toUpperCase(), callClaude)
     res.json(result)
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
