@@ -62,6 +62,7 @@ export const api = {
   billingStatus: () => request('/billing/status'),
   checkout: (plan) => request('/billing/checkout', { method: 'POST', body: JSON.stringify({ plan }) }),
   buyCredits: (amount) => request('/billing/credits', { method: 'POST', body: JSON.stringify({ amount }) }),
+  billingPortal: () => request('/billing/portal', { method: 'POST' }),
 
   // Pipelines
   pipelines: () => request('/pipelines'),

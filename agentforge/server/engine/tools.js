@@ -36,17 +36,55 @@ export async function executeTool(name, args, workspaceId) {
 // --- Built-in tools ---
 
 registerTool('web_search', {
-  description: 'Search the web for information',
+  description: 'Search the web for information using Brave Search',
   parameters: {
     type: 'object',
     properties: {
       query: { type: 'string', description: 'Search query' },
+      count: { type: 'number', description: 'Number of results (1-10, default 5)' },
     },
     required: ['query'],
   },
-  async execute({ query }) {
-    // TODO: Integrate with search API (SerpAPI, Brave, etc.)
-    return `Web search for "${query}" — integration pending. Connect a search API in settings.`;
+  async execute({ query, count = 5 }) {
+    const apiKey = process.env.BRAVE_SEARCH_API_KEY;
+    if (!apiKey) {
+      return 'Web search not configured. Add BRAVE_SEARCH_API_KEY to your environment variables. Get a free key at https://brave.com/search/api/';
+    }
+
+    const numResults = Math.max(1, Math.min(10, Number(count) || 5));
+    const params = new URLSearchParams({ q: query, count: numResults });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    try {
+      const res = await fetch(`https://api.search.brave.com/res/v1/web/search?${params}`, {
+        headers: {
+          'Accept': 'application/json',
+          'Accept-Encoding': 'gzip',
+          'X-Subscription-Token': apiKey,
+        },
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        return `Error: Brave Search API returned ${res.status}${errText ? ': ' + errText.slice(0, 200) : ''}`;
+      }
+
+      const data = await res.json();
+      const results = (data.web?.results || []).slice(0, 10).map(r => ({
+        title: r.title || '',
+        url: r.url || '',
+        description: (r.description || '').slice(0, 500),
+      }));
+
+      if (!results.length) return `No results found for "${query}".`;
+      return JSON.stringify(results);
+    } catch (err) {
+      return `Error: ${err.name === 'AbortError' ? 'Search timed out (10s)' : err.message}`;
+    } finally {
+      clearTimeout(timeout);
+    }
   },
 });
 
@@ -186,15 +224,33 @@ registerTool('scrape_page', {
     try {
       const { body } = JSON.parse(result);
       const text = body
+        // Strip boilerplate elements first
+        .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')
+        .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '')
+        .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, '')
+        .replace(/<aside[^>]*>[\s\S]*?<\/aside>/gi, '')
+        .replace(/<!--[\s\S]*?-->/g, '')
+        // Strip cookie/consent banners (common class/id patterns)
+        .replace(/<div[^>]*(cookie|consent|gdpr|banner)[^>]*>[\s\S]*?<\/div>/gi, '')
+        // Strip scripts and styles
         .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
         .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+        // Strip remaining tags
         .replace(/<[^>]+>/g, ' ')
+        // Decode HTML entities
         .replace(/&nbsp;/g, ' ')
         .replace(/&amp;/g, '&')
         .replace(/&lt;/g, '<')
         .replace(/&gt;/g, '>')
         .replace(/&quot;/g, '"')
-        .replace(/\s+/g, ' ')
+        .replace(/&apos;/g, "'")
+        .replace(/&#39;/g, "'")
+        .replace(/&#x27;/g, "'")
+        .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+        .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+        // Collapse whitespace: normalize spaces within lines, then collapse blank lines
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n\s*\n\s*\n+/g, '\n\n')
         .trim();
       return text.slice(0, 5000) || 'No text content found.';
     } catch {
