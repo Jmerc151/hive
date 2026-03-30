@@ -11,5 +11,17 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
 
+  app:
+    build: .
+    ports:
+      - "3002:3002"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://agentforge:agentforge@db:5432/agentforge
+      NODE_ENV: production
+    depends_on:
+      - db
+
 volumes:
   pgdata:

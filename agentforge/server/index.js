@@ -8,13 +8,16 @@ import authRoutes from './routes/auth.js';
 import agentRoutes from './routes/agents.js';
 import taskRoutes from './routes/tasks.js';
 import workspaceRoutes from './routes/workspaces.js';
-import billingRoutes from './routes/billing.js';
+import billingRoutes, { handleStripeWebhook } from './routes/billing.js';
 import pipelineRoutes from './routes/pipelines.js';
 import templateRoutes from './routes/templates.js';
 import analyticsRoutes from './routes/analytics.js';
 
 const app = express();
 const PORT = process.env.PORT || 3002;
+
+// Stripe webhook needs raw body — must be mounted BEFORE express.json()
+app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), handleStripeWebhook);
 
 // Middleware
 app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:5173', credentials: true }));

@@ -11,11 +11,32 @@ const PLANS = [
 export default function Billing() {
   const [billing, setBilling] = useState(null);
   const [usage, setUsage] = useState(null);
+  const [toast, setToast] = useState(null);
 
   useEffect(() => {
-    api.billingStatus().then(setBilling).catch(() => {});
+    loadBilling();
     api.usage().then(setUsage).catch(() => {});
+
+    // Check for success/credits redirect from Stripe
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('success') === 'true') {
+      setToast('Subscription activated! Your credits have been added.');
+      window.history.replaceState({}, '', '/billing');
+    } else if (params.get('credits') === 'purchased') {
+      setToast('Credits purchased successfully!');
+      window.history.replaceState({}, '', '/billing');
+    }
   }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 5000);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  function loadBilling() {
+    api.billingStatus().then(setBilling).catch(() => {});
+  }
 
   async function handleUpgrade(plan) {
     try {
@@ -26,13 +47,30 @@ export default function Billing() {
     }
   }
 
+  async function handleManageSubscription() {
+    try {
+      const { url } = await api.billingPortal();
+      if (url) window.location.href = url;
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
   return (
     <div>
       <h2 className="text-2xl font-bold mb-6">Billing</h2>
 
+      {/* Success toast */}
+      {toast && (
+        <div className="mb-4 p-3 bg-green-50 border border-green-200 text-green-800 rounded-lg text-sm flex items-center justify-between">
+          <span>{toast}</span>
+          <button onClick={() => setToast(null)} className="text-green-600 hover:text-green-800 ml-4">&times;</button>
+        </div>
+      )}
+
       {/* Current status */}
       <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
-        <div className="flex items-center gap-6">
+        <div className="flex items-center gap-6 flex-wrap">
           <div>
             <div className="text-sm text-gray-500">Current Plan</div>
             <div className="text-xl font-bold capitalize">{billing?.plan || '—'}</div>
@@ -45,6 +83,14 @@ export default function Billing() {
             <div className="text-sm text-gray-500">Used This Month</div>
             <div className="text-xl font-bold">{usage?.month ?? '—'}</div>
           </div>
+          {billing?.stripe_customer_id && (
+            <div className="ml-auto">
+              <button onClick={handleManageSubscription}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50">
+                Manage Subscription
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
